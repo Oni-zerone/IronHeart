@@ -3,13 +3,14 @@ mod clock;
 mod config;
 mod db;
 mod error;
+mod mail;
 
 use axum::{
     Json, Router,
     extract::State,
     http::StatusCode,
     response::{Html, IntoResponse},
-    routing::get,
+    routing::{get, post},
 };
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
@@ -18,6 +19,7 @@ use tracing_subscriber::EnvFilter;
 pub struct AppState {
     db: db::Pool,
     auth: auth::Auth,
+    mailer: mail::Mailer,
 }
 
 #[tokio::main]
@@ -36,14 +38,17 @@ async fn main() -> anyhow::Result<()> {
     }
     let db = db::connect(&config.database_url).await?;
     let auth = auth::Auth::discover(&config).await?;
+    let mailer = mail::Mailer::new(&config.mail)?;
+    tracing::info!("invio email con {}", mailer.describe());
 
     let app = Router::new()
         .route("/", get(home))
         .route("/health", get(health))
         .route("/api/me", get(me))
+        .route("/api/me/test-email", post(send_test_email))
         .merge(auth::routes())
         .layer(TraceLayer::new_for_http())
-        .with_state(AppState { db, auth });
+        .with_state(AppState { db, auth, mailer });
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!("in ascolto su {} ({})", config.bind_addr, config.public_base_url);
@@ -65,11 +70,32 @@ async fn me(auth::CurrentUser(user): auth::CurrentUser) -> Json<db::User> {
     Json(user)
 }
 
+/// Manda una mail di prova all'email dell'account, per verificare la configurazione.
+async fn send_test_email(
+    State(state): State<AppState>,
+    auth::CurrentUser(user): auth::CurrentUser,
+) -> StatusCode {
+    let email = mail::Email {
+        to: user.email,
+        subject: "IronHeart: email di prova".into(),
+        text: "Se leggi questo messaggio, IronHeart riesce a mandarti gli avvisi.".into(),
+        html: "<p>Se leggi questo messaggio, IronHeart riesce a mandarti gli avvisi.</p>".into(),
+    };
+    match state.mailer.send(&email).await {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(err) => {
+            tracing::error!(err = ?err, user_id = %user.id, "email di prova non inviata");
+            StatusCode::BAD_GATEWAY
+        }
+    }
+}
+
 /// Pagina provvisoria per provare il login finché non c'è la dashboard React.
 async fn home(user: Option<auth::CurrentUser>) -> impl IntoResponse {
     let body = match user {
         Some(auth::CurrentUser(user)) => format!(
             "<p>Accesso eseguito come <b>{}</b>.</p>\
+             <form method=post action=/api/me/test-email><button>Mandami una mail di prova</button></form>\
              <form method=post action=/auth/logout><button>Esci</button></form>",
             html_escape(&user.email)
         ),

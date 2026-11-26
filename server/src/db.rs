@@ -59,6 +59,22 @@ pub async fn upsert_google_user(
     .await
 }
 
+// ---- Destinatari degli avvisi ----------------------------------------------
+
+/// Indirizzi a cui mandare gli avvisi di un'app: quelli configurati,
+/// oppure l'email dell'account se l'elenco è vuoto.
+pub async fn alert_recipients(pool: &Pool, app_id: &str) -> sqlx::Result<Vec<String>> {
+    sqlx::query_scalar(
+        "SELECT r.email FROM app_recipients r WHERE r.app_id = $1
+         UNION ALL
+         SELECT u.email FROM apps a JOIN users u ON u.id = a.user_id
+         WHERE a.id = $1 AND NOT EXISTS (SELECT 1 FROM app_recipients WHERE app_id = $1)",
+    )
+    .bind(app_id)
+    .fetch_all(pool)
+    .await
+}
+
 // ---- Login in corso ---------------------------------------------------------
 
 pub struct OAuthFlow {
@@ -174,6 +190,34 @@ mod tests {
         assert_eq!(first.id, second.id);
         assert_eq!(second.email, "b@example.com");
         assert_eq!(second.name, None);
+    }
+
+    #[tokio::test]
+    async fn alert_recipients_fall_back_to_account_email() {
+        let pool = memory_pool().await;
+        let user = upsert_google_user(&pool, "sub-1", "owner@example.com", None, 1).await.unwrap();
+        sqlx::query(
+            "INSERT INTO apps (id, user_id, name, api_key_prefix, api_key_hash, interval_secs, created_at, updated_at)
+             VALUES ('app-1', $1, 'App', 'ih_x', 'hash', 60, 1, 1)",
+        )
+        .bind(&user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(alert_recipients(&pool, "app-1").await.unwrap(), ["owner@example.com"]);
+
+        for email in ["ops@example.com", "dev@example.com"] {
+            sqlx::query("INSERT INTO app_recipients (app_id, email, created_at) VALUES ('app-1', $1, 1)")
+                .bind(email)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let mut recipients = alert_recipients(&pool, "app-1").await.unwrap();
+        recipients.sort();
+        assert_eq!(recipients, ["dev@example.com", "ops@example.com"]);
+        assert!(alert_recipients(&pool, "missing").await.unwrap().is_empty());
     }
 
     #[tokio::test]

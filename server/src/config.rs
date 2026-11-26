@@ -10,6 +10,38 @@ pub struct Config {
     pub public_base_url: String,
     pub google_client_id: String,
     pub google_client_secret: String,
+    pub mail: MailConfig,
+}
+
+pub struct MailConfig {
+    pub from_email: String,
+    pub from_name: String,
+    pub transport: MailTransport,
+}
+
+pub enum MailTransport {
+    /// Produzione: API transazionale di Brevo.
+    Brevo { api_key: String },
+    /// Sviluppo: SMTP senza cifratura verso Mailpit.
+    Smtp { host: String, port: u16 },
+}
+
+impl MailConfig {
+    fn from_env() -> anyhow::Result<Self> {
+        let transport = match env_or("MAIL_TRANSPORT", "smtp").as_str() {
+            "brevo" => MailTransport::Brevo { api_key: required("BREVO_API_KEY")? },
+            "smtp" => MailTransport::Smtp {
+                host: env_or("SMTP_HOST", "localhost"),
+                port: env_or("SMTP_PORT", "1025").parse().context("SMTP_PORT non valido")?,
+            },
+            other => anyhow::bail!("MAIL_TRANSPORT sconosciuto: {other} (brevo o smtp)"),
+        };
+        Ok(Self {
+            from_email: env_or("MAIL_FROM_EMAIL", "noreply@ironheart.local"),
+            from_name: env_or("MAIL_FROM_NAME", "IronHeart"),
+            transport,
+        })
+    }
 }
 
 impl Config {
@@ -25,6 +57,7 @@ impl Config {
                 .to_owned(),
             google_client_id: required("GOOGLE_CLIENT_ID")?,
             google_client_secret: required("GOOGLE_CLIENT_SECRET")?,
+            mail: MailConfig::from_env()?,
         })
     }
 
