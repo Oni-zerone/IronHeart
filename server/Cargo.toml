@@ -1,0 +1,23 @@
+[package]
+name = "ironheart"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.105"
+axum = "0.8.9"
+axum-extra = { version = "0.12.6", features = ["cookie"] }
+dotenvy = "0.15.7"
+hex = "0.4.3"
+openidconnect = "4.1.0"
+rand = "0.10.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.2"
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "uuid"] }
+time = "0.3.55"
+tokio = { version = "1.54.1", features = ["full"] }
+tower-http = { version = "0.7.1", features = ["trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.29.3", features = ["v7", "serde"] }
