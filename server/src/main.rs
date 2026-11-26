@@ -1,9 +1,16 @@
+mod alerts;
+mod apps;
 mod auth;
 mod clock;
 mod config;
+mod crypto;
 mod db;
 mod error;
+mod heartbeat;
 mod mail;
+mod monitor;
+
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -20,6 +27,8 @@ pub struct AppState {
     db: db::Pool,
     auth: auth::Auth,
     mailer: mail::Mailer,
+    heartbeat: Arc<heartbeat::Heartbeat>,
+    public_base_url: Arc<str>,
 }
 
 #[tokio::main]
@@ -28,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tower_http=debug".into()),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -40,19 +49,37 @@ async fn main() -> anyhow::Result<()> {
     let auth = auth::Auth::discover(&config).await?;
     let mailer = mail::Mailer::new(&config.mail)?;
     tracing::info!("invio email con {}", mailer.describe());
+    let secret_box = crypto::SecretBox::new(&config.secrets_key, config.secrets_key_version);
+    let heartbeat =
+        Arc::new(heartbeat::Heartbeat::load(&db, secret_box, config.client_ip_header.clone()).await?);
+    monitor::reschedule_overdue(&db, clock::now_ms()).await?;
+
+    let state = AppState {
+        db,
+        auth,
+        mailer,
+        heartbeat,
+        public_base_url: config.public_base_url.as_str().into(),
+    };
+    monitor::spawn(state.clone());
 
     let app = Router::new()
         .route("/", get(home))
         .route("/health", get(health))
         .route("/api/me", get(me))
         .route("/api/me/test-email", post(send_test_email))
+        .route(crypto::HEARTBEAT_PATH, post(heartbeat::handler))
         .merge(auth::routes())
+        .merge(apps::routes())
         .layer(TraceLayer::new_for_http())
-        .with_state(AppState { db, auth, mailer });
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!("in ascolto su {} ({})", config.bind_addr, config.public_base_url);
-    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
+    // L'indirizzo del peer serve all'heartbeat quando non c'è un proxy davanti.
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
 }
 

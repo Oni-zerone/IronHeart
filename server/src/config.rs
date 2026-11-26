@@ -11,6 +11,12 @@ pub struct Config {
     pub google_client_id: String,
     pub google_client_secret: String,
     pub mail: MailConfig,
+    /// Chiave master AES-256 per i segreti delle app (`SECRETS_KEY`, base64 di 32 byte).
+    pub secrets_key: [u8; 32],
+    pub secrets_key_version: i64,
+    /// Intestazione da cui leggere l'IP del client dietro un proxy:
+    /// `x-forwarded-for` (CapRover) o `cf-connecting-ip` (Cloudflare).
+    pub client_ip_header: Option<String>,
 }
 
 pub struct MailConfig {
@@ -58,6 +64,14 @@ impl Config {
             google_client_id: required("GOOGLE_CLIENT_ID")?,
             google_client_secret: required("GOOGLE_CLIENT_SECRET")?,
             mail: MailConfig::from_env()?,
+            secrets_key: secrets_key()?,
+            secrets_key_version: env_or("SECRETS_KEY_VERSION", "1")
+                .parse()
+                .context("SECRETS_KEY_VERSION non valido")?,
+            client_ip_header: std::env::var("CLIENT_IP_HEADER")
+                .ok()
+                .map(|h| h.trim().to_lowercase())
+                .filter(|h| !h.is_empty()),
         })
     }
 
@@ -65,6 +79,15 @@ impl Config {
     pub fn secure_cookies(&self) -> bool {
         self.public_base_url.starts_with("https://")
     }
+}
+
+fn secrets_key() -> anyhow::Result<[u8; 32]> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let raw = required("SECRETS_KEY")?;
+    let bytes = STANDARD.decode(raw.trim()).context("SECRETS_KEY non è base64")?;
+    bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("SECRETS_KEY deve essere di 32 byte (openssl rand -base64 32)"))
 }
 
 fn env_or(key: &str, default: &str) -> String {

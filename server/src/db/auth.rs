@@ -1,31 +1,9 @@
-//! Accesso al database. Tutte le query stanno in questo modulo (vedi CLAUDE.md).
-
-use std::{str::FromStr, time::Duration};
+//! Utenti, login in corso, sessioni e destinatari degli avvisi.
 
 use serde::Serialize;
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
-};
 use uuid::Uuid;
 
-pub type Pool = SqlitePool;
-
-pub async fn connect(database_url: &str) -> anyhow::Result<Pool> {
-    let options = SqliteConnectOptions::from_str(database_url)?
-        .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Normal)
-        .foreign_keys(true)
-        .busy_timeout(Duration::from_secs(5));
-
-    let pool = SqlitePoolOptions::new().connect_with(options).await?;
-    sqlx::migrate!().run(&pool).await?;
-    Ok(pool)
-}
-
-pub async fn ping(pool: &Pool) -> sqlx::Result<()> {
-    sqlx::query("SELECT 1").execute(pool).await.map(|_| ())
-}
+use super::Pool;
 
 // ---- Utenti -----------------------------------------------------------------
 
@@ -178,9 +156,7 @@ pub async fn delete_expired_sessions(pool: &Pool, now: i64) -> sqlx::Result<()> 
 mod tests {
     use super::*;
 
-    async fn memory_pool() -> Pool {
-        connect("sqlite::memory:").await.unwrap()
-    }
+    use crate::db::test_pool as memory_pool;
 
     #[tokio::test]
     async fn upsert_keeps_id_and_updates_email() {
@@ -196,14 +172,7 @@ mod tests {
     async fn alert_recipients_fall_back_to_account_email() {
         let pool = memory_pool().await;
         let user = upsert_google_user(&pool, "sub-1", "owner@example.com", None, 1).await.unwrap();
-        sqlx::query(
-            "INSERT INTO apps (id, user_id, name, api_key_prefix, api_key_hash, interval_secs, created_at, updated_at)
-             VALUES ('app-1', $1, 'App', 'ih_x', 'hash', 60, 1, 1)",
-        )
-        .bind(&user.id)
-        .execute(&pool)
-        .await
-        .unwrap();
+        crate::db::insert_test_app(&pool, "app-1", &user.id).await;
 
         assert_eq!(alert_recipients(&pool, "app-1").await.unwrap(), ["owner@example.com"]);
 

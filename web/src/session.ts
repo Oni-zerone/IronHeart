@@ -13,3 +13,14 @@ export async function logout(): Promise<void> {
   await apiLogout()
   currentUser.value = null
 }
+
+/** Messaggio breve in basso, condiviso dalle pagine. */
+export const toast = ref({ show: false, text: '', color: 'success' })
+
+export function notify(text: string, color: 'success' | 'error' = 'success') {
+  toast.value = { show: true, text, color }
+}
+
+export function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : 'Operazione non riuscita.'
+}
