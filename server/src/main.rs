@@ -16,6 +16,7 @@ mod mail;
 mod monitor;
 mod outbox;
 mod users;
+mod web;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -86,7 +87,6 @@ async fn main() -> anyhow::Result<()> {
     let shutdown_state = state.clone();
 
     let app = Router::new()
-        .route("/", get(home))
         .route("/health", get(health))
         .route("/api/me", get(me))
         .route("/api/me/test-email", post(send_test_email))
@@ -94,7 +94,14 @@ async fn main() -> anyhow::Result<()> {
         .merge(auth::routes())
         .merge(apps::routes())
         .merge(users::routes())
-        .merge(entanglement::routes())
+        .merge(entanglement::routes());
+    let app = if web::available() {
+        app.fallback(web::serve)
+    } else {
+        tracing::warn!("dashboard not built (web/dist): serving the temporary page");
+        app.route("/", get(home))
+    };
+    let app = app
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -178,7 +185,7 @@ async fn send_test_email(
     }
 }
 
-/// Temporary page to try the login until the dashboard is embedded.
+/// Temporary page to try the login when the dashboard is not built.
 async fn home(user: Option<auth::CurrentUser>) -> impl IntoResponse {
     let body = match user {
         Some(auth::CurrentUser(user)) => format!(

@@ -12,6 +12,38 @@ Architecture, protocol and development rules: [CLAUDE.md](CLAUDE.md).
 
 To integrate the heartbeat into another application: [docs/heartbeat-client.md](docs/heartbeat-client.md), a complete prompt to hand to whoever implements the client (protocol, rules, test vectors, examples in shell, Python, Node.js and Go).
 
+## Installation
+
+The image is published on GHCR for `linux/amd64` and `linux/arm64`, with the dashboard embedded in the binary:
+
+```sh
+docker run -d --name ironheart -p 8080:8080 \
+  -v ironheart-data:/data \
+  -e PUBLIC_BASE_URL=https://ironheart.example.com \
+  -e GOOGLE_CLIENT_ID=… -e GOOGLE_CLIENT_SECRET=… \
+  -e SECRETS_KEY="$(openssl rand -base64 32)" \
+  -e ADMIN_EMAIL=you@example.com \
+  -e MAIL_TRANSPORT=brevo -e BREVO_API_KEY=… -e MAIL_FROM_EMAIL=noreply@example.com \
+  ghcr.io/oni-zerone/ironheart:latest
+```
+
+- The variables are the ones in [.env.example](.env.example). Keep `SECRETS_KEY` somewhere safe: without it the app secrets cannot be decrypted.
+- Register `PUBLIC_BASE_URL` + `/auth/google/callback` as redirect URI on Google.
+- Without `DATABASE_URL` the data stays in SQLite on the `/data` volume; with `DATABASE_URL=postgres://…` it goes to Postgres.
+- Behind a proxy set `CLIENT_IP_HEADER` (`x-forwarded-for`, or `cf-connecting-ip` with Cloudflare). Health check: `GET /health`.
+
+Tags: `latest` and `X.Y.Z` / `X.Y` for releases, `edge` for the latest commit on `main`.
+
+### Releasing
+
+The `Docker` workflow (`.github/workflows/docker.yml`) runs the server tests, builds the image on native amd64 and arm64 runners and publishes it on GHCR. A release is a tag:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Every push on `main` updates `edge`. The image can also be built locally with `docker build -t ironheart .`.
+
 ## Development
 
 ```sh
