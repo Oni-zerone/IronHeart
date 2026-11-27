@@ -20,7 +20,11 @@ const APPS_PER_USER: usize = 100;
 const ROUNDS: usize = 10;
 
 fn report(label: &str, total: Duration, count: usize) {
-    println!("{label:<44} {:>9.2} ms/op  ({count} op, {:.0} ms total)", total.as_secs_f64() * 1000.0 / count as f64, total.as_secs_f64() * 1000.0);
+    println!(
+        "{label:<44} {:>9.2} ms/op  ({count} op, {:.0} ms total)",
+        total.as_secs_f64() * 1000.0 / count as f64,
+        total.as_secs_f64() * 1000.0
+    );
 }
 
 async fn pool() -> db::Pool {
@@ -40,9 +44,12 @@ async fn pool() -> db::Pool {
             pool
         }
         Err(_) => {
-            let dir = std::env::temp_dir().join(format!("ironheart-bench-{}", uuid::Uuid::now_v7()));
+            let dir =
+                std::env::temp_dir().join(format!("ironheart-bench-{}", uuid::Uuid::now_v7()));
             std::fs::create_dir_all(&dir).unwrap();
-            db::connect(&format!("sqlite://{}/bench.db", dir.display())).await.unwrap()
+            db::connect(&format!("sqlite://{}/bench.db", dir.display()))
+                .await
+                .unwrap()
         }
     }
 }
@@ -57,8 +64,18 @@ async fn db_bench() {
     let started = Instant::now();
     let mut users = Vec::new();
     for u in 0..USERS {
-        let user = db::upsert_google_user(&pool, &format!("sub-{u}"), &format!("u{u}@example.com"), None, 1).await.unwrap();
-        db::insert_session(&pool, &format!("token-{u}"), &user.id, 1, i64::MAX).await.unwrap();
+        let user = db::upsert_google_user(
+            &pool,
+            &format!("sub-{u}"),
+            &format!("u{u}@example.com"),
+            None,
+            1,
+        )
+        .await
+        .unwrap();
+        db::insert_session(&pool, &format!("token-{u}"), &user.id, 1, i64::MAX)
+            .await
+            .unwrap();
         users.push(user.id);
     }
     let mut app_ids = Vec::new();
@@ -99,7 +116,12 @@ async fn db_bench() {
     for round in 1..=ROUNDS as i64 {
         let pings: Vec<PingRecord> = app_ids
             .iter()
-            .map(|id| PingRecord { app_id: id.clone(), signed_ts: round, seen_at: round * 1000, next_deadline_at: 1_000_000 })
+            .map(|id| PingRecord {
+                app_id: id.clone(),
+                signed_ts: round,
+                seen_at: round * 1000,
+                next_deadline_at: 1_000_000,
+            })
             .collect();
         let started = Instant::now();
         let accepted = db::record_pings(&pool, &pings).await.unwrap();
@@ -118,7 +140,10 @@ async fn db_bench() {
     report("check round at rest", started.elapsed(), ROUNDS);
 
     let started = Instant::now();
-    assert_eq!(db::mark_overdue_down(&pool, 2_000_000).await.unwrap().len(), apps);
+    assert_eq!(
+        db::mark_overdue_down(&pool, 2_000_000).await.unwrap().len(),
+        apps
+    );
     report("mark_overdue_down (2,000 apps down)", started.elapsed(), 1);
 
     let started = Instant::now();
@@ -133,27 +158,57 @@ async fn db_bench() {
         ips: (0..20).map(|i| (format!("10.0.0.{i}"), 5)).collect(),
         ..Default::default()
     };
-    let pending: Vec<db::PendingFailures> = app_ids.iter().map(|id| (id.clone(), 1, counts.clone())).collect();
+    let pending: Vec<db::PendingFailures> = app_ids
+        .iter()
+        .map(|id| (id.clone(), 1, counts.clone()))
+        .collect();
     let started = Instant::now();
-    db::insert_failure_buckets(&pool, 2, &pending).await.unwrap();
-    report("insert_failure_buckets (2,000 apps, one round)", started.elapsed(), 1);
+    db::insert_failure_buckets(&pool, 2, &pending)
+        .await
+        .unwrap();
+    report(
+        "insert_failure_buckets (2,000 apps, one round)",
+        started.elapsed(),
+        1,
+    );
 
     let started = Instant::now();
-    assert_eq!(db::failure_alert_candidates(&pool).await.unwrap().len(), apps);
-    report("failure_alert_candidates (2,000 apps)", started.elapsed(), 1);
+    assert_eq!(
+        db::failure_alert_candidates(&pool).await.unwrap().len(),
+        apps
+    );
+    report(
+        "failure_alert_candidates (2,000 apps)",
+        started.elapsed(),
+        1,
+    );
 
     // ---- Dashboard requests ----
     let started = Instant::now();
     for i in 0..1000 {
-        assert!(db::session_user(&pool, &format!("token-{}", i % USERS), 2).await.unwrap().is_some());
+        assert!(
+            db::session_user(&pool, &format!("token-{}", i % USERS), 2)
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
     report("session_user", started.elapsed(), 1000);
 
     let started = Instant::now();
     for i in 0..200 {
         let user_id = &users[i % USERS];
-        assert_eq!(db::list_apps(&pool, user_id).await.unwrap().len(), APPS_PER_USER);
-        db::failure_totals_for_user(&pool, user_id, 0).await.unwrap();
+        assert_eq!(
+            db::list_apps(&pool, user_id).await.unwrap().len(),
+            APPS_PER_USER
+        );
+        db::failure_totals_for_user(&pool, user_id, 0)
+            .await
+            .unwrap();
     }
-    report("app list + attempt totals (100 apps)", started.elapsed(), 200);
+    report(
+        "app list + attempt totals (100 apps)",
+        started.elapsed(),
+        200,
+    );
 }

@@ -15,15 +15,24 @@ pub fn request(
 ) -> reqwest::RequestBuilder {
     mailer
         .http
-        .post(format!("{}/transactional-email/v1alpha1/regions/{region}/emails", mailer.base_url))
+        .post(format!(
+            "{}/transactional-email/v1alpha1/regions/{region}/emails",
+            mailer.base_url
+        ))
         .header("x-auth-token", secret_key)
         .json(&payload(mailer, project_id, email))
 }
 
 fn payload<'a>(mailer: &'a Mailer, project_id: &'a str, email: &'a Email) -> Payload<'a> {
     Payload {
-        from: Address { email: &mailer.from_email, name: Some(&mailer.from_name) },
-        to: [Address { email: &email.to, name: None }],
+        from: Address {
+            email: &mailer.from_email,
+            name: Some(&mailer.from_name),
+        },
+        to: [Address {
+            email: &email.to,
+            name: None,
+        }],
         subject: &email.subject,
         text: &email.text,
         html: &email.html,
@@ -59,7 +68,10 @@ pub fn check(
 ) -> reqwest::RequestBuilder {
     mailer
         .http
-        .post(format!("{}/transactional-email/v1alpha1/regions/{region}/emails", mailer.base_url))
+        .post(format!(
+            "{}/transactional-email/v1alpha1/regions/{region}/emails",
+            mailer.base_url
+        ))
         .header("x-auth-token", secret_key)
         .json(&serde_json::json!({ "project_id": project_id }))
 }
@@ -102,7 +114,10 @@ mod tests {
         let received = received.lock().unwrap();
         assert_eq!(
             (received.method.as_str(), received.path.as_str()),
-            ("POST", "/transactional-email/v1alpha1/regions/fr-par/emails")
+            (
+                "POST",
+                "/transactional-email/v1alpha1/regions/fr-par/emails"
+            )
         );
         assert_eq!(received.header("x-auth-token"), Some("scw-1"));
         assert_eq!(received.header("content-type"), Some("application/json"));
@@ -110,18 +125,25 @@ mod tests {
 
     #[tokio::test]
     async fn key_check_sends_nothing() {
-        let (url, received) = server(StatusCode::FORBIDDEN, r#"{"type":"permissions_denied"}"#).await;
+        let (url, received) =
+            server(StatusCode::FORBIDDEN, r#"{"type":"permissions_denied"}"#).await;
         let transport = MailTransport::Scaleway {
             secret_key: "scw-1".into(),
             project_id: "p-1".into(),
             region: "fr-par".into(),
         };
         let mailer = mailer(transport, &url);
-        assert!(matches!(mailer.check_key().await, Some(crate::mail::KeyCheck::Rejected(_))));
+        assert!(matches!(
+            mailer.check_key().await,
+            Some(crate::mail::KeyCheck::Rejected(_))
+        ));
         let received = received.lock().unwrap();
         assert_eq!(
             (received.method.as_str(), received.path.as_str()),
-            ("POST", "/transactional-email/v1alpha1/regions/fr-par/emails")
+            (
+                "POST",
+                "/transactional-email/v1alpha1/regions/fr-par/emails"
+            )
         );
         assert_eq!(received.header("x-auth-token"), Some("scw-1"));
         assert_eq!(received.body, r#"{"project_id":"p-1"}"#);

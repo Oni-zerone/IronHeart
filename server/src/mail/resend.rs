@@ -53,7 +53,12 @@ mod tests {
 
     #[test]
     fn payload_matches_api() {
-        let mailer = mailer(MailTransport::Resend { api_key: "k".into() }, "");
+        let mailer = mailer(
+            MailTransport::Resend {
+                api_key: "k".into(),
+            },
+            "",
+        );
         assert_eq!(
             serde_json::to_value(payload(&mailer, &email())).unwrap(),
             serde_json::json!({
@@ -69,10 +74,18 @@ mod tests {
     #[tokio::test]
     async fn request_reaches_api() {
         let (url, received) = server(StatusCode::OK, r#"{"id":"1"}"#).await;
-        let mailer = mailer(MailTransport::Resend { api_key: "re_1".into() }, &url);
+        let mailer = mailer(
+            MailTransport::Resend {
+                api_key: "re_1".into(),
+            },
+            &url,
+        );
         mailer.send(&email()).await.unwrap();
         let received = received.lock().unwrap();
-        assert_eq!((received.method.as_str(), received.path.as_str()), ("POST", "/emails"));
+        assert_eq!(
+            (received.method.as_str(), received.path.as_str()),
+            ("POST", "/emails")
+        );
         assert_eq!(received.header("authorization"), Some("Bearer re_1"));
         assert_eq!(received.header("content-type"), Some("application/json"));
     }
@@ -80,10 +93,18 @@ mod tests {
     #[tokio::test]
     async fn key_check_sends_nothing() {
         let (url, received) = server(StatusCode::UNPROCESSABLE_ENTITY, "{}").await;
-        let mailer = mailer(MailTransport::Resend { api_key: "re_1".into() }, &url);
+        let mailer = mailer(
+            MailTransport::Resend {
+                api_key: "re_1".into(),
+            },
+            &url,
+        );
         assert_eq!(mailer.check_key().await, Some(crate::mail::KeyCheck::Valid));
         let received = received.lock().unwrap();
-        assert_eq!((received.method.as_str(), received.path.as_str()), ("POST", "/emails"));
+        assert_eq!(
+            (received.method.as_str(), received.path.as_str()),
+            ("POST", "/emails")
+        );
         assert_eq!(received.header("authorization"), Some("Bearer re_1"));
         assert_eq!(received.body, "{}");
     }

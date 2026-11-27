@@ -61,7 +61,10 @@ mod tests {
     use crate::{config::MailTransport, mail::tests::*};
 
     fn transport(token: &str) -> MailTransport {
-        MailTransport::Postmark { server_token: token.into(), message_stream: "outbound".into() }
+        MailTransport::Postmark {
+            server_token: token.into(),
+            message_stream: "outbound".into(),
+        }
     }
 
     #[test]
@@ -83,9 +86,15 @@ mod tests {
     #[tokio::test]
     async fn request_reaches_api() {
         let (url, received) = server(StatusCode::OK, r#"{"ErrorCode":0}"#).await;
-        mailer(transport("pm-1"), &url).send(&email()).await.unwrap();
+        mailer(transport("pm-1"), &url)
+            .send(&email())
+            .await
+            .unwrap();
         let received = received.lock().unwrap();
-        assert_eq!((received.method.as_str(), received.path.as_str()), ("POST", "/email"));
+        assert_eq!(
+            (received.method.as_str(), received.path.as_str()),
+            ("POST", "/email")
+        );
         assert_eq!(received.header("x-postmark-server-token"), Some("pm-1"));
         assert_eq!(received.header("content-type"), Some("application/json"));
     }
@@ -98,9 +107,15 @@ mod tests {
             message_stream: "outbound".into(),
         };
         let mailer = mailer(transport, &url);
-        assert!(matches!(mailer.check_key().await, Some(crate::mail::KeyCheck::Rejected(_))));
+        assert!(matches!(
+            mailer.check_key().await,
+            Some(crate::mail::KeyCheck::Rejected(_))
+        ));
         let received = received.lock().unwrap();
-        assert_eq!((received.method.as_str(), received.path.as_str()), ("GET", "/server"));
+        assert_eq!(
+            (received.method.as_str(), received.path.as_str()),
+            ("GET", "/server")
+        );
         assert_eq!(received.header("x-postmark-server-token"), Some("pm-1"));
     }
 }

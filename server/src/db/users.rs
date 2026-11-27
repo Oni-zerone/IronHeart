@@ -88,7 +88,11 @@ pub async fn create_invite(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(if invites > 0 { InviteOutcome::Updated } else { InviteOutcome::Created })
+    Ok(if invites > 0 {
+        InviteOutcome::Updated
+    } else {
+        InviteOutcome::Created
+    })
 }
 
 pub async fn delete_invite(pool: &Pool, email: &str) -> sqlx::Result<bool> {
@@ -131,15 +135,32 @@ pub async fn delete_user(pool: &Pool, user_id: &str) -> sqlx::Result<Option<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{insert_test_app, session_user, test_pool, upsert_google_user, insert_session};
+    use crate::db::{insert_session, insert_test_app, session_user, test_pool, upsert_google_user};
 
     #[tokio::test]
     async fn invites_skip_existing_users_and_update_role() {
         let pool = test_pool().await;
-        upsert_google_user(&pool, "sub", "u@example.com", None, 1).await.unwrap();
-        assert_eq!(create_invite(&pool, "u@example.com", "user", None, 1).await.unwrap(), InviteOutcome::AlreadyUser);
-        assert_eq!(create_invite(&pool, "n@example.com", "user", None, 1).await.unwrap(), InviteOutcome::Created);
-        assert_eq!(create_invite(&pool, "n@example.com", "admin", None, 2).await.unwrap(), InviteOutcome::Updated);
+        upsert_google_user(&pool, "sub", "u@example.com", None, 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            create_invite(&pool, "u@example.com", "user", None, 1)
+                .await
+                .unwrap(),
+            InviteOutcome::AlreadyUser
+        );
+        assert_eq!(
+            create_invite(&pool, "n@example.com", "user", None, 1)
+                .await
+                .unwrap(),
+            InviteOutcome::Created
+        );
+        assert_eq!(
+            create_invite(&pool, "n@example.com", "admin", None, 2)
+                .await
+                .unwrap(),
+            InviteOutcome::Updated
+        );
         let invites = list_invites(&pool).await.unwrap();
         assert_eq!((invites.len(), invites[0].role.as_str()), (1, "admin"));
         assert!(delete_invite(&pool, "n@example.com").await.unwrap());
@@ -149,12 +170,19 @@ mod tests {
     #[tokio::test]
     async fn deleting_a_user_removes_apps_and_sessions() {
         let pool = test_pool().await;
-        let user = upsert_google_user(&pool, "sub", "u@example.com", None, 1).await.unwrap();
+        let user = upsert_google_user(&pool, "sub", "u@example.com", None, 1)
+            .await
+            .unwrap();
         insert_test_app(&pool, "a1", &user.id).await;
-        insert_session(&pool, "h", &user.id, 1, 1_000).await.unwrap();
+        insert_session(&pool, "h", &user.id, 1, 1_000)
+            .await
+            .unwrap();
         assert_eq!(list_users(&pool).await.unwrap()[0].app_count, 1);
 
-        assert_eq!(delete_user(&pool, &user.id).await.unwrap(), Some(vec!["a1".to_owned()]));
+        assert_eq!(
+            delete_user(&pool, &user.id).await.unwrap(),
+            Some(vec!["a1".to_owned()])
+        );
         assert!(session_user(&pool, "h", 0).await.unwrap().is_none());
         assert_eq!(delete_user(&pool, &user.id).await.unwrap(), None);
     }

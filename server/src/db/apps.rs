@@ -80,11 +80,15 @@ pub async fn list_apps(pool: &Pool, user_id: &str) -> sqlx::Result<Vec<App>> {
 }
 
 pub async fn get_app(pool: &Pool, user_id: &str, app_id: &str) -> sqlx::Result<Option<App>> {
-    sqlx::query_as(concat!("SELECT ", app_columns!(), " FROM apps WHERE id = $1 AND user_id = $2"))
-        .bind(app_id)
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_as(concat!(
+        "SELECT ",
+        app_columns!(),
+        " FROM apps WHERE id = $1 AND user_id = $2"
+    ))
+    .bind(app_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
 }
 
 /// Configured recipients of a user's apps (without the account fallback).
@@ -226,10 +230,14 @@ pub async fn all_keys(pool: &Pool) -> sqlx::Result<Vec<KeyRow>> {
 }
 
 pub async fn app_key(pool: &Pool, app_id: &str) -> sqlx::Result<Option<KeyRow>> {
-    sqlx::query_as(concat!("SELECT ", key_columns!(), " FROM apps WHERE id = $1"))
-        .bind(app_id)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_as(concat!(
+        "SELECT ",
+        key_columns!(),
+        " FROM apps WHERE id = $1"
+    ))
+    .bind(app_id)
+    .fetch_optional(pool)
+    .await
 }
 
 // ---- Heartbeat and deadline check ------------------------------------------
@@ -253,7 +261,12 @@ pub async fn record_ping(
     now: i64,
     next_deadline_at: i64,
 ) -> sqlx::Result<bool> {
-    let record = PingRecord { app_id: app_id.into(), signed_ts, seen_at: now, next_deadline_at };
+    let record = PingRecord {
+        app_id: app_id.into(),
+        signed_ts,
+        seen_at: now,
+        next_deadline_at,
+    };
     Ok(record_pings(pool, &[record]).await?[0])
 }
 
@@ -266,7 +279,15 @@ const PINGS_PER_STATEMENT: usize = 500;
 /// is the value before the update (in both).
 fn record_pings_sql(rows: usize) -> String {
     let values: Vec<String> = (0..rows)
-        .map(|i| format!("(${}, ${}, ${}, ${})", 4 * i + 1, 4 * i + 2, 4 * i + 3, 4 * i + 4))
+        .map(|i| {
+            format!(
+                "(${}, ${}, ${}, ${})",
+                4 * i + 1,
+                4 * i + 2,
+                4 * i + 3,
+                4 * i + 4
+            )
+        })
         .collect();
     format!(
         "UPDATE apps SET
@@ -305,7 +326,10 @@ pub async fn record_pings(pool: &Pool, pings: &[PingRecord]) -> sqlx::Result<Vec
         updated.extend(query.fetch_all(&mut *tx).await?);
     }
     tx.commit().await?;
-    Ok(pings.iter().map(|ping| updated.contains(&ping.app_id)).collect())
+    Ok(pings
+        .iter()
+        .map(|ping| updated.contains(&ping.app_id))
+        .collect())
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -415,7 +439,9 @@ mod tests {
 
     async fn setup() -> Pool {
         let pool = test_pool().await;
-        let user = upsert_google_user(&pool, "sub", "o@example.com", None, 1).await.unwrap();
+        let user = upsert_google_user(&pool, "sub", "o@example.com", None, 1)
+            .await
+            .unwrap();
         insert_test_app(&pool, "a", &user.id).await;
         pool
     }
@@ -446,7 +472,10 @@ mod tests {
         assert!(mark_overdue_down(&pool, 60_999).await.unwrap().is_empty());
         let down = mark_overdue_down(&pool, 61_000).await.unwrap();
         assert_eq!(down.len(), 1);
-        assert!(mark_overdue_down(&pool, 70_000).await.unwrap().is_empty(), "only once");
+        assert!(
+            mark_overdue_down(&pool, 70_000).await.unwrap().is_empty(),
+            "only once"
+        );
 
         record_ping(&pool, "a", 2, 80_000, 140_000).await.unwrap();
         assert_eq!(state(&pool, "a").await, ("up".into(), Some(140_000), 1));
@@ -458,7 +487,10 @@ mod tests {
     #[tokio::test]
     async fn paused_app_records_ping_without_deadline() {
         let pool = setup().await;
-        sqlx::query("UPDATE apps SET state = 'paused'").execute(&pool).await.unwrap();
+        sqlx::query("UPDATE apps SET state = 'paused'")
+            .execute(&pool)
+            .await
+            .unwrap();
         assert!(record_ping(&pool, "a", 1, 1_000, 61_000).await.unwrap());
         assert_eq!(state(&pool, "a").await, ("paused".into(), None, 0));
     }
@@ -466,15 +498,27 @@ mod tests {
     #[tokio::test]
     async fn record_pings_in_blocks() {
         let pool = setup().await;
-        let user = upsert_google_user(&pool, "sub2", "p@example.com", None, 1).await.unwrap();
+        let user = upsert_google_user(&pool, "sub2", "p@example.com", None, 1)
+            .await
+            .unwrap();
         let ids: Vec<String> = (0..1_201).map(|i| format!("b{i}")).collect();
         for id in &ids {
             insert_test_app(&pool, id, &user.id).await;
         }
         let pings = |ts: i64| -> Vec<PingRecord> {
             ids.iter()
-                .map(|id| PingRecord { app_id: id.clone(), signed_ts: ts, seen_at: ts * 1000, next_deadline_at: ts * 1000 + 60_000 })
-                .chain([PingRecord { app_id: "missing".into(), signed_ts: ts, seen_at: 0, next_deadline_at: 0 }])
+                .map(|id| PingRecord {
+                    app_id: id.clone(),
+                    signed_ts: ts,
+                    seen_at: ts * 1000,
+                    next_deadline_at: ts * 1000 + 60_000,
+                })
+                .chain([PingRecord {
+                    app_id: "missing".into(),
+                    signed_ts: ts,
+                    seen_at: 0,
+                    next_deadline_at: 0,
+                }])
                 .collect()
         };
         let accepted = record_pings(&pool, &pings(5)).await.unwrap();
@@ -483,6 +527,12 @@ mod tests {
         assert_eq!(state(&pool, "b1200").await, ("up".into(), Some(65_000), 0));
 
         // Same timestamp: none accepted.
-        assert!(record_pings(&pool, &pings(5)).await.unwrap().iter().all(|ok| !ok));
+        assert!(
+            record_pings(&pool, &pings(5))
+                .await
+                .unwrap()
+                .iter()
+                .all(|ok| !ok)
+        );
     }
 }

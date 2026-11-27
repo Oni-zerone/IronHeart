@@ -90,7 +90,10 @@ impl Auth {
     pub fn for_tests() -> Self {
         use openidconnect::{
             AuthUrl, EmptyAdditionalProviderMetadata, JsonWebKeySetUrl, ResponseTypes,
-            core::{CoreJsonWebKeySet, CoreJwsSigningAlgorithm, CoreResponseType, CoreSubjectIdentifierType},
+            core::{
+                CoreJsonWebKeySet, CoreJwsSigningAlgorithm, CoreResponseType,
+                CoreSubjectIdentifierType,
+            },
         };
         let metadata = CoreProviderMetadata::new(
             IssuerUrl::new("https://issuer.test".into()).unwrap(),
@@ -102,8 +105,11 @@ impl Auth {
             EmptyAdditionalProviderMetadata {},
         )
         .set_jwks(CoreJsonWebKeySet::new(vec![]));
-        let client = CoreClient::from_provider_metadata(metadata, ClientId::new("test".into()), None)
-            .set_redirect_uri(RedirectUrl::new("http://localhost/auth/google/callback".into()).unwrap());
+        let client =
+            CoreClient::from_provider_metadata(metadata, ClientId::new("test".into()), None)
+                .set_redirect_uri(
+                    RedirectUrl::new("http://localhost/auth/google/callback".into()).unwrap(),
+                );
         Self(Arc::new(AuthInner {
             client,
             http: reqwest::Client::new(),
@@ -158,7 +164,9 @@ async fn login(State(state): State<AppState>, jar: CookieJar) -> AppResult<Respo
     db::insert_oauth_flow(&state.db, csrf.secret(), &flow, now).await?;
 
     // Binds the login to this browser: the callback must arrive with the same `state`.
-    let mut cookie = state.auth.cookie(STATE_COOKIE, csrf.secret().clone(), "/auth");
+    let mut cookie = state
+        .auth
+        .cookie(STATE_COOKIE, csrf.secret().clone(), "/auth");
     cookie.set_max_age(time::Duration::milliseconds(LOGIN_TTL_MS));
     Ok((jar.add(cookie), Redirect::to(url.as_str())).into_response())
 }
@@ -227,7 +235,14 @@ async fn callback(
     };
 
     let token = hex::encode(rand::random::<[u8; 32]>());
-    db::insert_session(&state.db, &hash_token(&token), &user.id, now, now + SESSION_TTL_MS).await?;
+    db::insert_session(
+        &state.db,
+        &hash_token(&token),
+        &user.id,
+        now,
+        now + SESSION_TTL_MS,
+    )
+    .await?;
     db::delete_expired_sessions(&state.db, now).await?;
     tracing::info!(user_id = %user.id, "signed in");
 
@@ -242,7 +257,11 @@ struct GoogleIdentity {
     name: Option<String>,
 }
 
-async fn exchange(auth: &Auth, code: String, flow: db::OAuthFlow) -> anyhow::Result<GoogleIdentity> {
+async fn exchange(
+    auth: &Auth,
+    code: String,
+    flow: db::OAuthFlow,
+) -> anyhow::Result<GoogleIdentity> {
     let auth = &auth.0;
     let token = auth
         .client
@@ -250,17 +269,24 @@ async fn exchange(auth: &Auth, code: String, flow: db::OAuthFlow) -> anyhow::Res
         .set_pkce_verifier(PkceCodeVerifier::new(flow.pkce_verifier))
         .request_async(&auth.http)
         .await?;
-    let id_token = token.id_token().ok_or_else(|| anyhow!("Google did not return the ID token"))?;
+    let id_token = token
+        .id_token()
+        .ok_or_else(|| anyhow!("Google did not return the ID token"))?;
     let claims = id_token.claims(&auth.client.id_token_verifier(), &Nonce::new(flow.nonce))?;
 
     if claims.email_verified() != Some(true) {
         anyhow::bail!("email not verified by Google");
     }
-    let email = claims.email().ok_or_else(|| anyhow!("email missing from the ID token"))?;
+    let email = claims
+        .email()
+        .ok_or_else(|| anyhow!("email missing from the ID token"))?;
     Ok(GoogleIdentity {
         sub: claims.subject().to_string(),
         email: email.to_string(),
-        name: claims.name().and_then(|n| n.get(None)).map(|n| n.to_string()),
+        name: claims
+            .name()
+            .and_then(|n| n.get(None))
+            .map(|n| n.to_string()),
     })
 }
 
@@ -291,7 +317,8 @@ where
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let CurrentUser(user) = <CurrentUser as FromRequestParts<S>>::from_request_parts(parts, state).await?;
+        let CurrentUser(user) =
+            <CurrentUser as FromRequestParts<S>>::from_request_parts(parts, state).await?;
         let state = AppState::from_ref(state);
         if user.email == state.admin_email.as_ref() {
             Ok(Self(user))
@@ -312,8 +339,13 @@ where
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let CurrentUser(user) = <CurrentUser as FromRequestParts<S>>::from_request_parts(parts, state).await?;
-        if user.is_admin() { Ok(Self(user)) } else { Err(StatusCode::FORBIDDEN.into_response()) }
+        let CurrentUser(user) =
+            <CurrentUser as FromRequestParts<S>>::from_request_parts(parts, state).await?;
+        if user.is_admin() {
+            Ok(Self(user))
+        } else {
+            Err(StatusCode::FORBIDDEN.into_response())
+        }
     }
 }
 

@@ -78,7 +78,10 @@ async fn send(state: &AppState, target: &DuePing) -> Option<String> {
             return Some("Secret cannot be decrypted on this instance".into());
         }
     };
-    let ts = state.entanglement.next_timestamp(&target.id, now_ms() / 1000).to_string();
+    let ts = state
+        .entanglement
+        .next_timestamp(&target.id, now_ms() / 1000)
+        .to_string();
     let canonical = crypto::canonical_string(&target.key_id, &ts, &crypto::sha256_hex(b""));
     let signature = format!("v1={}", hex::encode(crypto::sign(&secret, &canonical)));
 
@@ -96,19 +99,24 @@ async fn send(state: &AppState, target: &DuePing) -> Option<String> {
         Ok(response) => Some(format!("HTTP response {}", response.status().as_u16())),
         Err(err) if err.is_timeout() => Some("Timed out".into()),
         Err(err) if err.is_connect() => Some("Connection failed".into()),
-        Err(err) => Some(format!("Request failed: {}", err.without_url()).chars().take(200).collect()),
+        Err(err) => Some(
+            format!("Request failed: {}", err.without_url())
+                .chars()
+                .take(200)
+                .collect(),
+        ),
     }
 }
 
-/// Recorded instead of sending while the email key is refused.
+/// Recorded instead of sending while no alert channel reaches the master.
 pub const HELD_ERROR: &str =
-    "Held: the email provider refused this instance's key, alerts cannot be sent";
+    "Held: no alert channel of this instance works (email or Telegram), alerts cannot be sent";
 
 async fn send_and_record(state: &AppState, target: &DuePing) -> anyhow::Result<()> {
-    // Without working email this instance cannot alert anyone: stopping the
-    // pings lets the other instances see it go down and alert in its place.
-    // Not logged per ping: `mail_check` already logged the refusal.
-    let error = if state.mail_key.rejected() {
+    // Without a working alert channel this instance cannot alert anyone:
+    // stopping the pings lets the other instances see it go down and alert in
+    // its place. Not logged per ping: `channels` logs the change.
+    let error = if crate::channels::held(state).await? {
         Some(HELD_ERROR.to_owned())
     } else {
         let error = send(state, target).await;
@@ -123,8 +131,9 @@ async fn send_and_record(state: &AppState, target: &DuePing) -> anyhow::Result<(
 
 pub fn spawn(state: AppState) {
     tokio::spawn(async move {
-        // Pings stop if the email key is refused: know that before the first one.
+        // Pings stop when no alert channel works: know that before the first one.
         state.mail_key.first_check().await;
+        state.telegram.health.first_check().await;
         if let Err(err) = db::ping_all_now(&state.db, now_ms()).await {
             tracing::error!(err = ?err, "entanglement: startup failed");
         }
@@ -156,7 +165,10 @@ pub fn spawn(state: AppState) {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/entanglements", get(list).post(create))
-        .route("/api/entanglements/{id}", axum::routing::patch(update).delete(remove))
+        .route(
+            "/api/entanglements/{id}",
+            axum::routing::patch(update).delete(remove),
+        )
         .route("/api/entanglements/{id}/ping", post(ping_now))
 }
 
@@ -210,14 +222,21 @@ async fn create(
     db::insert_entanglement(
         &state.db,
         &id,
-        &EntanglementInput { name: &name, base_url: &base_url, interval_secs: input.interval_secs, enabled: input.enabled },
+        &EntanglementInput {
+            name: &name,
+            base_url: &base_url,
+            interval_secs: input.interval_secs,
+            enabled: input.enabled,
+        },
         &key_id,
         &secret_box.seal(secret.as_bytes(), &secret_aad(&id)),
         secret_box.version,
         now_ms(),
     )
     .await?;
-    let created = db::get_entanglement(&state.db, &id).await?.ok_or(ApiError::NotFound)?;
+    let created = db::get_entanglement(&state.db, &id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
     Ok((StatusCode::CREATED, Json(created)))
 }
 
@@ -238,7 +257,9 @@ async fn update(
     Path(id): Path<String>,
     Json(input): Json<UpdateInput>,
 ) -> ApiResult<Json<db::Entanglement>> {
-    let current = db::get_entanglement(&state.db, &id).await?.ok_or(ApiError::NotFound)?;
+    let current = db::get_entanglement(&state.db, &id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
     let name = match &input.name {
         Some(name) => validate_name(name)?,
         None => current.name,
@@ -256,9 +277,12 @@ async fn update(
     };
 
     let secret_box = state.heartbeat.secret_box();
-    let sealed = credentials
-        .as_ref()
-        .map(|(key_id, secret)| (key_id.as_str(), secret_box.seal(secret.as_bytes(), &secret_aad(&id))));
+    let sealed = credentials.as_ref().map(|(key_id, secret)| {
+        (
+            key_id.as_str(),
+            secret_box.seal(secret.as_bytes(), &secret_aad(&id)),
+        )
+    });
     db::update_entanglement(
         &state.db,
         &id,
@@ -268,11 +292,17 @@ async fn update(
             interval_secs,
             enabled: input.enabled.unwrap_or(current.enabled.0),
         },
-        sealed.as_ref().map(|(key_id, enc)| (*key_id, enc.as_slice(), secret_box.version)),
+        sealed
+            .as_ref()
+            .map(|(key_id, enc)| (*key_id, enc.as_slice(), secret_box.version)),
         now_ms(),
     )
     .await?;
-    Ok(Json(db::get_entanglement(&state.db, &id).await?.ok_or(ApiError::NotFound)?))
+    Ok(Json(
+        db::get_entanglement(&state.db, &id)
+            .await?
+            .ok_or(ApiError::NotFound)?,
+    ))
 }
 
 async fn remove(
@@ -283,7 +313,12 @@ async fn remove(
     if !db::delete_entanglement(&state.db, &id).await? {
         return Err(ApiError::NotFound);
     }
-    state.entanglement.last_ts.lock().expect("timestamp lock").remove(&id);
+    state
+        .entanglement
+        .last_ts
+        .lock()
+        .expect("timestamp lock")
+        .remove(&id);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -293,9 +328,15 @@ async fn ping_now(
     _: MasterUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<db::Entanglement>> {
-    let target = db::ping_target(&state.db, &id).await?.ok_or(ApiError::NotFound)?;
+    let target = db::ping_target(&state.db, &id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
     send_and_record(&state, &target).await?;
-    Ok(Json(db::get_entanglement(&state.db, &id).await?.ok_or(ApiError::NotFound)?))
+    Ok(Json(
+        db::get_entanglement(&state.db, &id)
+            .await?
+            .ok_or(ApiError::NotFound)?,
+    ))
 }
 
 fn validate_name(name: &str) -> ApiResult<String> {
@@ -315,7 +356,8 @@ fn validate_interval(interval_secs: i64) -> ApiResult<()> {
 
 fn validate_credentials(key_id: &str, secret: &str) -> ApiResult<(String, String)> {
     let (key_id, secret) = (key_id.trim(), secret.trim());
-    if key_id.is_empty() || key_id.len() > 64 || !key_id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+    if key_id.is_empty() || key_id.len() > 64 || !key_id.bytes().all(|b| b.is_ascii_alphanumeric())
+    {
         return invalid("Invalid key ID.");
     }
     if secret.is_empty() || secret.len() > 200 || !secret.is_ascii() {
@@ -335,7 +377,11 @@ fn normalize_base_url(raw: &str) -> ApiResult<String> {
         "http" if local => {}
         _ => return invalid("The address must use HTTPS (HTTP only for localhost)."),
     }
-    if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
         return invalid("The address cannot contain credentials, a query or a fragment.");
     }
     if !matches!(url.path(), "" | "/") {
@@ -352,37 +398,91 @@ mod tests {
     fn base_url_is_reduced_to_origin() {
         let ok = |raw| normalize_base_url(raw).ok().unwrap();
         assert_eq!(ok("https://hb.example.com/"), "https://hb.example.com");
-        assert_eq!(ok(" https://hb.example.com:8443 "), "https://hb.example.com:8443");
+        assert_eq!(
+            ok(" https://hb.example.com:8443 "),
+            "https://hb.example.com:8443"
+        );
         assert_eq!(ok("http://localhost:8081"), "http://localhost:8081");
-        for bad in ["http://hb.example.com", "ftp://x", "https://u:p@hb.example.com", "https://hb.example.com/api", "https://hb.example.com/?a=1", "nope"] {
+        for bad in [
+            "http://hb.example.com",
+            "ftp://x",
+            "https://u:p@hb.example.com",
+            "https://hb.example.com/api",
+            "https://hb.example.com/?a=1",
+            "nope",
+        ] {
             assert!(normalize_base_url(bad).is_err(), "{bad}");
         }
     }
 
-    /// With the email key refused nothing is sent: the link records the hold.
+    /// With the only channel (email) refused nothing is sent: the link records the hold.
     #[tokio::test]
     async fn pings_are_held_while_the_mail_key_is_rejected() {
         use std::sync::Arc;
 
-        use crate::{heartbeat, mail_check::{KeyStatus, REJECTED}};
+        use crate::{
+            heartbeat,
+            mail_check::{KeyMonitor, KeyStatus, REJECTED},
+        };
 
         let pool = db::test_pool().await;
         let secret_box = crypto::SecretBox::new(&[1; 32], 1);
-        let hb = Arc::new(heartbeat::Heartbeat::load(&pool, secret_box, None).await.unwrap());
-        let state = crate::test_state(pool, hb);
+        let hb = Arc::new(
+            heartbeat::Heartbeat::load(&pool, secret_box, None)
+                .await
+                .unwrap(),
+        );
+        let mut state = crate::test_state(pool, hb);
+        state.mail_key = Arc::new(KeyMonitor::new(true));
         let id = Uuid::now_v7().to_string();
-        let secret_enc = state.heartbeat.secret_box().seal(b"ihs_secret", &secret_aad(&id));
+        let secret_enc = state
+            .heartbeat
+            .secret_box()
+            .seal(b"ihs_secret", &secret_aad(&id));
         // Closed port: a real send would fail with "Connection failed".
-        let input = EntanglementInput { name: "peer", base_url: "http://127.0.0.1:9", interval_secs: 60, enabled: true };
-        db::insert_entanglement(&state.db, &id, &input, "abcdefghijkl", &secret_enc, 1, now_ms()).await.unwrap();
+        let input = EntanglementInput {
+            name: "peer",
+            base_url: "http://127.0.0.1:9",
+            interval_secs: 60,
+            enabled: true,
+        };
+        db::insert_entanglement(
+            &state.db,
+            &id,
+            &input,
+            "abcdefghijkl",
+            &secret_enc,
+            1,
+            now_ms(),
+        )
+        .await
+        .unwrap();
         let target = db::ping_target(&state.db, &id).await.unwrap().unwrap();
-        let last_error = || async { db::get_entanglement(&state.db, &id).await.unwrap().unwrap().last_error };
+        let last_error = || async {
+            db::get_entanglement(&state.db, &id)
+                .await
+                .unwrap()
+                .unwrap()
+                .last_error
+        };
 
-        state.mail_key.set(KeyStatus { provider: "Resend", state: REJECTED, checked_at: 1, error: None });
+        state.mail_key.set(KeyStatus {
+            provider: "Resend",
+            state: REJECTED,
+            checked_at: 1,
+            error: None,
+            failing_since: None,
+        });
         send_and_record(&state, &target).await.unwrap();
         assert_eq!(last_error().await.as_deref(), Some(HELD_ERROR));
 
-        state.mail_key.set(KeyStatus { provider: "Resend", state: "ok", checked_at: 2, error: None });
+        state.mail_key.set(KeyStatus {
+            provider: "Resend",
+            state: "ok",
+            checked_at: 2,
+            error: None,
+            failing_since: None,
+        });
         send_and_record(&state, &target).await.unwrap();
         assert_eq!(last_error().await.as_deref(), Some("Connection failed"));
     }

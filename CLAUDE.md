@@ -1,6 +1,6 @@
 # IronHeart
 
-Lightweight heartbeat service. Users sign in with Google and register their applications, each with an API key. If an application does not call the heartbeat endpoint within the expected interval (plus the grace period), an email goes to the account's address.
+Lightweight heartbeat service. Users sign in with Google and register their applications, each with an API key. If an application does not call the heartbeat endpoint within the expected interval (plus the grace period), an alert goes to the account's address by email and/or to its linked Telegram chats.
 
 ## Language
 
@@ -78,12 +78,30 @@ The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) 
 - This instance sends heartbeats to other IronHeart instances (`entanglements`), so they monitor each other. Only the master configures it (`MasterUser`, API `/api/entanglements`, page `/entanglement`); it is an instance setting, not a user setting.
 - Each link: origin of the other instance (HTTPS, HTTP only to localhost, no path), key ID and secret of an app created there, interval from 10 seconds to 1 day, active or paused. The secret is encrypted with `SECRETS_KEY` (associated data `entanglement:<id>`) and is never returned to the client.
 - `entanglement::spawn`: every 5 seconds sends the pings that are due (`take_due_pings` moves the deadline forward immediately); at startup every active link sends a ping. The timestamp always increases per link, even with "Send now" in the same second. Redirects are not followed, 10-second timeout.
-- While this instance's email key is refused (`mail_check`, any provider), pings are not sent and the link records `HELD_ERROR` as its error: the other instances see this one go down and alert with their own email. At startup the first ping waits for the first key check.
+- While no alert channel reaches the master (`channels::held`, see "Alert channels"), pings are not sent and the link records `HELD_ERROR` as its error: the other instances see this one go down and alert with their own channels. At startup the first ping waits for the first email and Telegram checks.
 - The other instance always answers 204: here we only record whether the ping was delivered (`last_success_at`, `last_error`). A wrong key is reported by the other instance as invalid attempts.
+
+## Telegram
+
+- One bot per instance (`TELEGRAM_BOT_TOKEN`), module `telegram/`. The token is checked with `getMe` like an email key (`Telegram::health`, a `mail_check::KeyMonitor`): at startup (with backoff until the first answer), then daily, hourly while it fails. When it starts working: `deleteWebhook`, `setMyCommands` (`bot::COMMANDS`); long polling with `getUpdates` runs only while the bot is active. A 401/404, also during polling, marks the token refused; polling network errors start an outage.
+- **Visibility**: token missing or empty → Telegram does not exist (`alerts.telegram` absent, no nav link, no page). Token set → `/telegram` is in the nav; while the bot is not active (refused, or never answered) the page shows only the error and `/api/me/telegram*` answers 404. `/api/me` includes `telegram: { bot_username }` only while the bot is active.
+- The token is in the Bot API URL: log request errors with `without_url()`, never the URL.
+- Linking: `POST /api/me/telegram/link` creates a token (single use, 10 minutes, SHA-256 in `telegram_link_tokens`) and the deep link `t.me/<bot>?start=<token>`; `/start <token>` consumes it and stores the chat in `telegram_links`. A chat belongs to one account (`chat_id` unique), an account can have several chats. Only private chats.
+- Alerts follow the email recipients: the monitor maps each recipient email to the linked chats of the account with that email (`db::telegram_routes`, one query per round, only when there is something to send) and queues a Telegram message next to the email (`outbox::Message`). 403 or "chat not found" disables the link (`disabled_at`); the next message from the chat enables it again.
+- Commands (`telegram::bot`) are scoped to the account's `user_id` in the queries; a chat that is not linked learns nothing. `/pause` and `/resume` ask for confirmation with an inline button and go through `apps::set_paused` (database and in-memory registry). At most 20 commands per chat per minute.
+- Texts are plain text (no parse mode), in English, built in `telegram::text` (alerts) and `telegram::bot` (commands).
+
+## Alert channels
+
+- Module `channels`. Mode from the configuration: `mail+telegram`, `mail` (no Telegram token), `telegram` (`MAIL_TRANSPORT=none`; without a Telegram token the startup fails). With email off nothing is queued by email, the invite email is skipped, `/api/me/test-email` answers 404, and creating an app requires a linked Telegram chat.
+- Health per channel (`mail_check::Health`): `checking`, `ok`, `unreachable` (network error, less than an hour, tracked by `failing_since`), `unverified` (SMTP without login), `broken` (key refused, or unreachable for over an hour). An alert email that fails asks for an early key check (`KeyMonitor::recheck_soon`).
+- **Hold rule** (`Reach::held`, tested): the entanglement pings stop when no channel reaches the master and at least one is broken. Email reaches the master if it is not broken and not unverified; Telegram only with at least one active chat of the master. SMTP without login never holds by itself.
+- When a channel becomes broken or works again, the master is told once on the other channels that are not broken (SMTP without login included), through the outbox. State in memory, checked every minute: after a restart with a broken channel the notice goes out again.
+- `/api/me` → `alerts` (`channels::Status`) for every user: mode, health of each configured channel, whether the user has a linked chat, and for the master whether the pings are held. The main page shows it (`AlertChannels.vue`).
 
 ## Email
 
-- `MAIL_TRANSPORT` picks the provider: `brevo`, `resend`, `postmark`, `mailgun`, `scaleway` (HTTP APIs through `reqwest`) or `smtp` (default, `lettre`). No SDKs. Sender: `MAIL_FROM_EMAIL` and `MAIL_FROM_NAME`, to be verified with the provider. The variables of each provider are in `.env.example`.
+- `MAIL_TRANSPORT` picks the provider: `brevo`, `resend`, `postmark`, `mailgun`, `scaleway` (HTTP APIs through `reqwest`), `smtp` (default, `lettre`) or `none` (email off, see "Alert channels"). No SDKs. Sender: `MAIL_FROM_EMAIL` and `MAIL_FROM_NAME`, to be verified with the provider. The variables of each provider are in `.env.example`.
 - Code in `server/src/mail/`: `mod.rs` (`Mailer`, `Email`, the `Transport` enum, `check` for HTTP responses: 2xx or an error with status and truncated body), one file per provider. No trait, a `match`. Configuration in `config::MailConfig::from_vars` (pure function, with tests): a missing variable or an unknown transport stops the startup with the variable's name. The log names only the provider, never the credentials.
 - `smtp` is the fallback for every other provider: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`/`SMTP_PASSWORD` (both or neither), `SMTP_TLS` = `none` | `starttls` | `tls` (rustls, like `reqwest`; no OpenSSL). Without `SMTP_TLS`: `tls` with `SMTP_PORT=465`, `none` towards `localhost`/`127.0.0.1`/`::1`/`mailpit`, otherwise `starttls`; default port 1025, 587 or 465. Credentials without TLS towards a non-local host: the startup fails. Values are trimmed, except `SMTP_PASSWORD`; environment variables that are not UTF-8 are skipped. Mailpit works with no configuration.
 - The HTTP APIs also work where outgoing SMTP is blocked (some DigitalOcean accounts). One HTTP client with a 15-second timeout; in tests the base URL points to an axum server on `127.0.0.1`.
@@ -123,7 +141,7 @@ Rules that must not be broken:
 2. Moves `up` apps past their deadline to `down` (atomically) and alerts; the email mentions the invalid attempts since the last signal.
 3. Sends the recovery emails (`recovery_pending`, set by the ping that brings the app back `up`).
 4. Failed-attempt summaries per app: at rest the first one goes out immediately, then windows of 5, 10, 20, 40, 80, 120 minutes; a window with attempts produces a summary and moves up a level, one without attempts moves down a level (never straight back to rest, to prevent bursts of emails). Logic in `monitor::escalate`, with tests.
-5. Cleans up attempts older than 7 days, expired sessions and abandoned logins.
+5. Cleans up attempts older than 7 days, expired sessions, abandoned logins and expired Telegram link tokens.
 
 At startup, deadlines that have already passed restart from now (`reschedule_overdue`). The state is saved before sending the email: a failed send is not retried.
 

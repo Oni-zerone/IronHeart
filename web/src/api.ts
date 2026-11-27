@@ -13,6 +13,27 @@ export interface User {
   database?: DatabaseInfo
   /** Master only, when the email transport has a key: last check (startup, then daily). */
   mail_key?: MailKeyStatus
+  /** Present only while the instance's Telegram bot is active (valid token). */
+  telegram?: { bot_username: string }
+  /** Alert channels of the instance and their state. */
+  alerts: AlertChannels
+}
+
+/**
+ * `unreachable`: network error for less than an hour. `unverified`: SMTP without
+ * login, nothing to check. `broken`: key refused, or unreachable for over an hour.
+ */
+export type ChannelHealth = 'checking' | 'ok' | 'unreachable' | 'unverified' | 'broken'
+
+export interface AlertChannels {
+  mode: 'mail+telegram' | 'mail' | 'telegram'
+  /** Absent when email is off (`MAIL_TRANSPORT=none`). */
+  mail?: ChannelHealth
+  /** Absent without a Telegram token. */
+  telegram?: ChannelHealth
+  telegram_linked: boolean
+  /** Master only: no channel works, the entanglement pings are held. */
+  held?: boolean
 }
 
 export interface MailKeyStatus {
@@ -193,6 +214,27 @@ export const deleteEntanglement = (id: string) =>
   request<void>(`/api/entanglements/${id}`, { method: 'DELETE' })
 export const pingEntanglement = (id: string) =>
   request<Entanglement>(`/api/entanglements/${id}/ping`, { method: 'POST' })
+
+export interface TelegramLink {
+  id: string
+  /** "@username" or first name. */
+  label: string
+  created_at: number
+  /** Telegram refused delivery (bot blocked): no alerts until the chat writes again. */
+  disabled_at: number | null
+}
+
+export interface TelegramOverview {
+  bot_username: string
+  bot_url: string
+  links: TelegramLink[]
+}
+
+export const getTelegram = () => request<TelegramOverview>('/api/me/telegram')
+export const createTelegramLink = () =>
+  request<{ url: string; expires_at: number }>('/api/me/telegram/link', { method: 'POST' })
+export const sendTelegramTest = () => request<void>('/api/me/telegram/test', { method: 'POST' })
+export const deleteTelegramLink = (id: string) => request<void>(`/api/me/telegram/${id}`, { method: 'DELETE' })
 
 /** Login is a full navigation: it goes through Google and comes back with the cookie. */
 export const LOGIN_URL = '/auth/google/login'

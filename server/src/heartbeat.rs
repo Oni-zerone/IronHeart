@@ -81,8 +81,15 @@ pub struct Heartbeat {
 }
 
 pub enum Outcome {
-    Valid { app_id: String, signed_ts: i64, deadline_after_ms: i64 },
-    Rejected { app_id: String, reason: Reason },
+    Valid {
+        app_id: String,
+        signed_ts: i64,
+        deadline_after_ms: i64,
+    },
+    Rejected {
+        app_id: String,
+        reason: Reason,
+    },
     Unattributed,
 }
 
@@ -118,7 +125,9 @@ impl Heartbeat {
     }
 
     fn insert_row(&self, row: KeyRow) -> anyhow::Result<()> {
-        let secret = self.secret_box.open(&row.secret_enc, row.secret_key_version, &row.id)?;
+        let secret = self
+            .secret_box
+            .open(&row.secret_enc, row.secret_key_version, &row.id)?;
         let entry = Arc::new(KeyEntry {
             app_id: row.id.clone(),
             secret,
@@ -154,7 +163,11 @@ impl Heartbeat {
 
     pub fn set_timing(&self, app_id: &str, interval_secs: i64, grace_secs: i64) {
         let keys = self.keys.read().expect("keys lock");
-        if let Some(entry) = keys.key_id_by_app.get(app_id).and_then(|k| keys.by_key_id.get(k)) {
+        if let Some(entry) = keys
+            .key_id_by_app
+            .get(app_id)
+            .and_then(|k| keys.by_key_id.get(k))
+        {
             entry.interval_secs.store(interval_secs, Ordering::Relaxed);
             entry.grace_secs.store(grace_secs, Ordering::Relaxed);
         }
@@ -172,9 +185,17 @@ impl Heartbeat {
     ) -> Outcome {
         let key_id = key_id.unwrap_or("");
         let timestamp = timestamp.unwrap_or("");
-        let entry = self.keys.read().expect("keys lock").by_key_id.get(key_id).cloned();
+        let entry = self
+            .keys
+            .read()
+            .expect("keys lock")
+            .by_key_id
+            .get(key_id)
+            .cloned();
 
-        let secret = entry.as_ref().map_or(self.dummy_secret.as_slice(), |e| e.secret.as_slice());
+        let secret = entry
+            .as_ref()
+            .map_or(self.dummy_secret.as_slice(), |e| e.secret.as_slice());
         let body_hash = crypto::sha256_hex(body.unwrap_or_default());
         let canonical = crypto::canonical_string(key_id, timestamp, &body_hash);
         let signature = parse_signature(signature).unwrap_or([0; 32]);
@@ -183,7 +204,10 @@ impl Heartbeat {
         let Some(entry) = entry else {
             return Outcome::Unattributed;
         };
-        let rejected = |reason| Outcome::Rejected { app_id: entry.app_id.clone(), reason };
+        let rejected = |reason| Outcome::Rejected {
+            app_id: entry.app_id.clone(),
+            reason,
+        };
         if !signature_ok {
             return rejected(Reason::BadSignature);
         }
@@ -197,15 +221,23 @@ impl Heartbeat {
         if entry.last_signed_ts.fetch_max(signed_ts, Ordering::SeqCst) >= signed_ts {
             return rejected(Reason::Replay);
         }
-        let window = entry.interval_secs.load(Ordering::Relaxed) + entry.grace_secs.load(Ordering::Relaxed);
-        Outcome::Valid { app_id: entry.app_id.clone(), signed_ts, deadline_after_ms: window * 1000 }
+        let window =
+            entry.interval_secs.load(Ordering::Relaxed) + entry.grace_secs.load(Ordering::Relaxed);
+        Outcome::Valid {
+            app_id: entry.app_id.clone(),
+            signed_ts,
+            deadline_after_ms: window * 1000,
+        }
     }
 
     pub fn record_failure(&self, app_id: &str, reason: Reason, ip: Option<String>, now: i64) {
         let mut failures = self.failures.lock().expect("failures lock");
         let pending = failures
             .entry(app_id.to_owned())
-            .or_insert_with(|| PendingFailures { since: now, counts: FailureCounts::default() });
+            .or_insert_with(|| PendingFailures {
+                since: now,
+                counts: FailureCounts::default(),
+            });
         let counts = &mut pending.counts;
         match reason {
             Reason::BadSignature => counts.bad_signature += 1,
@@ -223,7 +255,10 @@ impl Heartbeat {
     /// Attempts accumulated since the last call: (app, period start, counts).
     pub fn take_failures(&self) -> Vec<(String, i64, FailureCounts)> {
         let failures = std::mem::take(&mut *self.failures.lock().expect("failures lock"));
-        failures.into_iter().map(|(app, p)| (app, p.since, p.counts)).collect()
+        failures
+            .into_iter()
+            .map(|(app, p)| (app, p.since, p.counts))
+            .collect()
     }
 
     fn queue_ping(&self, ping: PingRecord) {
@@ -240,7 +275,9 @@ impl Heartbeat {
     /// rejects (timestamp not new) are counted as replays.
     pub async fn flush_pings(&self, pool: &db::Pool) -> anyhow::Result<usize> {
         let pings: Vec<PingRecord> =
-            std::mem::take(&mut *self.pending_pings.lock().expect("pings lock")).into_values().collect();
+            std::mem::take(&mut *self.pending_pings.lock().expect("pings lock"))
+                .into_values()
+                .collect();
         if pings.is_empty() {
             return Ok(0);
         }
@@ -266,7 +303,10 @@ impl Heartbeat {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.rsplit(',').next())
                 .map(|ip| ip.trim().to_owned()),
-            Some(name) => headers.get(name).and_then(|v| v.to_str().ok()).map(|v| v.trim().to_owned()),
+            Some(name) => headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.trim().to_owned()),
             None => peer.map(|p| p.ip().to_string()),
         }
         .filter(|ip| !ip.is_empty() && ip.len() <= 64)
@@ -300,8 +340,13 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 
 pub async fn handler(State(state): State<AppState>, request: Request) -> StatusCode {
     let (parts, body) = request.into_parts();
-    let peer = parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|c| c.0);
-    let body = axum::body::to_bytes(Body::new(body), MAX_BODY_BYTES).await.ok();
+    let peer = parts
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0);
+    let body = axum::body::to_bytes(Body::new(body), MAX_BODY_BYTES)
+        .await
+        .ok();
 
     let heartbeat = &state.heartbeat;
     let now = now_ms();
@@ -313,7 +358,11 @@ pub async fn handler(State(state): State<AppState>, request: Request) -> StatusC
         now / 1000,
     );
     match outcome {
-        Outcome::Valid { app_id, signed_ts, deadline_after_ms } => {
+        Outcome::Valid {
+            app_id,
+            signed_ts,
+            deadline_after_ms,
+        } => {
             // Memory only: a valid ping must not be answered more slowly than a forged one.
             heartbeat.queue_ping(PingRecord {
                 app_id,
@@ -336,7 +385,7 @@ pub async fn handler(State(state): State<AppState>, request: Request) -> StatusC
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{insert_app, test_pool, upsert_google_user, NewApp};
+    use crate::db::{NewApp, insert_app, test_pool, upsert_google_user};
 
     const NOW: i64 = 1_764_000_000;
 
@@ -347,7 +396,9 @@ mod tests {
 
     async fn setup_with_pool() -> (Heartbeat, String, db::Pool) {
         let pool = test_pool().await;
-        let user = upsert_google_user(&pool, "sub", "o@example.com", None, 1).await.unwrap();
+        let user = upsert_google_user(&pool, "sub", "o@example.com", None, 1)
+            .await
+            .unwrap();
         let secret_box = SecretBox::new(&[1; 32], 1);
         let secret = "ihs_segreto".to_owned();
         insert_app(
@@ -367,12 +418,19 @@ mod tests {
         )
         .await
         .unwrap();
-        (Heartbeat::load(&pool, secret_box, None).await.unwrap(), secret, pool)
+        (
+            Heartbeat::load(&pool, secret_box, None).await.unwrap(),
+            secret,
+            pool,
+        )
     }
 
     fn signed(secret: &str, ts: i64, body: &[u8]) -> String {
         let canonical = crypto::canonical_string("key", &ts.to_string(), &crypto::sha256_hex(body));
-        format!("v1={}", hex::encode(crypto::sign(secret.as_bytes(), &canonical)))
+        format!(
+            "v1={}",
+            hex::encode(crypto::sign(secret.as_bytes(), &canonical))
+        )
     }
 
     fn check(hb: &Heartbeat, key: &str, ts: i64, sig: &str) -> Outcome {
@@ -391,32 +449,63 @@ mod tests {
         let (hb, secret) = setup().await;
         let sig = signed(&secret, NOW, b"");
         match check(&hb, "key", NOW, &sig) {
-            Outcome::Valid { app_id, signed_ts, deadline_after_ms } => {
-                assert_eq!((app_id.as_str(), signed_ts, deadline_after_ms), ("app", NOW, 90_000));
+            Outcome::Valid {
+                app_id,
+                signed_ts,
+                deadline_after_ms,
+            } => {
+                assert_eq!(
+                    (app_id.as_str(), signed_ts, deadline_after_ms),
+                    ("app", NOW, 90_000)
+                );
             }
             _ => panic!("expected valid"),
         }
         assert_eq!(reason(check(&hb, "key", NOW, &sig)), Some(Reason::Replay));
         let older = signed(&secret, NOW - 1, b"");
-        assert_eq!(reason(check(&hb, "key", NOW - 1, &older)), Some(Reason::Replay));
+        assert_eq!(
+            reason(check(&hb, "key", NOW - 1, &older)),
+            Some(Reason::Replay)
+        );
         let newer = signed(&secret, NOW + 1, b"");
-        assert!(matches!(check(&hb, "key", NOW + 1, &newer), Outcome::Valid { .. }));
+        assert!(matches!(
+            check(&hb, "key", NOW + 1, &newer),
+            Outcome::Valid { .. }
+        ));
     }
 
     #[tokio::test]
     async fn rejections_are_classified() {
         let (hb, secret) = setup().await;
-        assert_eq!(reason(check(&hb, "key", NOW, &signed("ihs_altro", NOW, b""))), Some(Reason::BadSignature));
-        assert_eq!(reason(check(&hb, "key", NOW, "v1=zz")), Some(Reason::BadSignature));
+        assert_eq!(
+            reason(check(&hb, "key", NOW, &signed("ihs_altro", NOW, b""))),
+            Some(Reason::BadSignature)
+        );
+        assert_eq!(
+            reason(check(&hb, "key", NOW, "v1=zz")),
+            Some(Reason::BadSignature)
+        );
         let late = NOW - MAX_CLOCK_SKEW_SECS - 1;
-        assert_eq!(reason(check(&hb, "key", late, &signed(&secret, late, b""))), Some(Reason::ClockSkew));
+        assert_eq!(
+            reason(check(&hb, "key", late, &signed(&secret, late, b""))),
+            Some(Reason::ClockSkew)
+        );
         // Body different from the signed one, or too large (None).
         let sig = signed(&secret, NOW, b"");
-        let tampered = hb.check(Some("key"), Some(&NOW.to_string()), Some(&sig), Some(b"x"), NOW);
+        let tampered = hb.check(
+            Some("key"),
+            Some(&NOW.to_string()),
+            Some(&sig),
+            Some(b"x"),
+            NOW,
+        );
         assert_eq!(reason(tampered), Some(Reason::BadSignature));
         let too_big = hb.check(Some("key"), Some(&NOW.to_string()), Some(&sig), None, NOW);
         assert_eq!(reason(too_big), Some(Reason::BadSignature));
-        assert!(matches!(check(&hb, "sconosciuta", NOW, &sig), Outcome::Unattributed));
+        assert!(matches!(
+            check(&hb, "sconosciuta", NOW, &sig),
+            Outcome::Unattributed
+        ));
     }
 
     #[tokio::test]
@@ -430,23 +519,41 @@ mod tests {
             .unwrap();
         hb.refresh_app(&pool, "app").await.unwrap();
 
-        assert!(matches!(check(&hb, "key", NOW, &signed(&secret, NOW, b"")), Outcome::Unattributed));
-        let canonical = crypto::canonical_string("key2", &NOW.to_string(), &crypto::sha256_hex(b""));
+        assert!(matches!(
+            check(&hb, "key", NOW, &signed(&secret, NOW, b"")),
+            Outcome::Unattributed
+        ));
+        let canonical =
+            crypto::canonical_string("key2", &NOW.to_string(), &crypto::sha256_hex(b""));
         let sig = format!("v1={}", hex::encode(crypto::sign(b"ihs_new", &canonical)));
-        assert!(matches!(check(&hb, "key2", NOW, &sig), Outcome::Valid { .. }));
+        assert!(matches!(
+            check(&hb, "key2", NOW, &sig),
+            Outcome::Valid { .. }
+        ));
 
         hb.remove_app("app");
-        assert!(matches!(check(&hb, "key2", NOW + 1, &sig), Outcome::Unattributed));
+        assert!(matches!(
+            check(&hb, "key2", NOW + 1, &sig),
+            Outcome::Unattributed
+        ));
     }
 
     #[tokio::test]
     async fn queued_pings_keep_the_latest_and_flush_in_one_go() {
         let (hb, _, pool) = setup_with_pool().await;
-        let ping = |ts| PingRecord { app_id: "app".into(), signed_ts: ts, seen_at: ts * 1000, next_deadline_at: ts * 1000 + 90_000 };
+        let ping = |ts| PingRecord {
+            app_id: "app".into(),
+            signed_ts: ts,
+            seen_at: ts * 1000,
+            next_deadline_at: ts * 1000 + 90_000,
+        };
         hb.queue_ping(ping(NOW + 1));
         hb.queue_ping(ping(NOW));
         assert_eq!(hb.flush_pings(&pool).await.unwrap(), 1);
-        let (ts,): (i64,) = sqlx::query_as("SELECT last_signed_ts FROM apps").fetch_one(&pool).await.unwrap();
+        let (ts,): (i64,) = sqlx::query_as("SELECT last_signed_ts FROM apps")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(ts, NOW + 1);
         assert_eq!(hb.flush_pings(&pool).await.unwrap(), 0);
 

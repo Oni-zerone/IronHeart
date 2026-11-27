@@ -52,6 +52,7 @@ const mailKey = computed(() => {
       <template v-if="currentUser">
         <nav class="links" aria-label="Main menu">
           <RouterLink :to="{ name: 'apps' }">/apps</RouterLink>
+          <RouterLink v-if="currentUser.alerts.telegram" :to="{ name: 'telegram' }">/telegram</RouterLink>
           <RouterLink v-if="currentUser.role === 'admin'" :to="{ name: 'users' }">/users</RouterLink>
           <RouterLink v-if="currentUser.is_master" :to="{ name: 'entanglement' }">/entanglement</RouterLink>
         </nav>

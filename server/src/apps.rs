@@ -42,10 +42,11 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self {
             Self::NotFound => StatusCode::NOT_FOUND.into_response(),
-            Self::Invalid(message) => {
-                (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({ "error": message })))
-                    .into_response()
-            }
+            Self::Invalid(message) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "error": message })),
+            )
+                .into_response(),
             Self::Internal(err) => crate::error::AppError::from(err).into_response(),
         }
     }
@@ -92,14 +93,20 @@ struct WithCredentials<T: Serialize> {
     credentials: Credentials,
 }
 
-async fn list(State(state): State<AppState>, CurrentUser(user): CurrentUser) -> ApiResult<Json<Vec<AppView>>> {
+async fn list(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+) -> ApiResult<Json<Vec<AppView>>> {
     let apps = db::list_apps(&state.db, &user.id).await?;
     let mut recipients: HashMap<String, Vec<String>> = HashMap::new();
     for (app_id, email) in db::configured_recipients(&state.db, &user.id).await? {
         recipients.entry(app_id).or_default().push(email);
     }
     let failures: HashMap<String, i64> =
-        db::failure_totals_for_user(&state.db, &user.id, now_ms() - DAY_MS).await?.into_iter().collect();
+        db::failure_totals_for_user(&state.db, &user.id, now_ms() - DAY_MS)
+            .await?
+            .into_iter()
+            .collect();
     Ok(Json(
         apps.into_iter()
             .map(|app| AppView {
@@ -112,7 +119,9 @@ async fn list(State(state): State<AppState>, CurrentUser(user): CurrentUser) -> 
 }
 
 async fn load_view(state: &AppState, user_id: &str, app_id: &str) -> ApiResult<AppDetail> {
-    let app = db::get_app(&state.db, user_id, app_id).await?.ok_or(ApiError::NotFound)?;
+    let app = db::get_app(&state.db, user_id, app_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
     let recipients = db::configured_recipients(&state.db, user_id)
         .await?
         .into_iter()
@@ -121,7 +130,14 @@ async fn load_view(state: &AppState, user_id: &str, app_id: &str) -> ApiResult<A
         .collect();
     let failures = db::failure_buckets_since(&state.db, app_id, now_ms() - DAY_MS).await?;
     let failures_24h = failures.iter().map(|b| b.counts.total()).sum();
-    Ok(AppDetail { view: AppView { app, recipients, failures_24h }, failures })
+    Ok(AppDetail {
+        view: AppView {
+            app,
+            recipients,
+            failures_24h,
+        },
+        failures,
+    })
 }
 
 async fn detail(
@@ -150,8 +166,17 @@ async fn create(
     let name = validate_name(&input.name)?;
     validate_timing(input.interval_secs, input.grace_secs)?;
     let recipients = normalize_recipients(&input.recipients)?;
+    if !state.mailer.is_enabled()
+        && db::telegram_chats_for_user(&state.db, &user.id)
+            .await?
+            .is_empty()
+    {
+        return invalid("Link Telegram first: it is the only alert channel of this instance.");
+    }
     if db::count_apps(&state.db, &user.id).await? >= MAX_APPS_PER_USER {
-        return invalid(format!("You can register at most {MAX_APPS_PER_USER} applications."));
+        return invalid(format!(
+            "You can register at most {MAX_APPS_PER_USER} applications."
+        ));
     }
 
     let id = Uuid::now_v7().to_string();
@@ -177,7 +202,13 @@ async fn create(
     state.heartbeat.refresh_app(&state.db, &id).await?;
 
     let app = load_view(&state, &user.id, &id).await?;
-    Ok((StatusCode::CREATED, Json(WithCredentials { app, credentials: Credentials { key_id, secret } })))
+    Ok((
+        StatusCode::CREATED,
+        Json(WithCredentials {
+            app,
+            credentials: Credentials { key_id, secret },
+        }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -195,7 +226,9 @@ async fn update(
     Path(id): Path<String>,
     Json(input): Json<PatchApp>,
 ) -> ApiResult<Json<AppDetail>> {
-    let app = db::get_app(&state.db, &user.id, &id).await?.ok_or(ApiError::NotFound)?;
+    let app = db::get_app(&state.db, &user.id, &id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
     let name = match &input.name {
         Some(name) => validate_name(name)?,
         None => app.name.clone(),
@@ -203,21 +236,15 @@ async fn update(
     let interval_secs = input.interval_secs.unwrap_or(app.interval_secs);
     let grace_secs = input.grace_secs.unwrap_or(app.grace_secs);
     validate_timing(interval_secs, grace_secs)?;
-    let recipients = input.recipients.as_deref().map(normalize_recipients).transpose()?;
+    let recipients = input
+        .recipients
+        .as_deref()
+        .map(normalize_recipients)
+        .transpose()?;
 
     let now = now_ms();
     let window_ms = (interval_secs + grace_secs) * 1000;
-    let (app_state, next_deadline_at) = match (input.paused, app.state.as_str()) {
-        (Some(true), _) => ("paused", None),
-        // Resume: wait a full interval from now.
-        (Some(false), "paused") => match app.last_seen_at {
-            Some(_) => ("up", Some(now + window_ms)),
-            None => ("new", None),
-        },
-        // Interval changed on an active app: the deadline starts from the last signal.
-        (_, "up") => ("up", app.last_seen_at.map(|seen| seen + window_ms).or(app.next_deadline_at)),
-        (_, other) => (other, app.next_deadline_at),
-    };
+    let (app_state, next_deadline_at) = next_state(&app, input.paused, window_ms, now);
 
     db::update_app(
         &state.db,
@@ -236,6 +263,62 @@ async fn update(
     .await?;
     state.heartbeat.set_timing(&id, interval_secs, grace_secs);
     Ok(Json(load_view(&state, &user.id, &id).await?))
+}
+
+/// State and deadline after a change. `window_ms` is interval + grace, already updated.
+fn next_state(
+    app: &db::App,
+    paused: Option<bool>,
+    window_ms: i64,
+    now: i64,
+) -> (&str, Option<i64>) {
+    match (paused, app.state.as_str()) {
+        (Some(true), _) => ("paused", None),
+        // Resume: wait a full interval from now.
+        (Some(false), "paused") => match app.last_seen_at {
+            Some(_) => ("up", Some(now + window_ms)),
+            None => ("new", None),
+        },
+        // Interval changed on an active app: the deadline starts from the last signal.
+        (_, "up") => (
+            "up",
+            app.last_seen_at
+                .map(|seen| seen + window_ms)
+                .or(app.next_deadline_at),
+        ),
+        (_, other) => (other, app.next_deadline_at),
+    }
+}
+
+/// Pauses or resumes an app of `user_id` (dashboard and Telegram bot).
+pub async fn set_paused(
+    state: &AppState,
+    user_id: &str,
+    app: &db::App,
+    paused: bool,
+    now: i64,
+) -> anyhow::Result<()> {
+    let window_ms = (app.interval_secs + app.grace_secs) * 1000;
+    let (app_state, next_deadline_at) = next_state(app, Some(paused), window_ms, now);
+    db::update_app(
+        &state.db,
+        user_id,
+        &app.id,
+        &db::AppUpdate {
+            name: &app.name,
+            interval_secs: app.interval_secs,
+            grace_secs: app.grace_secs,
+            state: app_state,
+            next_deadline_at,
+            recipients: None,
+            now,
+        },
+    )
+    .await?;
+    state
+        .heartbeat
+        .set_timing(&app.id, app.interval_secs, app.grace_secs);
+    Ok(())
 }
 
 async fn rotate_key(
@@ -261,7 +344,10 @@ async fn rotate_key(
     }
     state.heartbeat.refresh_app(&state.db, &id).await?;
     let app = load_view(&state, &user.id, &id).await?;
-    Ok(Json(WithCredentials { app, credentials: Credentials { key_id, secret } }))
+    Ok(Json(WithCredentials {
+        app,
+        credentials: Credentials { key_id, secret },
+    }))
 }
 
 async fn remove(
@@ -269,7 +355,9 @@ async fn remove(
     CurrentUser(user): CurrentUser,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    db::delete_app(&state.db, &user.id, &id).await?.ok_or(ApiError::NotFound)?;
+    db::delete_app(&state.db, &user.id, &id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
     state.heartbeat.remove_app(&id);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -277,7 +365,9 @@ async fn remove(
 fn validate_name(name: &str) -> ApiResult<String> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
-        return invalid(format!("The name must be 1 to {MAX_NAME_CHARS} characters long."));
+        return invalid(format!(
+            "The name must be 1 to {MAX_NAME_CHARS} characters long."
+        ));
     }
     Ok(name.to_owned())
 }
@@ -318,11 +408,63 @@ mod tests {
 
     #[test]
     fn recipients_are_normalized() {
-        let input = vec![" Ops@Example.com ".into(), "ops@example.com".into(), "".into(), "dev@example.com".into()];
-        assert_eq!(normalize_recipients(&input).ok().unwrap(), ["ops@example.com", "dev@example.com"]);
+        let input = vec![
+            " Ops@Example.com ".into(),
+            "ops@example.com".into(),
+            "".into(),
+            "dev@example.com".into(),
+        ];
+        assert_eq!(
+            normalize_recipients(&input).ok().unwrap(),
+            ["ops@example.com", "dev@example.com"]
+        );
         assert!(normalize_recipients(&["not-an-email".into()]).is_err());
         let many: Vec<String> = (0..11).map(|i| format!("u{i}@example.com")).collect();
         assert!(normalize_recipients(&many).is_err());
+    }
+
+    /// With email off, Telegram is the only channel: no app without a linked chat.
+    #[tokio::test]
+    async fn telegram_only_instance_needs_a_linked_chat() {
+        use std::sync::Arc;
+
+        use crate::{config, heartbeat, mail};
+
+        let pool = db::test_pool().await;
+        let hb = Arc::new(
+            heartbeat::Heartbeat::load(&pool, crypto::SecretBox::new(&[1; 32], 1), None)
+                .await
+                .unwrap(),
+        );
+        let mut state = crate::test_state(pool, hb);
+        let off = config::MailConfig {
+            from_email: "x@example.com".into(),
+            from_name: "x".into(),
+            transport: config::MailTransport::None,
+        };
+        state.mailer = mail::Mailer::new(&off).unwrap();
+        let user = db::upsert_google_user(&state.db, "s", "a@example.com", None, 1)
+            .await
+            .unwrap();
+        let input = || {
+            Json(CreateApp {
+                name: "nas".into(),
+                interval_secs: 60,
+                grace_secs: 0,
+                recipients: vec![],
+            })
+        };
+
+        let refused = create(State(state.clone()), CurrentUser(user.clone()), input()).await;
+        assert!(matches!(refused, Err(ApiError::Invalid(ref m)) if m.contains("Link Telegram")));
+        db::link_telegram_chat(&state.db, &user.id, 7, "@me", 1)
+            .await
+            .unwrap();
+        assert!(
+            create(State(state), CurrentUser(user), input())
+                .await
+                .is_ok()
+        );
     }
 
     #[test]
