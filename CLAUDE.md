@@ -63,7 +63,7 @@ Per ora usiamo SQLite, ma il passaggio a Postgres deve restare un lavoro da uno 
 
 ## Heartbeat
 
-Protocollo (riferimento per i client, test in `crypto::tests::signature_matches_reference_vector`):
+Protocollo (riferimento per i client, test in `crypto::tests::signature_matches_reference_vector`). La guida per chi integra un client è `docs/heartbeat-client.md`: se il protocollo cambia, vanno aggiornati insieme guida, vettori di prova e test.
 
 - Chiave: `key_id` pubblico (12 caratteri) + segreto `ihs_…`, mostrato una sola volta. Il segreto è la chiave HMAC così com'è.
 - `POST /api/v1/heartbeat` con `X-IronHeart-Key`, `X-IronHeart-Timestamp` (secondi Unix), `X-IronHeart-Signature: v1=<hex>`.

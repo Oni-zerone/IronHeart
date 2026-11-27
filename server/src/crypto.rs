@@ -124,6 +124,13 @@ mod tests {
              e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
         let signature = sign(b"ihs_test", &canonical);
+        // Stessi valori di docs/heartbeat-client.md: se cambiano, va aggiornato il documento.
+        assert_eq!(hex::encode(signature), "395ebdbcd9e58a46090ac3c6ca626a0e00b94301076532b944841b3338cd5f01");
+        let with_body = canonical_string("abcdefghijkm", "1764000000", &sha256_hex(br#"{"status":"ok"}"#));
+        assert_eq!(
+            hex::encode(sign(b"ihs_test", &with_body)),
+            "f9cefe637f8e3e4b9688b79f948bf544702d7b76e983f927d6293749d20fe9b3"
+        );
         assert!(verify(b"ihs_test", &canonical, &signature));
         assert!(!verify(b"ihs_other", &canonical, &signature));
         assert!(!verify(b"ihs_test", &canonical, &signature[..31]));

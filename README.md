@@ -10,6 +10,8 @@ Servizio leggero di heartbeat. Ogni applicazione registrata manda un ping firmat
 
 Dettagli di architettura, protocollo e regole di sviluppo: [CLAUDE.md](CLAUDE.md).
 
+Per integrare l'heartbeat in un'altra applicazione: [docs/heartbeat-client.md](docs/heartbeat-client.md), un prompt completo da dare a chi implementa il client (protocollo, regole, vettori di prova, esempi in shell, Python, Node.js e Go).
+
 ## Sviluppo
 
 ```sh
