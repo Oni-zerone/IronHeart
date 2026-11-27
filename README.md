@@ -80,3 +80,7 @@ Le correzioni:
 2. **Un riepilogo per destinatario**: a ogni giro ogni destinatario riceve al massimo una mail per tipo, che elenca tutte le app coinvolte. I riepiloghi dei tentativi non validi arrivano al massimo ogni 5 minuti per destinatario, anche quando le finestre delle sue app si chiudono in momenti diversi; i conteggi nel frattempo si sommano.
 3. **`journal_size_limit`**: dopo ogni checkpoint il file WAL torna al massimo a 16 MB.
 4. **Ping validi scritti in blocco**: il ping valido resta in memoria (l'ultimo per app) e una volta al secondo si scrivono tutti in una transazione; allo spegnimento si scrivono quelli rimasti.
+
+## Licenza
+
+[MIT](LICENSE)
