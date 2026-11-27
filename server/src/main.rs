@@ -10,6 +10,8 @@ mod error;
 mod heartbeat;
 #[cfg(test)]
 mod load_tests;
+#[cfg(test)]
+mod db_bench;
 mod mail;
 mod monitor;
 mod outbox;
@@ -55,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let db = db::connect(&config.database_url).await?;
+    tracing::info!("database: {}", db::describe(&config.database_url));
     let auth = auth::Auth::discover(&config).await?;
     let mailer = mail::Mailer::new(&config.mail)?;
     tracing::info!("invio email con {}", mailer.describe());

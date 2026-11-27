@@ -4,33 +4,37 @@ Servizio leggero di heartbeat. Gli utenti accedono con Google e registrano le pr
 
 ## Stack
 
-- `server/`: Rust, Axum, SQLite con sqlx (WAL, `journal_size_limit` 16 MB), openidconnect, sessioni nel database, email con Brevo (API HTTP) in produzione e SMTP verso Mailpit in locale. In seguito: dashboard incorporata con rust-embed, OpenAPI con utoipa.
+- `server/`: Rust, Axum, sqlx con il driver `Any`: Postgres esterno se `DATABASE_URL` è `postgres://…`, altrimenti SQLite locale (WAL, `journal_size_limit` 16 MB). openidconnect, sessioni nel database, email con Brevo (API HTTP) in produzione e SMTP verso Mailpit in locale. In seguito: dashboard incorporata con rust-embed, OpenAPI con utoipa.
 - `web/`: Vue 3, TypeScript, Vite, Vue Router, Vuetify 4 con icone `@mdi/js` (SVG). Node serve solo per sviluppo e build: in produzione la dashboard è un insieme di file statici serviti dal binario Rust. PrimeVue è stato scartato perché dalla 5 non è più MIT (licenza commerciale con chiave).
-- Deploy: un solo binario in un container su una droplet DigitalOcean con CapRover, una sola istanza, volume su `/data`. L'immagine si compila in GitHub Actions e si pubblica su GHCR, non sulla droplet.
+- Deploy: un solo binario in un container su una droplet DigitalOcean con CapRover, una sola istanza, volume su `/data`. Per non perdere i dati a ogni deploy si usa un Postgres esterno (`DATABASE_URL`, con `?sslmode=require` per i database gestiti). L'immagine si compila in GitHub Actions e si pubblica su GHCR, non sulla droplet.
 
 ## Comandi
 
 - `cd server && cargo run`: avvia su `127.0.0.1:8080` con il database in `server/data/ironheart.db`. Legge `.env` (modello in `.env.example`); le variabili d'ambiente hanno la precedenza.
 - Senza Vite: `PUBLIC_BASE_URL=http://localhost:8080 cargo run` e apri http://localhost:8080 (pagina provvisoria con il login).
-- `cd server && cargo test`: i test del database usano SQLite in memoria; comprende la prova di carico breve (`load_tests.rs`, `IRONHEART_LOAD_SECS` per allungarla). Generatore di carico per istanze vere: `server/examples/loadtest.rs`. Risultati in README.md.
+- `cd server && cargo test`: i test del database usano SQLite in memoria (con `IRONHEART_TEST_POSTGRES_URL=postgres://…/ironheart_test` usano Postgres, uno schema nuovo per test: database usa e getta); comprende la prova di carico breve (`load_tests.rs`, `IRONHEART_LOAD_SECS` per allungarla). Generatore di carico per istanze vere: `server/examples/loadtest.rs`. Misura delle query: `cargo test --release db_bench -- --ignored --nocapture` (`IRONHEART_BENCH_DATABASE_URL` per Postgres, che viene svuotato). Risultati in README.md.
 - Prova manuale dell'heartbeat: lo script di esempio è nella pagina dell'app (e in `web/src/snippet.ts`). Con `MAIL_TRANSPORT=smtp cargo run` gli avvisi finiscono in Mailpit anche se `.env` dice `brevo`.
 - `cd web && pnpm dev`: dashboard su http://localhost:5173; Vite inoltra `/api`, `/auth` e `/health` al backend su :8080. Con Vite, `PUBLIC_BASE_URL=http://localhost:5173`.
 - `cd web && pnpm build` (controllo dei tipi + build) e `pnpm lint`.
 - Node e pnpm sono fissati in `mise.toml`: `mise install`, poi `mise exec -- pnpm …` se la shell non li attiva.
 - `docker compose up -d mailpit`: SMTP locale su `:1025`, interfaccia su http://localhost:8025.
+- `docker compose up -d postgres`: Postgres locale, `DATABASE_URL=postgres://ironheart:ironheart@localhost:5432/ironheart`.
 
-## Regole per il database (portabilità verso Postgres)
+## Regole per il database (SQLite e Postgres)
 
-Per ora usiamo SQLite, ma il passaggio a Postgres deve restare un lavoro da uno o due giorni. Quindi:
+Le stesse query girano su SQLite (ripiego locale, se `DATABASE_URL` manca) e su Postgres (esterno, in produzione), tramite il pool `Any` di sqlx (`db::Pool`). Quindi:
 
-1. **Tutte le tabelle sono `STRICT`**, così SQLite rifiuta i tipi sbagliati invece di salvarli.
-2. **Tempi come `INTEGER` in millisecondi Unix UTC**, calcolati in Rust e passati come parametri. Niente `datetime('now')`, `CURRENT_TIMESTAMP` o aritmetica sulle date in SQL. La codifica di chrono in SQLite è testo con un numero variabile di decimali e non si ordina correttamente come stringa. In Postgres restano `BIGINT`, oppure diventano `timestamptz` nella migrazione dei dati.
+1. **Tutte le tabelle SQLite sono `STRICT`**, così SQLite rifiuta i tipi sbagliati invece di salvarli.
+2. **Tempi come `INTEGER` in millisecondi Unix UTC**, calcolati in Rust e passati come parametri. Niente `datetime('now')`, `CURRENT_TIMESTAMP` o aritmetica sulle date in SQL. La codifica di chrono in SQLite è testo con un numero variabile di decimali e non si ordina correttamente come stringa. In Postgres sono `BIGINT`.
 3. **ID come UUID v7 generati in Rust**, salvati come `TEXT`. Niente `AUTOINCREMENT`.
-4. **Solo SQL comune ai due database**: `INSERT … ON CONFLICT` (mai `INSERT OR REPLACE`), `RETURNING`, indici parziali. Niente `GLOB`, funzioni specifiche di SQLite o `PRAGMA` fuori da `db::connect`.
+4. **Solo SQL comune ai due database**: `INSERT … ON CONFLICT` (mai `INSERT OR REPLACE`), `RETURNING`, indici parziali, `UPDATE … FROM (VALUES …)` (colonne `column1…`). Niente `GLOB`, funzioni specifiche di SQLite o `PRAGMA` fuori da `db::connect`.
 5. **Segnaposto `$1, $2…`** anche su SQLite (sqlx li accetta), così le query restano valide in Postgres.
 6. **Tutte le query stanno in `server/src/db.rs`** (o in un modulo `db/` se cresce). Gli handler non scrivono SQL.
 7. **Booleani come `INTEGER` 0/1** con `CHECK`, ed enumerazioni come `TEXT` con `CHECK (… IN (…))`.
-8. Non scriviamo un livello di astrazione per supportare entrambi i database.
+8. **Migrazioni in due cartelle**, `migrations/sqlite` e `migrations/postgres`: ogni modifica allo schema va in entrambe, con lo stesso numero. In Postgres tutti gli interi sono `BIGINT` (anche booleani ed enumerazioni numeriche) e i blob `BYTEA`.
+9. **Tipi che il driver `Any` legge uguali**: solo `i64`, `String`, `Vec<u8>` e i loro `Option`. Niente `bool` né in lettura né come parametro (`EXISTS` → `COUNT(*)`, booleani come `i64`, vedi `Flag`), `SUM` sempre con `CAST(… AS BIGINT)` (in Postgres sarebbe `NUMERIC`).
+10. **Poche istruzioni per giro**: con un Postgres remoto ogni istruzione è un viaggio di rete. Le scritture in blocco (`record_pings`, `insert_failure_buckets`) usano una sola istruzione ogni 500 righe.
+11. I test girano su SQLite; prima di cambiare SQL vanno lanciati anche con `IRONHEART_TEST_POSTGRES_URL`. Non scriviamo altri livelli di astrazione oltre al pool `Any`.
 
 ## Login e sessioni
 
@@ -74,7 +78,7 @@ Regole che non vanno rotte:
 
 - **La risposta è sempre 204**, per ogni esito (anche body troppo grande o chiave sconosciuta), così un attaccante non sa se ha clonato l'heartbeat. Niente 4xx, niente 429.
 - **Stesso lavoro per ogni richiesta**: con un `key_id` sconosciuto si calcola comunque un HMAC con una chiave fittizia; il confronto è in tempo costante; un ping valido resta in memoria e non tocca il database durante la richiesta.
-- **Niente database durante la richiesta**: i segreti sono decifrati in memoria (`heartbeat::Heartbeat`), il timestamp crescente si controlla in memoria (`fetch_max`); i ping validi (l'ultimo per app) si scrivono in blocco una volta al secondo (`spawn_writer`, `db::record_pings` con `WHERE last_signed_ts < $ts`) e allo spegnimento; i tentativi falliti si sommano in memoria e il controllo li scrive ogni 30 secondi (`failure_buckets`). Nessun log per singola richiesta.
+- **Niente database durante la richiesta**: i segreti sono decifrati in memoria (`heartbeat::Heartbeat`), il timestamp crescente si controlla in memoria (`fetch_max`); i ping validi (l'ultimo per app) si scrivono in blocco una volta al secondo (`spawn_writer`, `db::record_pings`, un `UPDATE … FROM (VALUES …)` con `last_signed_ts < $ts`) e allo spegnimento; i tentativi falliti si sommano in memoria e il controllo li scrive ogni 30 secondi (`failure_buckets`). Nessun log per singola richiesta.
 - I segreti sono cifrati con AES-256-GCM (`SECRETS_KEY`, versione in `secret_key_version`), con l'id dell'app come dato associato.
 - Quando un'app cambia (creazione, rotazione, intervallo, cancellazione) va aggiornato anche il registro in memoria (`refresh_app`, `set_timing`, `remove_app`).
 - IP del client: `CLIENT_IP_HEADER` (`x-forwarded-for` → ultimo valore, scritto da nginx; `cf-connecting-ip` con Cloudflare), altrimenti l'indirizzo della connessione. Serve solo per i riepiloghi.

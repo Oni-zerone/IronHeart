@@ -249,7 +249,7 @@ async fn update(
             name: &name,
             base_url: &base_url,
             interval_secs,
-            enabled: input.enabled.unwrap_or(current.enabled),
+            enabled: input.enabled.unwrap_or(current.enabled.0),
         },
         sealed.as_ref().map(|(key_id, enc)| (*key_id, enc.as_slice(), secret_box.version)),
         now_ms(),

@@ -4,3 +4,19 @@ services:
     ports:
       - "1025:1025"
       - "8025:8025"
+
+  # Facoltativo: Postgres per provare il database esterno in locale.
+  # DATABASE_URL=postgres://ironheart:ironheart@localhost:5432/ironheart
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ironheart
+      POSTGRES_PASSWORD: ironheart
+      POSTGRES_DB: ironheart
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  postgres-data:
