@@ -27,12 +27,47 @@ docker run -d --name ironheart -p 8080:8080 \
   ghcr.io/oni-zerone/ironheart:latest
 ```
 
-- The variables are the ones in [.env.example](.env.example). Keep `SECRETS_KEY` somewhere safe: without it the app secrets cannot be decrypted.
-- Register `PUBLIC_BASE_URL` + `/auth/google/callback` as redirect URI on Google.
-- Without `DATABASE_URL` the data stays in SQLite on the `/data` volume; with `DATABASE_URL=postgres://…` it goes to Postgres.
-- Behind a proxy set `CLIENT_IP_HEADER` (`x-forwarded-for`, or `cf-connecting-ip` with Cloudflare). Health check: `GET /health`.
+Any container platform works: the service needs one port (`8080`), the environment variables below and, only with SQLite, a volume on `/data`. Run a single instance: deadlines, the key registry and the alert queue live in the process. Put it behind a reverse proxy that terminates HTTPS. Health check: `GET /health`.
 
 Tags: `latest` and `X.Y.Z` / `X.Y` for releases, `edge` for the latest commit on `main`.
+
+### Configuration
+
+All variables are listed in [.env.example](.env.example).
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `PUBLIC_BASE_URL` | yes | Address users open in the browser, e.g. `https://ironheart.example.com`, without a trailing `/`. It builds the Google redirect URI and the links in the emails; with `https://` the cookies are `Secure`. |
+| `ADMIN_EMAIL` | yes | Master user: can always sign in, is always admin, invites the others. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | yes | OAuth client, see [Google sign-in](#google-sign-in). |
+| `SECRETS_KEY` | yes | Master key for the app secrets, see [Keys and secrets](#keys-and-secrets). |
+| `MAIL_TRANSPORT` | in production | `brevo` (production) or `smtp` (default: unencrypted SMTP, meant for Mailpit in development). |
+| `BREVO_API_KEY` | with `brevo` | Brevo API key. |
+| `MAIL_FROM_EMAIL`, `MAIL_FROM_NAME` | with `brevo` | Sender of the alerts. On Brevo the address or its domain must be verified. |
+| `DATABASE_URL` | no | `postgres://…` for an external Postgres (`?sslmode=require` for managed databases). Without it: SQLite in `/data`, which needs a volume. See [Database](#database). |
+| `CLIENT_IP_HEADER` | behind a proxy | Header with the client IP: `x-forwarded-for` (last value) or `cf-connecting-ip` with Cloudflare. Used only in the invalid-attempt summaries. |
+| `BIND_ADDR` | no | Listening address; `0.0.0.0:8080` in the image. |
+
+### Keys and secrets
+
+- **`SECRETS_KEY`** encrypts (AES-256-GCM) the secrets of the registered apps and of the entanglement links: generate it once with `openssl rand -base64 32` and keep a copy outside the server, next to the database backups. It never changes: with a different key the existing secrets cannot be decrypted, and every app would need a new key (rotated from the dashboard) and every client updated. A database backup is useless without this key.
+- **App keys** are created in the dashboard: a public key ID (12 characters) and a secret `ihs_…`, shown only once. The database holds only the encrypted secret. If a secret is lost or leaked, rotate it from the app page: the old one stops working immediately.
+- **`GOOGLE_CLIENT_SECRET`** belongs to the OAuth client (see below). If it leaks, add a new secret to the client on Google, deploy it, then delete the old one.
+- **`BREVO_API_KEY`** is created in Brevo under *SMTP & API → API keys*. Brevo deactivates keys that go unused for 90 days, and with every app up IronHeart sends no email for months: for this reason the service checks the key at startup and then every week (`GET /v3/account`), which also keeps it in use. If Brevo refuses the key, the error is logged, the master sees `!! mail key` in the top bar, and the outgoing [entanglement](CLAUDE.md#entanglement-master-only) pings stop, so the other instances report this one as down with their own email. To fix it, create a new key, set it and restart.
+- Configuration goes in the platform's environment variables or secret store, never in the image or in the repository (`.env` is ignored by git).
+
+### Google sign-in
+
+IronHeart signs users in with Google OpenID Connect (server side, with PKCE) and only asks for `openid`, `email` and `profile`. In the [Google Cloud Console](https://console.cloud.google.com/):
+
+1. Create a project (or pick an existing one) and open **Google Auth Platform**.
+2. **Branding**: app name, support email and developer contact. Under *Authorized domains* add the domain of `PUBLIC_BASE_URL` (e.g. `example.com`).
+3. **Audience**: choose *External* to allow any Google account (access is still invite-only inside IronHeart), or *Internal* to limit it to your Google Workspace organization. An External app in *Testing* only accepts the test users listed on this page: add yourself, or click *Publish app*. With only these basic scopes no Google verification is required.
+4. **Data access**: add the scopes `openid`, `.../auth/userinfo.email` and `.../auth/userinfo.profile`.
+5. **Clients → Create client**, type *Web application*. Under *Authorized redirect URIs* add `PUBLIC_BASE_URL` + `/auth/google/callback`, e.g. `https://ironheart.example.com/auth/google/callback`. For development also add `http://localhost:8080/auth/google/callback` and, with Vite, `http://localhost:5173/auth/google/callback` (or use a separate client). *Authorized JavaScript origins* are not needed.
+6. Copy the client ID and the client secret into `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. Copy the secret right away: the console may not show it again.
+
+The redirect URI must match `PUBLIC_BASE_URL` exactly (scheme, host, port): a mismatch shows up as `redirect_uri_mismatch` on Google's page. Only addresses verified by Google are accepted. On a new instance only `ADMIN_EMAIL` can sign in: everyone else needs an invite from an admin (page `/users`), otherwise the login ends on `/?login=denied` and no account is created.
 
 ### Releasing
 
