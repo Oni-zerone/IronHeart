@@ -1,9 +1,10 @@
 //! Endpoint di heartbeat: risponde sempre 204, nello stesso modo per ogni richiesta.
 //!
 //! I segreti delle app stanno in memoria (decifrati all'avvio), così una verifica
-//! costa una ricerca nella mappa e un HMAC, senza database. Il database si tocca
-//! solo per i ping validi; i tentativi falliti si sommano in memoria e il
-//! controllo periodico li scrive (vedi `monitor`).
+//! costa una ricerca nella mappa e un HMAC, senza database. I ping validi si
+//! raccolgono in memoria (l'ultimo per app) e si scrivono in blocco una volta al
+//! secondo; i tentativi falliti si sommano in memoria e il controllo periodico
+//! li scrive (vedi `monitor`).
 
 use std::{
     collections::HashMap,
@@ -24,8 +25,11 @@ use crate::{
     AppState,
     clock::now_ms,
     crypto::{self, SecretBox},
-    db::{self, FailureCounts, KeyRow},
+    db::{self, FailureCounts, KeyRow, PingRecord},
 };
+
+/// Ogni quanto si scrivono i ping validi raccolti.
+const PING_FLUSH_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub const KEY_HEADER: &str = "x-ironheart-key";
 pub const TIMESTAMP_HEADER: &str = "x-ironheart-timestamp";
@@ -68,6 +72,8 @@ pub struct Heartbeat {
     secret_box: SecretBox,
     keys: RwLock<Keys>,
     failures: Mutex<HashMap<String, PendingFailures>>,
+    /// Ping validi da scrivere: per app basta il più recente.
+    pending_pings: Mutex<HashMap<String, PingRecord>>,
     unattributed: AtomicU64,
     /// Chiave usata quando il `key_id` non esiste, per fare comunque un HMAC.
     dummy_secret: Vec<u8>,
@@ -90,6 +96,7 @@ impl Heartbeat {
             secret_box,
             keys: RwLock::default(),
             failures: Mutex::default(),
+            pending_pings: Mutex::default(),
             unattributed: AtomicU64::new(0),
             dummy_secret: crypto::generate_secret().into_bytes(),
             client_ip_header,
@@ -219,6 +226,33 @@ impl Heartbeat {
         failures.into_iter().map(|(app, p)| (app, p.since, p.counts)).collect()
     }
 
+    fn queue_ping(&self, ping: PingRecord) {
+        let mut pending = self.pending_pings.lock().expect("lock dei ping");
+        match pending.get(&ping.app_id) {
+            Some(existing) if existing.signed_ts >= ping.signed_ts => {}
+            _ => {
+                pending.insert(ping.app_id.clone(), ping);
+            }
+        }
+    }
+
+    /// Scrive i ping raccolti in una transazione. Quelli che il database
+    /// rifiuta (timestamp non nuovo) si contano come ripetuti.
+    pub async fn flush_pings(&self, pool: &db::Pool) -> anyhow::Result<usize> {
+        let pings: Vec<PingRecord> =
+            std::mem::take(&mut *self.pending_pings.lock().expect("lock dei ping")).into_values().collect();
+        if pings.is_empty() {
+            return Ok(0);
+        }
+        let accepted = db::record_pings(pool, &pings).await?;
+        for (ping, ok) in pings.iter().zip(&accepted) {
+            if !ok {
+                self.record_failure(&ping.app_id, Reason::Replay, None, ping.seen_at);
+            }
+        }
+        Ok(pings.len())
+    }
+
     pub fn take_unattributed(&self) -> u64 {
         self.unattributed.swap(0, Ordering::Relaxed)
     }
@@ -237,6 +271,20 @@ impl Heartbeat {
         }
         .filter(|ip| !ip.is_empty() && ip.len() <= 64)
     }
+}
+
+/// Scrive i ping validi una volta al secondo.
+pub fn spawn_writer(state: AppState) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(PING_FLUSH_EVERY);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            if let Err(err) = state.heartbeat.flush_pings(&state.db).await {
+                tracing::error!(err = ?err, "ping non registrati");
+            }
+        }
+    });
 }
 
 fn parse_signature(header: Option<&str>) -> Option<[u8; 32]> {
@@ -266,14 +314,12 @@ pub async fn handler(State(state): State<AppState>, request: Request) -> StatusC
     );
     match outcome {
         Outcome::Valid { app_id, signed_ts, deadline_after_ms } => {
-            // In background: un ping valido non deve rispondere più lentamente di uno falso.
-            let state = state.clone();
-            tokio::spawn(async move {
-                match db::record_ping(&state.db, &app_id, signed_ts, now, now + deadline_after_ms).await {
-                    Ok(true) => {}
-                    Ok(false) => state.heartbeat.record_failure(&app_id, Reason::Replay, None, now),
-                    Err(err) => tracing::error!(%app_id, err = ?err, "ping non registrato"),
-                }
+            // Solo in memoria: un ping valido non deve rispondere più lentamente di uno falso.
+            heartbeat.queue_ping(PingRecord {
+                app_id,
+                signed_ts,
+                seen_at: now,
+                next_deadline_at: now + deadline_after_ms,
             });
         }
         Outcome::Rejected { app_id, reason } => {
@@ -394,6 +440,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queued_pings_keep_the_latest_and_flush_in_one_go() {
+        let (hb, _, pool) = setup_with_pool().await;
+        let ping = |ts| PingRecord { app_id: "app".into(), signed_ts: ts, seen_at: ts * 1000, next_deadline_at: ts * 1000 + 90_000 };
+        hb.queue_ping(ping(NOW + 1));
+        hb.queue_ping(ping(NOW));
+        assert_eq!(hb.flush_pings(&pool).await.unwrap(), 1);
+        let (ts,): (i64,) = sqlx::query_as("SELECT last_signed_ts FROM apps").fetch_one(&pool).await.unwrap();
+        assert_eq!(ts, NOW + 1);
+        assert_eq!(hb.flush_pings(&pool).await.unwrap(), 0);
+
+        // Un timestamp già scritto viene rifiutato dal database e contato come ripetuto.
+        hb.queue_ping(ping(NOW + 1));
+        hb.flush_pings(&pool).await.unwrap();
+        assert_eq!(hb.take_failures()[0].2.replay, 1);
+    }
+
+    #[tokio::test]
     async fn failures_are_aggregated_with_capped_ips() {
         let (hb, _) = setup().await;
         for i in 0..25 {
@@ -416,6 +479,7 @@ mod tests {
             secret_box: SecretBox::new(&[0; 32], 1),
             keys: RwLock::default(),
             failures: Mutex::default(),
+            pending_pings: Mutex::default(),
             unattributed: AtomicU64::new(0),
             dummy_secret: vec![],
             client_ip_header: Some("x-forwarded-for".into()),

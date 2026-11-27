@@ -234,8 +234,29 @@ pub async fn app_key(pool: &Pool, app_id: &str) -> sqlx::Result<Option<KeyRow>> 
 
 // ---- Heartbeat e controllo delle scadenze -----------------------------------
 
+// Nelle espressioni di SET, `state` è il valore prima dell'aggiornamento
+// (vale sia in SQLite sia in Postgres).
+const RECORD_PING_SQL: &str = "UPDATE apps SET
+         last_signed_ts = $1,
+         last_seen_at = $2,
+         recovery_pending = CASE WHEN state = 'down' THEN 1 ELSE recovery_pending END,
+         next_deadline_at = CASE WHEN state = 'paused' THEN NULL ELSE $3 END,
+         state = CASE WHEN state = 'paused' THEN 'paused' ELSE 'up' END,
+         updated_at = $2
+     WHERE id = $4 AND (last_signed_ts IS NULL OR last_signed_ts < $1)";
+
+/// Un ping valido da registrare.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PingRecord {
+    pub app_id: String,
+    pub signed_ts: i64,
+    pub seen_at: i64,
+    pub next_deadline_at: i64,
+}
+
 /// Registra un ping valido. Restituisce `false` se il timestamp non è nuovo.
 /// Se l'app era `down`, segna il ripristino: la mail la manda il controllo.
+#[cfg(test)]
 pub async fn record_ping(
     pool: &Pool,
     app_id: &str,
@@ -243,26 +264,28 @@ pub async fn record_ping(
     now: i64,
     next_deadline_at: i64,
 ) -> sqlx::Result<bool> {
-    // Nelle espressioni di SET, `state` è il valore prima dell'aggiornamento
-    // (vale sia in SQLite sia in Postgres).
-    Ok(sqlx::query(
-        "UPDATE apps SET
-             last_signed_ts = $1,
-             last_seen_at = $2,
-             recovery_pending = CASE WHEN state = 'down' THEN 1 ELSE recovery_pending END,
-             next_deadline_at = CASE WHEN state = 'paused' THEN NULL ELSE $3 END,
-             state = CASE WHEN state = 'paused' THEN 'paused' ELSE 'up' END,
-             updated_at = $2
-         WHERE id = $4 AND (last_signed_ts IS NULL OR last_signed_ts < $1)",
-    )
-    .bind(signed_ts)
-    .bind(now)
-    .bind(next_deadline_at)
-    .bind(app_id)
-    .execute(pool)
-    .await?
-    .rows_affected()
-        == 1)
+    let record = PingRecord { app_id: app_id.into(), signed_ts, seen_at: now, next_deadline_at };
+    Ok(record_pings(pool, &[record]).await?[0])
+}
+
+/// Registra più ping in una sola transazione. Per ciascuno: `false` se il
+/// timestamp non era nuovo (o l'app non esiste più).
+pub async fn record_pings(pool: &Pool, pings: &[PingRecord]) -> sqlx::Result<Vec<bool>> {
+    let mut tx = pool.begin().await?;
+    let mut accepted = Vec::with_capacity(pings.len());
+    for ping in pings {
+        let rows = sqlx::query(RECORD_PING_SQL)
+            .bind(ping.signed_ts)
+            .bind(ping.seen_at)
+            .bind(ping.next_deadline_at)
+            .bind(&ping.app_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        accepted.push(rows == 1);
+    }
+    tx.commit().await?;
+    Ok(accepted)
 }
 
 #[derive(Debug, sqlx::FromRow)]

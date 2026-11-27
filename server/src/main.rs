@@ -8,8 +8,11 @@ mod db;
 mod entanglement;
 mod error;
 mod heartbeat;
+#[cfg(test)]
+mod load_tests;
 mod mail;
 mod monitor;
+mod outbox;
 mod users;
 
 use std::{net::SocketAddr, sync::Arc};
@@ -29,6 +32,8 @@ pub struct AppState {
     db: db::Pool,
     auth: auth::Auth,
     mailer: mail::Mailer,
+    /// Coda degli avvisi: il controllo periodico non aspetta gli invii.
+    outbox: Arc<outbox::Outbox>,
     heartbeat: Arc<heartbeat::Heartbeat>,
     public_base_url: Arc<str>,
     admin_email: Arc<str>,
@@ -61,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         db,
         auth,
+        outbox: outbox::Outbox::start(mailer.clone()),
         mailer,
         heartbeat,
         public_base_url: config.public_base_url.as_str().into(),
@@ -68,7 +74,9 @@ async fn main() -> anyhow::Result<()> {
         entanglement: Arc::new(entanglement::Sender::new()?),
     };
     monitor::spawn(state.clone());
+    heartbeat::spawn_writer(state.clone());
     entanglement::spawn(state.clone());
+    let shutdown_state = state.clone();
 
     let app = Router::new()
         .route("/", get(home))
@@ -89,7 +97,31 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    // I ping validi dell'ultimo secondo non vanno persi.
+    let flushed = shutdown_state.heartbeat.flush_pings(&shutdown_state.db).await?;
+    tracing::info!("spento (ping scritti alla chiusura: {flushed})");
     Ok(())
+}
+
+/// Stato completo per i test: database e registro dati, niente Google, mail verso una porta chiusa.
+#[cfg(test)]
+pub fn test_state(db: db::Pool, heartbeat: Arc<heartbeat::Heartbeat>) -> AppState {
+    let mail = config::MailConfig {
+        from_email: "test@ironheart.local".into(),
+        from_name: "IronHeart".into(),
+        transport: config::MailTransport::Smtp { host: "127.0.0.1".into(), port: 9 },
+    };
+    let mailer = mail::Mailer::new(&mail).unwrap();
+    AppState {
+        db,
+        auth: auth::Auth::for_tests(),
+        outbox: outbox::Outbox::start(mailer.clone()),
+        mailer,
+        heartbeat,
+        public_base_url: "http://localhost".into(),
+        admin_email: "master@example.com".into(),
+        entanglement: Arc::new(entanglement::Sender::new().unwrap()),
+    }
 }
 
 async fn health(State(state): State<AppState>) -> StatusCode {

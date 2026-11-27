@@ -4,7 +4,7 @@ Servizio leggero di heartbeat. Gli utenti accedono con Google e registrano le pr
 
 ## Stack
 
-- `server/`: Rust, Axum, SQLite con sqlx (WAL), openidconnect, sessioni nel database, email con Brevo (API HTTP) in produzione e SMTP verso Mailpit in locale. In seguito: dashboard incorporata con rust-embed, OpenAPI con utoipa.
+- `server/`: Rust, Axum, SQLite con sqlx (WAL, `journal_size_limit` 16 MB), openidconnect, sessioni nel database, email con Brevo (API HTTP) in produzione e SMTP verso Mailpit in locale. In seguito: dashboard incorporata con rust-embed, OpenAPI con utoipa.
 - `web/`: Vue 3, TypeScript, Vite, Vue Router, Vuetify 4 con icone `@mdi/js` (SVG). Node serve solo per sviluppo e build: in produzione la dashboard è un insieme di file statici serviti dal binario Rust. PrimeVue è stato scartato perché dalla 5 non è più MIT (licenza commerciale con chiave).
 - Deploy: un solo binario in un container su una droplet DigitalOcean con CapRover, una sola istanza, volume su `/data`. L'immagine si compila in GitHub Actions e si pubblica su GHCR, non sulla droplet.
 
@@ -12,7 +12,7 @@ Servizio leggero di heartbeat. Gli utenti accedono con Google e registrano le pr
 
 - `cd server && cargo run`: avvia su `127.0.0.1:8080` con il database in `server/data/ironheart.db`. Legge `.env` (modello in `.env.example`); le variabili d'ambiente hanno la precedenza.
 - Senza Vite: `PUBLIC_BASE_URL=http://localhost:8080 cargo run` e apri http://localhost:8080 (pagina provvisoria con il login).
-- `cd server && cargo test`: i test del database usano SQLite in memoria.
+- `cd server && cargo test`: i test del database usano SQLite in memoria; comprende la prova di carico breve (`load_tests.rs`, `IRONHEART_LOAD_SECS` per allungarla). Generatore di carico per istanze vere: `server/examples/loadtest.rs`. Risultati in README.md.
 - Prova manuale dell'heartbeat: lo script di esempio è nella pagina dell'app (e in `web/src/snippet.ts`). Con `MAIL_TRANSPORT=smtp cargo run` gli avvisi finiscono in Mailpit anche se `.env` dice `brevo`.
 - `cd web && pnpm dev`: dashboard su http://localhost:5173; Vite inoltra `/api`, `/auth` e `/health` al backend su :8080. Con Vite, `PUBLIC_BASE_URL=http://localhost:5173`.
 - `cd web && pnpm build` (controllo dei tipi + build) e `pnpm lint`.
@@ -73,8 +73,8 @@ Protocollo (riferimento per i client, test in `crypto::tests::signature_matches_
 Regole che non vanno rotte:
 
 - **La risposta è sempre 204**, per ogni esito (anche body troppo grande o chiave sconosciuta), così un attaccante non sa se ha clonato l'heartbeat. Niente 4xx, niente 429.
-- **Stesso lavoro per ogni richiesta**: con un `key_id` sconosciuto si calcola comunque un HMAC con una chiave fittizia; il confronto è in tempo costante; la scrittura di un ping valido avviene in un task separato, dopo la risposta.
-- **Niente database per le richieste non valide**: i segreti sono decifrati in memoria (`heartbeat::Heartbeat`), il timestamp crescente si controlla in memoria (`fetch_max`) e nel database (`record_ping` con `WHERE last_signed_ts < $ts`), i tentativi falliti si sommano in memoria e il controllo li scrive ogni 30 secondi (`failure_buckets`). Nessun log per singola richiesta.
+- **Stesso lavoro per ogni richiesta**: con un `key_id` sconosciuto si calcola comunque un HMAC con una chiave fittizia; il confronto è in tempo costante; un ping valido resta in memoria e non tocca il database durante la richiesta.
+- **Niente database durante la richiesta**: i segreti sono decifrati in memoria (`heartbeat::Heartbeat`), il timestamp crescente si controlla in memoria (`fetch_max`); i ping validi (l'ultimo per app) si scrivono in blocco una volta al secondo (`spawn_writer`, `db::record_pings` con `WHERE last_signed_ts < $ts`) e allo spegnimento; i tentativi falliti si sommano in memoria e il controllo li scrive ogni 30 secondi (`failure_buckets`). Nessun log per singola richiesta.
 - I segreti sono cifrati con AES-256-GCM (`SECRETS_KEY`, versione in `secret_key_version`), con l'id dell'app come dato associato.
 - Quando un'app cambia (creazione, rotazione, intervallo, cancellazione) va aggiornato anche il registro in memoria (`refresh_app`, `set_timing`, `remove_app`).
 - IP del client: `CLIENT_IP_HEADER` (`x-forwarded-for` → ultimo valore, scritto da nginx; `cf-connecting-ip` con Cloudflare), altrimenti l'indirizzo della connessione. Serve solo per i riepiloghi.
@@ -89,6 +89,12 @@ Regole che non vanno rotte:
 5. Pulisce tentativi più vecchi di 7 giorni, sessioni scadute e login abbandonati.
 
 All'avvio le scadenze già passate ripartono da adesso (`reschedule_overdue`). Lo stato viene salvato prima di mandare la mail: un invio fallito non si ritenta.
+
+Mail degli avvisi:
+
+- **Il controllo non manda mail**: le mette nella coda (`outbox`), che le invia in un task separato, quattro alla volta. App ferma e ripristino sono urgenti (non si scartano, hanno la precedenza); i riepiloghi dei tentativi si scartano se la coda è piena.
+- **Un riepilogo per destinatario**: a ogni giro ogni destinatario riceve al massimo una mail per tipo con tutte le app coinvolte (`alerts::*_digest`; con una sola app è la mail singola). I riepiloghi dei tentativi partono al massimo ogni 5 minuti per destinatario (`FAILURE_DIGEST_MIN_MS`); nel frattempo i conteggi si sommano in memoria.
+- Un giro più lento di 5 secondi finisce nel log («controllo periodico lento").
 
 ## Regole di dominio
 

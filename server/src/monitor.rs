@@ -1,13 +1,19 @@
 //! Controllo periodico (ogni 30 secondi): scrive i tentativi falliti, porta a
-//! `down` le app scadute, manda gli avvisi e pulisce i dati vecchi.
+//! `down` le app scadute, prepara gli avvisi e pulisce i dati vecchi.
+//!
+//! Gli avvisi si raggruppano per destinatario (una mail per tipo a ogni giro) e
+//! vanno nella coda delle mail (`outbox`): il controllo non aspetta gli invii.
 
-use std::time::Duration;
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::{Duration, Instant},
+};
 
 use crate::{
-    AppState, alerts,
+    AppState,
+    alerts::{self, DownItem, FailureItem, RecoveredItem},
     clock::{DAY_MS, MINUTE_MS, now_ms},
     db,
-    mail::Email,
 };
 
 pub const TICK: Duration = Duration::from_secs(30);
@@ -16,6 +22,11 @@ const LOGIN_TTL_MS: i64 = 10 * MINUTE_MS;
 
 /// Durata delle finestre tra un riepilogo e l'altro, per livello.
 pub const FAILURE_WINDOWS_MIN: [i64; 6] = [5, 10, 20, 40, 80, 120];
+/// Al massimo un riepilogo di tentativi ogni 5 minuti per destinatario, anche
+/// quando le finestre delle sue app si chiudono in momenti diversi.
+pub const FAILURE_DIGEST_MIN_MS: i64 = 5 * MINUTE_MS;
+/// Un giro più lento di così viene segnalato nel log.
+const SLOW_TICK: Duration = Duration::from_secs(5);
 
 fn window_ms(level: i64) -> i64 {
     FAILURE_WINDOWS_MIN[level.clamp(0, 5) as usize] * MINUTE_MS
@@ -63,20 +74,39 @@ pub async fn reschedule_overdue(pool: &db::Pool, now: i64) -> anyhow::Result<()>
     Ok(())
 }
 
+/// Stato del controllo che resta in memoria tra un giro e l'altro.
+#[derive(Default)]
+pub struct Memory {
+    /// Riepiloghi dei tentativi in attesa, per destinatario.
+    failure_digests: HashMap<String, PendingDigest>,
+}
+
+#[derive(Default)]
+struct PendingDigest {
+    last_sent_at: Option<i64>,
+    /// Per app: se un'app torna prima dell'invio, i conteggi si sommano.
+    items: BTreeMap<String, FailureItem>,
+}
+
 pub fn spawn(state: AppState) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut memory = Memory::default();
         loop {
             interval.tick().await;
-            if let Err(err) = tick(&state, now_ms()).await {
+            let started = Instant::now();
+            if let Err(err) = tick(&state, &mut memory, now_ms()).await {
                 tracing::error!(err = ?err, "controllo periodico non riuscito");
+            }
+            if started.elapsed() > SLOW_TICK {
+                tracing::warn!(elapsed = ?started.elapsed(), "controllo periodico lento");
             }
         }
     });
 }
 
-pub async fn tick(state: &AppState, now: i64) -> anyhow::Result<()> {
+pub async fn tick(state: &AppState, memory: &mut Memory, now: i64) -> anyhow::Result<()> {
     let pool = &state.db;
 
     for (app_id, since, counts) in state.heartbeat.take_failures() {
@@ -87,15 +117,31 @@ pub async fn tick(state: &AppState, now: i64) -> anyhow::Result<()> {
         tracing::warn!("heartbeat con chiave sconosciuta: {unattributed}");
     }
 
+    let mut downs: BTreeMap<String, Vec<DownItem>> = BTreeMap::new();
     for app in db::mark_overdue_down(pool, now).await? {
         let failures = db::failure_summary_since(pool, &app.id, app.last_seen_at.unwrap_or(0)).await?;
-        let app_ref = app_ref(state, &app.id, &app.name);
-        notify(state, &app.id, |to| alerts::down(&app_ref, to, app.last_seen_at, now, failures.total())).await?;
+        let item = DownItem {
+            url: app_url(state, &app.id),
+            name: app.name,
+            last_seen_at: app.last_seen_at,
+            failures: failures.total(),
+        };
+        for to in db::alert_recipients(pool, &app.id).await? {
+            downs.entry(to).or_default().push(item.clone());
+        }
     }
 
+    let mut recoveries: BTreeMap<String, Vec<RecoveredItem>> = BTreeMap::new();
     for app in db::take_recoveries(pool).await? {
-        let app_ref = app_ref(state, &app.id, &app.name);
-        notify(state, &app.id, |to| alerts::recovered(&app_ref, to, app.down_since, app.last_seen_at)).await?;
+        let item = RecoveredItem {
+            url: app_url(state, &app.id),
+            name: app.name,
+            down_since: app.down_since,
+            last_seen_at: app.last_seen_at,
+        };
+        for to in db::alert_recipients(pool, &app.id).await? {
+            recoveries.entry(to).or_default().push(item.clone());
+        }
     }
 
     for app in db::failure_alert_candidates(pool).await? {
@@ -111,10 +157,29 @@ pub async fn tick(state: &AppState, now: i64) -> anyhow::Result<()> {
         // Prima lo stato, poi la mail: se l'invio fallisce non si riprova a raffica.
         db::set_failure_alert_state(pool, &app.id, next.level, next.window_end, last_report_at).await?;
         if next.report {
-            let app_ref = app_ref(state, &app.id, &app.name);
-            let next_in = next.window_end.map_or(0, |end| end - now);
-            notify(state, &app.id, |to| alerts::failures(&app_ref, to, &counts, since, next_in)).await?;
+            let item = FailureItem {
+                url: app_url(state, &app.id),
+                app_id: app.id.clone(),
+                name: app.name.clone(),
+                counts,
+                since,
+                next_report_in_ms: next.window_end.map_or(0, |end| end - now),
+            };
+            for to in db::alert_recipients(pool, &app.id).await? {
+                queue_failure(memory, to, item.clone());
+            }
         }
+    }
+
+    let apps_url = format!("{}/apps", state.public_base_url);
+    for (to, items) in &downs {
+        state.outbox.urgent(alerts::down_digest(to, items, now, &apps_url)).await;
+    }
+    for (to, items) in &recoveries {
+        state.outbox.urgent(alerts::recovered_digest(to, items, &apps_url)).await;
+    }
+    for (to, items) in due_failure_digests(memory, now) {
+        state.outbox.report(alerts::failures_digest(&to, &items, FAILURE_DIGEST_MIN_MS, &apps_url));
     }
 
     db::delete_failure_buckets_before(pool, now - FAILURE_RETENTION_MS).await?;
@@ -123,18 +188,39 @@ pub async fn tick(state: &AppState, now: i64) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn app_ref<'a>(state: &AppState, app_id: &str, name: &'a str) -> alerts::AppRef<'a> {
-    alerts::AppRef { name, url: format!("{}/apps/{app_id}", state.public_base_url) }
-}
-
-/// Una mail per destinatario. Un invio fallito si registra e non blocca gli altri.
-async fn notify(state: &AppState, app_id: &str, build: impl Fn(&str) -> Email) -> anyhow::Result<()> {
-    for to in db::alert_recipients(&state.db, app_id).await? {
-        if let Err(err) = state.mailer.send(&build(&to)).await {
-            tracing::error!(%app_id, err = ?err, "avviso non inviato");
+fn queue_failure(memory: &mut Memory, to: String, item: FailureItem) {
+    let digest = memory.failure_digests.entry(to).or_default();
+    match digest.items.get_mut(&item.app_id) {
+        Some(existing) => {
+            existing.counts.add(&item.counts);
+            existing.next_report_in_ms = item.next_report_in_ms;
+        }
+        None => {
+            digest.items.insert(item.app_id.clone(), item);
         }
     }
-    Ok(())
+}
+
+/// Riepiloghi da mandare adesso: destinatari con qualcosa in attesa e
+/// nessun riepilogo negli ultimi `FAILURE_DIGEST_MIN_MS`.
+fn due_failure_digests(memory: &mut Memory, now: i64) -> Vec<(String, Vec<FailureItem>)> {
+    let mut due = Vec::new();
+    for (to, digest) in memory.failure_digests.iter_mut() {
+        let cooled = digest.last_sent_at.is_none_or(|at| now - at >= FAILURE_DIGEST_MIN_MS);
+        if cooled && !digest.items.is_empty() {
+            digest.last_sent_at = Some(now);
+            due.push((to.clone(), std::mem::take(&mut digest.items).into_values().collect()));
+        }
+    }
+    // Destinatari tranquilli da più di un intervallo: non serve ricordarli.
+    memory.failure_digests.retain(|_, d| {
+        !d.items.is_empty() || d.last_sent_at.is_some_and(|at| now - at < FAILURE_DIGEST_MIN_MS)
+    });
+    due
+}
+
+fn app_url(state: &AppState, app_id: &str) -> String {
+    format!("{}/apps/{app_id}", state.public_base_url)
 }
 
 #[cfg(test)]
@@ -194,5 +280,37 @@ mod tests {
             now = end.unwrap_or(now) + 1;
         }
         assert!(reports <= 16, "riepiloghi in un giorno: {reports}");
+    }
+
+    fn item(app: &str, bad: i64) -> FailureItem {
+        FailureItem {
+            app_id: app.into(),
+            name: app.into(),
+            url: String::new(),
+            counts: crate::db::FailureCounts { bad_signature: bad, ..Default::default() },
+            since: None,
+            next_report_in_ms: 5 * M,
+        }
+    }
+
+    /// App con finestre che si chiudono in momenti diversi: il destinatario
+    /// riceve comunque al massimo un riepilogo ogni 5 minuti, senza perdere conteggi.
+    #[test]
+    fn failure_digests_are_rate_limited_per_recipient() {
+        let mut memory = Memory::default();
+        let mut sent = vec![];
+        let mut now = 0;
+        for i in 0..20 {
+            // Ogni giro (30 s) un'app diversa chiude la sua finestra.
+            queue_failure(&mut memory, "a@example.com".into(), item(&format!("app{}", i % 4), 1));
+            for (_, items) in due_failure_digests(&mut memory, now) {
+                sent.push((now, items.iter().map(|i| i.counts.bad_signature).sum::<i64>()));
+            }
+            now += M / 2;
+        }
+        assert_eq!(sent.iter().map(|(at, _)| *at).collect::<Vec<_>>(), [0, 5 * M], "uno ogni 5 minuti");
+        let delivered: i64 = sent.iter().map(|(_, n)| n).sum();
+        let pending: i64 = memory.failure_digests.values().flat_map(|d| d.items.values()).map(|i| i.counts.bad_signature).sum();
+        assert_eq!(delivered + pending, 20, "nessun conteggio perso");
     }
 }

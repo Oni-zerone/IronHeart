@@ -85,6 +85,33 @@ impl Auth {
         })))
     }
 
+    /// Client fittizio per i test: nessuna chiamata a Google.
+    #[cfg(test)]
+    pub fn for_tests() -> Self {
+        use openidconnect::{
+            AuthUrl, EmptyAdditionalProviderMetadata, JsonWebKeySetUrl, ResponseTypes,
+            core::{CoreJsonWebKeySet, CoreJwsSigningAlgorithm, CoreResponseType, CoreSubjectIdentifierType},
+        };
+        let metadata = CoreProviderMetadata::new(
+            IssuerUrl::new("https://issuer.test".into()).unwrap(),
+            AuthUrl::new("https://issuer.test/auth".into()).unwrap(),
+            JsonWebKeySetUrl::new("https://issuer.test/jwks".into()).unwrap(),
+            vec![ResponseTypes::new(vec![CoreResponseType::Code])],
+            vec![CoreSubjectIdentifierType::Public],
+            vec![CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256],
+            EmptyAdditionalProviderMetadata {},
+        )
+        .set_jwks(CoreJsonWebKeySet::new(vec![]));
+        let client = CoreClient::from_provider_metadata(metadata, ClientId::new("test".into()), None)
+            .set_redirect_uri(RedirectUrl::new("http://localhost/auth/google/callback".into()).unwrap());
+        Self(Arc::new(AuthInner {
+            client,
+            http: reqwest::Client::new(),
+            public_base_url: "http://localhost".into(),
+            secure_cookies: false,
+        }))
+    }
+
     fn home(&self) -> String {
         format!("{}/", self.0.public_base_url)
     }

@@ -26,7 +26,10 @@ pub async fn connect(database_url: &str) -> anyhow::Result<Pool> {
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
         .foreign_keys(true)
-        .busy_timeout(Duration::from_secs(5));
+        .busy_timeout(Duration::from_secs(5))
+        // Dopo ogni checkpoint il file WAL torna al massimo a 16 MB: senza questo
+        // limite, sotto carico, cresce e non si riduce più.
+        .pragma("journal_size_limit", "16777216");
 
     let pool = SqlitePoolOptions::new().connect_with(options).await?;
     sqlx::migrate!().run(&pool).await?;
