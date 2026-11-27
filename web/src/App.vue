@@ -14,7 +14,7 @@ import { currentUser, loadSession, logout, toast } from '@/session'
 
 onMounted(loadSession)
 
-/** Indicazione del database per il master: SQLite locale si perde a ogni deploy. */
+/** Database indicator for the master: local SQLite is lost at every deploy. */
 const database = computed(() => {
   const info = currentUser.value?.database
   if (!info) return null
@@ -23,13 +23,13 @@ const database = computed(() => {
         label: 'Postgres',
         color: 'success',
         icon: mdiDatabaseOutline,
-        hint: `Database esterno: ${info.location}`,
+        hint: `External database: ${info.location}`,
       }
     : {
-        label: 'SQLite locale',
+        label: 'Local SQLite',
         color: 'warning',
         icon: mdiDatabaseAlertOutline,
-        hint: `File ${info.location}: senza un volume i dati si perdono a ogni deploy. Imposta DATABASE_URL per usare Postgres.`,
+        hint: `File ${info.location}: without a volume the data is lost at every deploy. Set DATABASE_URL to use Postgres.`,
       }
 })
 </script>

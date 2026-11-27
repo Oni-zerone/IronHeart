@@ -34,19 +34,19 @@ pub struct AppState {
     db: db::Pool,
     auth: auth::Auth,
     mailer: mail::Mailer,
-    /// Coda degli avvisi: il controllo periodico non aspetta gli invii.
+    /// Alert queue: the periodic check does not wait for sends.
     outbox: Arc<outbox::Outbox>,
     heartbeat: Arc<heartbeat::Heartbeat>,
     public_base_url: Arc<str>,
     admin_email: Arc<str>,
     entanglement: Arc<entanglement::Sender>,
-    /// Database in uso, mostrato al master.
+    /// Database in use, shown to the master.
     database: Arc<db::DatabaseInfo>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // `.env` in sviluppo; le variabili già presenti nell'ambiente hanno la precedenza.
+    // `.env` in development; variables already in the environment take precedence.
     let _ = dotenvy::dotenv();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("database: {database}");
     let auth = auth::Auth::discover(&config).await?;
     let mailer = mail::Mailer::new(&config.mail)?;
-    tracing::info!("invio email con {}", mailer.describe());
+    tracing::info!("sending email with {}", mailer.describe());
     let secret_box = crypto::SecretBox::new(&config.secrets_key, config.secrets_key_version);
     let heartbeat =
         Arc::new(heartbeat::Heartbeat::load(&db, secret_box, config.client_ip_header.clone()).await?);
@@ -99,18 +99,18 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
-    tracing::info!("in ascolto su {} ({})", config.bind_addr, config.public_base_url);
-    // L'indirizzo del peer serve all'heartbeat quando non c'è un proxy davanti.
+    tracing::info!("listening on {} ({})", config.bind_addr, config.public_base_url);
+    // The heartbeat needs the peer address when there is no proxy in front.
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown_signal())
         .await?;
-    // I ping validi dell'ultimo secondo non vanno persi.
+    // The valid pings of the last second must not be lost.
     let flushed = shutdown_state.heartbeat.flush_pings(&shutdown_state.db).await?;
-    tracing::info!("spento (ping scritti alla chiusura: {flushed})");
+    tracing::info!("stopped (pings written at shutdown: {flushed})");
     Ok(())
 }
 
-/// Stato completo per i test: database e registro dati, niente Google, mail verso una porta chiusa.
+/// Full state for tests: database and registry, no Google, email to a closed port.
 #[cfg(test)]
 pub fn test_state(db: db::Pool, heartbeat: Arc<heartbeat::Heartbeat>) -> AppState {
     let mail = config::MailConfig {
@@ -136,7 +136,7 @@ async fn health(State(state): State<AppState>) -> StatusCode {
     match db::ping(&state.db).await {
         Ok(()) => StatusCode::OK,
         Err(err) => {
-            tracing::error!(%err, "health: database non raggiungibile");
+            tracing::error!(%err, "health: database unreachable");
             StatusCode::SERVICE_UNAVAILABLE
         }
     }
@@ -147,7 +147,7 @@ struct Me {
     #[serde(flatten)]
     user: db::User,
     is_master: bool,
-    /// Solo per il master: su quale database gira l'istanza.
+    /// Master only: which database the instance runs on.
     #[serde(skip_serializing_if = "Option::is_none")]
     database: Option<db::DatabaseInfo>,
 }
@@ -158,36 +158,36 @@ async fn me(State(state): State<AppState>, auth::CurrentUser(user): auth::Curren
     Json(Me { user, is_master, database })
 }
 
-/// Manda una mail di prova all'email dell'account, per verificare la configurazione.
+/// Sends a test email to the account's address, to check the configuration.
 async fn send_test_email(
     State(state): State<AppState>,
     auth::CurrentUser(user): auth::CurrentUser,
 ) -> StatusCode {
     let email = mail::Email {
         to: user.email,
-        subject: "IronHeart: email di prova".into(),
-        text: "Se leggi questo messaggio, IronHeart riesce a mandarti gli avvisi.".into(),
-        html: "<p>Se leggi questo messaggio, IronHeart riesce a mandarti gli avvisi.</p>".into(),
+        subject: "IronHeart: test email".into(),
+        text: "If you are reading this message, IronHeart can send you alerts.".into(),
+        html: "<p>If you are reading this message, IronHeart can send you alerts.</p>".into(),
     };
     match state.mailer.send(&email).await {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(err) => {
-            tracing::error!(err = ?err, user_id = %user.id, "email di prova non inviata");
+            tracing::error!(err = ?err, user_id = %user.id, "test email not sent");
             StatusCode::BAD_GATEWAY
         }
     }
 }
 
-/// Pagina provvisoria per provare il login finché non c'è la dashboard React.
+/// Temporary page to try the login until the dashboard is embedded.
 async fn home(user: Option<auth::CurrentUser>) -> impl IntoResponse {
     let body = match user {
         Some(auth::CurrentUser(user)) => format!(
-            "<p>Accesso eseguito come <b>{}</b>.</p>\
-             <form method=post action=/api/me/test-email><button>Mandami una mail di prova</button></form>\
-             <form method=post action=/auth/logout><button>Esci</button></form>",
+            "<p>Signed in as <b>{}</b>.</p>\
+             <form method=post action=/api/me/test-email><button>Send me a test email</button></form>\
+             <form method=post action=/auth/logout><button>Sign out</button></form>",
             html_escape(&user.email)
         ),
-        None => "<p><a href=/auth/google/login>Accedi con Google</a></p>".to_owned(),
+        None => "<p><a href=/auth/google/login>Sign in with Google</a></p>".to_owned(),
     };
     Html(format!("<!doctype html><meta charset=utf-8><title>IronHeart</title><h1>IronHeart</h1>{body}"))
 }
@@ -196,7 +196,7 @@ fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-/// Cartella del file SQLite, da creare prima della connessione.
+/// Folder of the SQLite file, to be created before connecting.
 fn sqlite_dir(url: &str) -> Option<&std::path::Path> {
     let path = url.strip_prefix("sqlite://").or_else(|| url.strip_prefix("sqlite:"))?;
     let path = path.split('?').next()?;
@@ -221,7 +221,7 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
 
-    /// Il database in uso compare in `/api/me` solo per il master.
+    /// The database in use appears in `/api/me` only for the master.
     #[tokio::test]
     async fn me_shows_database_only_to_master() {
         let pool = db::test_pool().await;

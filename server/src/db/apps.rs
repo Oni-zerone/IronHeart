@@ -1,4 +1,4 @@
-//! App: configurazione, chiavi, stato del controllo.
+//! Apps: configuration, keys, monitoring state.
 
 use serde::Serialize;
 
@@ -19,7 +19,7 @@ pub struct App {
     pub updated_at: i64,
 }
 
-/// Colonne di `App`: una macro, così le query restano stringhe letterali (sqlx 0.9).
+/// Columns of `App`: a macro, so queries stay string literals (sqlx 0.9).
 macro_rules! app_columns {
     () => {
         "id, name, key_id, interval_secs, grace_secs, state, \
@@ -87,7 +87,7 @@ pub async fn get_app(pool: &Pool, user_id: &str, app_id: &str) -> sqlx::Result<O
         .await
 }
 
-/// Destinatari configurati delle app di un utente (senza il ripiego sull'account).
+/// Configured recipients of a user's apps (without the account fallback).
 pub async fn configured_recipients(
     pool: &Pool,
     user_id: &str,
@@ -101,7 +101,7 @@ pub async fn configured_recipients(
     .await
 }
 
-/// Nuovi valori di un'app, già calcolati in Rust (stato e scadenza compresi).
+/// New values of an app, already computed in Rust (state and deadline included).
 pub struct AppUpdate<'a> {
     pub name: &'a str,
     pub interval_secs: i64,
@@ -164,7 +164,7 @@ async fn replace_recipients(
     Ok(())
 }
 
-/// Nuova chiave: il vecchio `key_id` smette di valere e il timestamp riparte.
+/// New key: the old `key_id` stops being valid and the timestamp restarts.
 pub async fn rotate_key(
     pool: &Pool,
     user_id: &str,
@@ -191,7 +191,7 @@ pub async fn rotate_key(
         == 1)
 }
 
-/// Cancella l'app e restituisce il suo `key_id`, da togliere dal registro.
+/// Deletes the app and returns its `key_id`, to remove from the registry.
 pub async fn delete_app(pool: &Pool, user_id: &str, app_id: &str) -> sqlx::Result<Option<String>> {
     sqlx::query_scalar("DELETE FROM apps WHERE id = $1 AND user_id = $2 RETURNING key_id")
         .bind(app_id)
@@ -200,7 +200,7 @@ pub async fn delete_app(pool: &Pool, user_id: &str, app_id: &str) -> sqlx::Resul
         .await
 }
 
-// ---- Registro delle chiavi --------------------------------------------------
+// ---- Key registry -----------------------------------------------------------
 
 #[derive(sqlx::FromRow)]
 pub struct KeyRow {
@@ -232,9 +232,9 @@ pub async fn app_key(pool: &Pool, app_id: &str) -> sqlx::Result<Option<KeyRow>> 
         .await
 }
 
-// ---- Heartbeat e controllo delle scadenze -----------------------------------
+// ---- Heartbeat and deadline check ------------------------------------------
 
-/// Un ping valido da registrare.
+/// A valid ping to record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PingRecord {
     pub app_id: String,
@@ -243,8 +243,8 @@ pub struct PingRecord {
     pub next_deadline_at: i64,
 }
 
-/// Registra un ping valido. Restituisce `false` se il timestamp non è nuovo.
-/// Se l'app era `down`, segna il ripristino: la mail la manda il controllo.
+/// Records a valid ping. Returns `false` if the timestamp is not new.
+/// If the app was `down`, flags the recovery: the check sends the email.
 #[cfg(test)]
 pub async fn record_ping(
     pool: &Pool,
@@ -257,13 +257,13 @@ pub async fn record_ping(
     Ok(record_pings(pool, &[record]).await?[0])
 }
 
-/// Ping per istruzione: 4 parametri ciascuno, ben sotto i limiti di SQLite
-/// (32.766) e di Postgres (65.535).
+/// Pings per statement: 4 parameters each, well below the limits of SQLite
+/// (32,766) and Postgres (65,535).
 const PINGS_PER_STATEMENT: usize = 500;
 
-/// `UPDATE … FROM (VALUES …)` per `rows` ping. Le colonne di VALUES si chiamano
-/// `column1…` sia in SQLite sia in Postgres. Nelle espressioni di SET, `apps.state`
-/// è il valore prima dell'aggiornamento (in entrambi).
+/// `UPDATE … FROM (VALUES …)` for `rows` pings. The VALUES columns are named
+/// `column1…` in both SQLite and Postgres. In the SET expressions, `apps.state`
+/// is the value before the update (in both).
 fn record_pings_sql(rows: usize) -> String {
     let values: Vec<String> = (0..rows)
         .map(|i| format!("(${}, ${}, ${}, ${})", 4 * i + 1, 4 * i + 2, 4 * i + 3, 4 * i + 4))
@@ -284,15 +284,15 @@ fn record_pings_sql(rows: usize) -> String {
     )
 }
 
-/// Registra più ping (al massimo uno per app) in una transazione, con una sola
-/// istruzione ogni 500 ping: con un database remoto ogni istruzione è un viaggio
-/// di rete. Per ciascuno: `false` se il timestamp non era nuovo (o l'app non
-/// esiste più).
+/// Records several pings (at most one per app) in one transaction, with a single
+/// statement per 500 pings: with a remote database every statement is a network
+/// round trip. For each one: `false` if the timestamp was not new (or the app no
+/// longer exists).
 pub async fn record_pings(pool: &Pool, pings: &[PingRecord]) -> sqlx::Result<Vec<bool>> {
     let mut tx = pool.begin().await?;
     let mut updated = std::collections::HashSet::new();
     for chunk in pings.chunks(PINGS_PER_STATEMENT) {
-        // Contiene solo segnaposto: i valori passano come parametri.
+        // Contains only placeholders: the values are passed as parameters.
         let sql = record_pings_sql(chunk.len());
         let mut query = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql));
         for ping in chunk {
@@ -315,7 +315,7 @@ pub struct DownApp {
     pub last_seen_at: Option<i64>,
 }
 
-/// Porta a `down` le app scadute. Atomico: ogni app passa una volta sola.
+/// Moves overdue apps to `down`. Atomic: each app transitions only once.
 pub async fn mark_overdue_down(pool: &Pool, now: i64) -> sqlx::Result<Vec<DownApp>> {
     sqlx::query_as(
         "UPDATE apps SET state = 'down', down_since = $1, next_deadline_at = NULL, updated_at = $1
@@ -344,8 +344,8 @@ pub async fn take_recoveries(pool: &Pool) -> sqlx::Result<Vec<RecoveredApp>> {
     .await
 }
 
-/// App `up` con la scadenza già passata: all'avvio si rinviano, perché i ping
-/// persi mentre il servizio era spento non sono colpa dell'app.
+/// `up` apps whose deadline has already passed: at startup they are postponed, because
+/// pings lost while the service was down are not the app's fault.
 pub async fn overdue_up_apps(pool: &Pool, now: i64) -> sqlx::Result<Vec<(String, i64, i64)>> {
     sqlx::query_as(
         "SELECT id, interval_secs, grace_secs FROM apps
@@ -365,7 +365,7 @@ pub async fn set_deadline(pool: &Pool, app_id: &str, next_deadline_at: i64) -> s
         .map(|_| ())
 }
 
-// ---- Stato degli avvisi sui tentativi falliti -------------------------------
+// ---- Failed-attempt alert state ---------------------------------------------
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct FailureAlertState {
@@ -376,7 +376,7 @@ pub struct FailureAlertState {
     pub fail_last_report_at: Option<i64>,
 }
 
-/// App con una finestra aperta o con tentativi non ancora segnalati.
+/// Apps with an open window or with attempts not yet reported.
 pub async fn failure_alert_candidates(pool: &Pool) -> sqlx::Result<Vec<FailureAlertState>> {
     sqlx::query_as(
         "SELECT id, name, fail_level, fail_window_end, fail_last_report_at FROM apps a
@@ -446,7 +446,7 @@ mod tests {
         assert!(mark_overdue_down(&pool, 60_999).await.unwrap().is_empty());
         let down = mark_overdue_down(&pool, 61_000).await.unwrap();
         assert_eq!(down.len(), 1);
-        assert!(mark_overdue_down(&pool, 70_000).await.unwrap().is_empty(), "una volta sola");
+        assert!(mark_overdue_down(&pool, 70_000).await.unwrap().is_empty(), "only once");
 
         record_ping(&pool, "a", 2, 80_000, 140_000).await.unwrap();
         assert_eq!(state(&pool, "a").await, ("up".into(), Some(140_000), 1));
@@ -479,10 +479,10 @@ mod tests {
         };
         let accepted = record_pings(&pool, &pings(5)).await.unwrap();
         assert_eq!(accepted.iter().filter(|ok| **ok).count(), ids.len());
-        assert!(!accepted[ids.len()], "app inesistente");
+        assert!(!accepted[ids.len()], "nonexistent app");
         assert_eq!(state(&pool, "b1200").await, ("up".into(), Some(65_000), 0));
 
-        // Stesso timestamp: nessuno accettato.
+        // Same timestamp: none accepted.
         assert!(record_pings(&pool, &pings(5)).await.unwrap().iter().all(|ok| !ok));
     }
 }

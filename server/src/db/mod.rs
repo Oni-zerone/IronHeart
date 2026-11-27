@@ -1,8 +1,8 @@
-//! Accesso al database. Tutte le query stanno in questo modulo (vedi CLAUDE.md).
+//! Database access. All queries live in this module (see CLAUDE.md).
 //!
-//! Il database si sceglie all'avvio da `DATABASE_URL`: `postgres://…` per un
-//! Postgres esterno, altrimenti il file SQLite locale. Le query sono le stesse
-//! per entrambi (pool `Any` di sqlx); cambiano solo le migrazioni e i PRAGMA.
+//! The database is chosen at startup from `DATABASE_URL`: `postgres://…` for an
+//! external Postgres, otherwise the local SQLite file. The queries are the same
+//! for both (sqlx `Any` pool); only the migrations and the PRAGMAs differ.
 
 mod apps;
 mod auth;
@@ -39,14 +39,14 @@ impl Backend {
         } else if database_url.starts_with("sqlite:") {
             Ok(Self::Sqlite)
         } else {
-            anyhow::bail!("DATABASE_URL non riconosciuto: deve iniziare con sqlite: o postgres://")
+            anyhow::bail!("unrecognized DATABASE_URL: it must start with sqlite: or postgres://")
         }
     }
 }
 
-/// Impostazioni di ogni connessione SQLite. Dopo ogni checkpoint il file WAL
-/// torna al massimo a 16 MB: senza questo limite, sotto carico, cresce e non si
-/// riduce più.
+/// Settings of every SQLite connection. After every checkpoint the WAL file
+/// goes back to at most 16 MB: without this limit, under load, it grows and never
+/// shrinks again.
 const SQLITE_PRAGMAS: &str = "PRAGMA journal_mode = WAL;
      PRAGMA synchronous = NORMAL;
      PRAGMA foreign_keys = ON;
@@ -79,12 +79,12 @@ pub async fn connect(database_url: &str) -> anyhow::Result<Pool> {
     Ok(pool)
 }
 
-/// Database in uso, senza credenziali: per il log e per la dashboard del master.
+/// Database in use, without credentials: for the log and the master's dashboard.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct DatabaseInfo {
-    /// `postgres` o `sqlite`.
+    /// `postgres` or `sqlite`.
     pub backend: &'static str,
-    /// `host:porta/database` per Postgres, percorso del file per SQLite.
+    /// `host:port/database` for Postgres, file path for SQLite.
     pub location: String,
 }
 
@@ -110,13 +110,13 @@ impl DatabaseInfo {
 impl std::fmt::Display for DatabaseInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.backend {
-            "postgres" => write!(f, "Postgres su {}", self.location),
-            _ => write!(f, "SQLite locale ({})", self.location),
+            "postgres" => write!(f, "Postgres on {}", self.location),
+            _ => write!(f, "local SQLite ({})", self.location),
         }
     }
 }
 
-/// Il file SQLite si crea se manca (`mode=rwc`), salvo che l'URL dica altro.
+/// The SQLite file is created if missing (`mode=rwc`), unless the URL says otherwise.
 fn sqlite_create_if_missing(url: &str) -> String {
     if url.contains("mode=") || url.contains(":memory:") {
         url.to_owned()
@@ -131,8 +131,8 @@ pub async fn ping(pool: &Pool) -> sqlx::Result<()> {
     sqlx::query("SELECT 1").execute(pool).await.map(|_| ())
 }
 
-/// Database vuoto per un test. SQLite in memoria, condiviso fra le connessioni
-/// del pool; con `IRONHEART_TEST_POSTGRES_URL` uno schema nuovo di quel Postgres.
+/// Empty database for a test. In-memory SQLite, shared across the pool's
+/// connections; with `IRONHEART_TEST_POSTGRES_URL` a new schema in that Postgres.
 #[cfg(test)]
 pub async fn test_pool() -> Pool {
     let name = format!("t{}", uuid::Uuid::now_v7().simple());
@@ -152,7 +152,7 @@ pub async fn test_pool() -> Pool {
     }
 }
 
-/// App minima per i test: intervallo 60 s, tolleranza 0, stato `new`.
+/// Minimal app for tests: 60 s interval, 0 grace, state `new`.
 #[cfg(test)]
 pub async fn insert_test_app(pool: &Pool, id: &str, user_id: &str) {
     insert_app(
@@ -184,14 +184,14 @@ mod tests {
         assert_eq!(Backend::from_url("postgres://u:p@h/db").unwrap(), Backend::Postgres);
         assert_eq!(Backend::from_url("postgresql://u:p@h/db").unwrap(), Backend::Postgres);
         assert!(Backend::from_url("mysql://h/db").is_err());
-        let info = DatabaseInfo::from_url("postgres://u:segreto@db.example.com/ih?sslmode=require");
+        let info = DatabaseInfo::from_url("postgres://u:secret@db.example.com/ih?sslmode=require");
         assert_eq!(info, DatabaseInfo { backend: "postgres", location: "db.example.com:5432/ih".into() });
-        assert_eq!(info.to_string(), "Postgres su db.example.com:5432/ih");
+        assert_eq!(info.to_string(), "Postgres on db.example.com:5432/ih");
         assert_eq!(DatabaseInfo::from_url("sqlite://data/x.db?mode=rwc").location, "sqlite://data/x.db");
         assert_eq!(sqlite_create_if_missing("sqlite://data/x.db"), "sqlite://data/x.db?mode=rwc");
     }
 
-    /// Le connessioni del pool di prova vedono lo stesso database.
+    /// The test pool's connections see the same database.
     #[tokio::test]
     async fn test_pool_is_shared_between_connections() {
         let pool = test_pool().await;

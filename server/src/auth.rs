@@ -1,8 +1,8 @@
-//! Login con Google (OpenID Connect, flusso authorization code con PKCE) e sessioni.
+//! Google sign-in (OpenID Connect, authorization code flow with PKCE) and sessions.
 //!
-//! - `GET  /auth/google/login`: crea un login in corso e reindirizza a Google.
-//! - `GET  /auth/google/callback`: verifica l'ID token, crea l'utente e la sessione.
-//! - `POST /auth/logout`: chiude la sessione.
+//! - `GET  /auth/google/login`: creates a pending login and redirects to Google.
+//! - `GET  /auth/google/callback`: verifies the ID token, creates the user and the session.
+//! - `POST /auth/logout`: ends the session.
 
 use std::sync::Arc;
 
@@ -59,16 +59,16 @@ struct AuthInner {
 }
 
 impl Auth {
-    /// Legge la configurazione OpenID di Google. Va fatto una volta all'avvio.
+    /// Reads Google's OpenID configuration. Done once at startup.
     pub async fn discover(config: &Config) -> anyhow::Result<Self> {
         let http = reqwest::ClientBuilder::new()
-            // Evita gli attacchi SSRF tramite redirect (consigliato da openidconnect).
+            // Prevents SSRF attacks through redirects (recommended by openidconnect).
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let metadata =
             CoreProviderMetadata::discover_async(IssuerUrl::new(GOOGLE_ISSUER.into())?, &http)
                 .await
-                .context("configurazione OpenID di Google non raggiungibile")?;
+                .context("Google OpenID configuration unreachable")?;
         let redirect = format!("{}/auth/google/callback", config.public_base_url);
         let client = CoreClient::from_provider_metadata(
             metadata,
@@ -85,7 +85,7 @@ impl Auth {
         })))
     }
 
-    /// Client fittizio per i test: nessuna chiamata a Google.
+    /// Fake client for tests: no calls to Google.
     #[cfg(test)]
     pub fn for_tests() -> Self {
         use openidconnect::{
@@ -157,7 +157,7 @@ async fn login(State(state): State<AppState>, jar: CookieJar) -> AppResult<Respo
     };
     db::insert_oauth_flow(&state.db, csrf.secret(), &flow, now).await?;
 
-    // Lega il login a questo browser: il callback deve arrivare con lo stesso `state`.
+    // Binds the login to this browser: the callback must arrive with the same `state`.
     let mut cookie = state.auth.cookie(STATE_COOKIE, csrf.secret().clone(), "/auth");
     cookie.set_max_age(time::Duration::milliseconds(LOGIN_TTL_MS));
     Ok((jar.add(cookie), Redirect::to(url.as_str())).into_response())
@@ -175,7 +175,7 @@ async fn callback(
     jar: CookieJar,
     Query(query): Query<CallbackQuery>,
 ) -> AppResult<Response> {
-    // Va letto prima di toglierlo: dopo `remove` il jar non lo restituisce più.
+    // Read it before removing it: after `remove` the jar no longer returns it.
     let cookie_state = jar_value(&jar, STATE_COOKIE);
     let jar = jar.remove(state.auth.cookie(STATE_COOKIE, String::new(), "/auth"));
     let redirect_with = |outcome: &str| {
@@ -185,27 +185,27 @@ async fn callback(
     let failed = || redirect_with("failed");
 
     if let Some(error) = &query.error {
-        tracing::info!(%error, "login annullato da Google");
+        tracing::info!(%error, "login cancelled by Google");
         return Ok(failed());
     }
     let (Some(code), Some(returned_state)) = (query.code, query.state) else {
         return Ok(failed());
     };
     if cookie_state.as_deref() != Some(returned_state.as_str()) {
-        tracing::warn!("login: state non corrispondente al cookie");
+        tracing::warn!("login: state does not match the cookie");
         return Ok(failed());
     }
     let now = now_ms();
     let Some(flow) = db::take_oauth_flow(&state.db, &returned_state, now - LOGIN_TTL_MS).await?
     else {
-        tracing::warn!("login: state sconosciuto o scaduto");
+        tracing::warn!("login: unknown or expired state");
         return Ok(failed());
     };
 
     let identity = match exchange(&state.auth, code, flow).await {
         Ok(identity) => identity,
         Err(err) => {
-            tracing::warn!(err = ?err, "login: verifica di Google non riuscita");
+            tracing::warn!(err = ?err, "login: Google verification failed");
             return Ok(failed());
         }
     };
@@ -222,14 +222,14 @@ async fn callback(
     )
     .await?
     else {
-        tracing::info!("login rifiutato: account senza invito");
+        tracing::info!("login rejected: account without an invite");
         return Ok(redirect_with("denied"));
     };
 
     let token = hex::encode(rand::random::<[u8; 32]>());
     db::insert_session(&state.db, &hash_token(&token), &user.id, now, now + SESSION_TTL_MS).await?;
     db::delete_expired_sessions(&state.db, now).await?;
-    tracing::info!(user_id = %user.id, "login eseguito");
+    tracing::info!(user_id = %user.id, "signed in");
 
     let mut cookie = state.auth.cookie(SESSION_COOKIE, token, "/");
     cookie.set_max_age(time::Duration::milliseconds(SESSION_TTL_MS));
@@ -250,13 +250,13 @@ async fn exchange(auth: &Auth, code: String, flow: db::OAuthFlow) -> anyhow::Res
         .set_pkce_verifier(PkceCodeVerifier::new(flow.pkce_verifier))
         .request_async(&auth.http)
         .await?;
-    let id_token = token.id_token().ok_or_else(|| anyhow!("Google non ha restituito l'ID token"))?;
+    let id_token = token.id_token().ok_or_else(|| anyhow!("Google did not return the ID token"))?;
     let claims = id_token.claims(&auth.client.id_token_verifier(), &Nonce::new(flow.nonce))?;
 
     if claims.email_verified() != Some(true) {
-        anyhow::bail!("email non verificata da Google");
+        anyhow::bail!("email not verified by Google");
     }
-    let email = claims.email().ok_or_else(|| anyhow!("email assente nell'ID token"))?;
+    let email = claims.email().ok_or_else(|| anyhow!("email missing from the ID token"))?;
     Ok(GoogleIdentity {
         sub: claims.subject().to_string(),
         email: email.to_string(),
@@ -280,7 +280,7 @@ fn hash_token(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
 
-/// Utente master (`ADMIN_EMAIL`) della sessione corrente: 401 senza sessione, 403 altrimenti.
+/// Master user (`ADMIN_EMAIL`) of the current session: 401 without a session, 403 otherwise.
 pub struct MasterUser(#[allow(dead_code)] pub db::User);
 
 impl<S> FromRequestParts<S> for MasterUser
@@ -301,7 +301,7 @@ where
     }
 }
 
-/// Utente admin della sessione corrente: 401 senza sessione, 403 se non è admin.
+/// Admin user of the current session: 401 without a session, 403 if not an admin.
 pub struct AdminUser(pub db::User);
 
 impl<S> FromRequestParts<S> for AdminUser
@@ -317,8 +317,8 @@ where
     }
 }
 
-/// Utente della sessione corrente. Negli handler risponde 401 se manca;
-/// come `Option<CurrentUser>` vale `None`.
+/// User of the current session. In handlers it answers 401 if missing;
+/// as `Option<CurrentUser>` it is `None`.
 pub struct CurrentUser(pub db::User);
 
 async fn current_user(parts: &Parts, state: &AppState) -> Result<Option<CurrentUser>, Response> {

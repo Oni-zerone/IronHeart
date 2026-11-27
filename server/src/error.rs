@@ -3,12 +3,12 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-/// Errore inatteso: si registra nel log e il client riceve solo un 500.
+/// Unexpected error: it is logged and the client only receives a 500.
 pub struct AppError(anyhow::Error);
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        tracing::error!(err = ?self.0, "errore nella richiesta");
+        tracing::error!(err = ?self.0, "request error");
         StatusCode::INTERNAL_SERVER_ERROR.into_response()
     }
 }

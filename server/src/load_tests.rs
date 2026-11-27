@@ -1,14 +1,14 @@
-//! Prova di carico dell'heartbeat, dentro la suite di test.
+//! Heartbeat load test, inside the test suite.
 //!
-//! Il server gira su una porta locale con il database in memoria. Mentre molti
-//! worker mandano firme false (con IP diversi), un altro task manda un ping
-//! valido per ogni app a ogni secondo. Si verifica che:
-//! - ogni risposta sia 204;
-//! - tutti i ping veri vengano registrati;
-//! - ogni tentativo falso sia contato, senza scritture nel database;
-//! - gli IP restino limitati a 20 per app.
+//! The server runs on a local port with the in-memory database. While many
+//! workers send forged signatures (from different IPs), another task sends a
+//! valid ping for every app every second. It checks that:
+//! - every response is 204;
+//! - all real pings are recorded;
+//! - every forged attempt is counted, without writes to the database;
+//! - IPs stay limited to 20 per app.
 //!
-//! I numeri di velocità vengono stampati ma non verificati (dipendono dalla macchina):
+//! Speed numbers are printed but not checked (they depend on the machine):
 //! `IRONHEART_LOAD_SECS=30 cargo test --release load_tests -- --nocapture`.
 
 use std::{
@@ -79,13 +79,13 @@ fn request(client: &reqwest::Client, url: &str, key_id: &str, ts: i64, signature
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn heartbeat_survives_a_flood_of_forged_requests() {
-    // ---- Dati: APPS app con chiavi note ----
+    // ---- Data: APPS apps with known keys ----
     let pool = db::test_pool().await;
     let user = db::upsert_google_user(&pool, "sub", "load@example.com", None, 1).await.unwrap();
     let secret_box = SecretBox::new(&[9; 32], 1);
     let mut keys = Vec::new();
     for i in 0..APPS {
-        let (id, key_id, secret) = (format!("app-{i}"), format!("key{i:05}"), format!("ihs_segreto_{i}"));
+        let (id, key_id, secret) = (format!("app-{i}"), format!("key{i:05}"), format!("ihs_secret_{i}"));
         db::insert_app(
             &pool,
             &db::NewApp {
@@ -108,7 +108,7 @@ async fn heartbeat_survives_a_flood_of_forged_requests() {
     let keys = Arc::new(keys);
     let hb = Arc::new(Heartbeat::load(&pool, secret_box, Some("x-forwarded-for".into())).await.unwrap());
 
-    // ---- Server su una porta locale ----
+    // ---- Server on a local port ----
     let state = test_state(pool.clone(), hb.clone());
     heartbeat::spawn_writer(state.clone());
     let app = Router::new().route(HEARTBEAT_PATH, post(heartbeat::handler)).with_state(state);
@@ -125,7 +125,7 @@ async fn heartbeat_survives_a_flood_of_forged_requests() {
     let forged = Arc::new(Counters::default());
     let legit = Arc::new(Counters::default());
 
-    // ---- Attacco: firme false su chiavi esistenti, da molti IP ----
+    // ---- Attack: forged signatures on existing keys, from many IPs ----
     let mut tasks = Vec::new();
     for worker in 0..FLOOD_WORKERS {
         let (client, url, keys, forged) = (client.clone(), url.clone(), keys.clone(), forged.clone());
@@ -142,7 +142,7 @@ async fn heartbeat_survives_a_flood_of_forged_requests() {
         }));
     }
 
-    // ---- Ping veri: uno per app a ogni secondo, sempre con un timestamp nuovo ----
+    // ---- Real pings: one per app every second, always with a new timestamp ----
     let legit_task = {
         let (client, url, keys, legit) = (client.clone(), url.clone(), keys.clone(), legit.clone());
         tokio::spawn(async move {
@@ -179,7 +179,7 @@ async fn heartbeat_survives_a_flood_of_forged_requests() {
     let (last_ts, rounds) = legit_task.await.unwrap();
     let elapsed = started.elapsed();
 
-    // I ping validi si scrivono in un task separato: si aspetta che arrivino tutti.
+    // Valid pings are written in a separate task: wait for all of them to land.
     let mut recorded = 0;
     for _ in 0..100 {
         recorded = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM apps WHERE last_signed_ts = $1")
@@ -202,7 +202,7 @@ async fn heartbeat_survives_a_flood_of_forged_requests() {
 
     let rate = |n: u64| n as f64 / elapsed.as_secs_f64();
     println!(
-        "falsi: {forged_sent} ({:.0}/s, max {:.1} ms) · veri: {} in {rounds} giri ({:.0}/s, max {:.1} ms) · registrati {recorded}/{APPS}",
+        "forged: {forged_sent} ({:.0}/s, max {:.1} ms) · real: {} in {rounds} rounds ({:.0}/s, max {:.1} ms) · recorded {recorded}/{APPS}",
         rate(forged_sent),
         forged.max_latency_us.load(Ordering::Relaxed) as f64 / 1000.0,
         legit.sent.load(Ordering::Relaxed),
@@ -210,13 +210,13 @@ async fn heartbeat_survives_a_flood_of_forged_requests() {
         legit.max_latency_us.load(Ordering::Relaxed) as f64 / 1000.0,
     );
 
-    assert_eq!(forged.errors.load(Ordering::Relaxed) + legit.errors.load(Ordering::Relaxed), 0, "errori di rete");
-    assert_eq!(forged.non_204.load(Ordering::Relaxed) + legit.non_204.load(Ordering::Relaxed), 0, "risposte diverse da 204");
-    assert!(rounds >= 1, "nessun giro di ping veri");
+    assert_eq!(forged.errors.load(Ordering::Relaxed) + legit.errors.load(Ordering::Relaxed), 0, "network errors");
+    assert_eq!(forged.non_204.load(Ordering::Relaxed) + legit.non_204.load(Ordering::Relaxed), 0, "responses other than 204");
+    assert!(rounds >= 1, "no round of real pings");
     assert_eq!(legit.sent.load(Ordering::Relaxed), rounds * APPS as u64);
-    assert_eq!(recorded, APPS as i64, "ping veri persi durante l'attacco");
-    assert_eq!(counted as u64, forged_sent, "tentativi falsi non contati");
-    assert_eq!(replays, 0, "ping veri scambiati per ripetuti");
-    assert!(max_ips <= 20, "IP per app oltre il limite: {max_ips}");
-    assert_eq!(buckets, 0, "scritture nel database per richieste non valide");
+    assert_eq!(recorded, APPS as i64, "real pings lost during the attack");
+    assert_eq!(counted as u64, forged_sent, "forged attempts not counted");
+    assert_eq!(replays, 0, "real pings mistaken for replays");
+    assert!(max_ips <= 20, "IPs per app over the limit: {max_ips}");
+    assert_eq!(buckets, 0, "database writes for invalid requests");
 }

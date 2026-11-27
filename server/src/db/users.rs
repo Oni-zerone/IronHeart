@@ -1,4 +1,4 @@
-//! Gestione degli utenti e degli inviti (solo admin).
+//! Management of users and invites (admins only).
 
 use serde::Serialize;
 
@@ -51,12 +51,12 @@ pub async fn list_invites(pool: &Pool) -> sqlx::Result<Vec<Invite>> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum InviteOutcome {
     Created,
-    /// Esisteva già: aggiornato il ruolo.
+    /// Already existed: role updated.
     Updated,
     AlreadyUser,
 }
 
-/// `email` va passata in minuscolo.
+/// `email` must be passed in lowercase.
 pub async fn create_invite(
     pool: &Pool,
     email: &str,
@@ -65,7 +65,7 @@ pub async fn create_invite(
     now: i64,
 ) -> sqlx::Result<InviteOutcome> {
     let mut tx = pool.begin().await?;
-    // COUNT invece di EXISTS: EXISTS è un booleano in Postgres e un intero in SQLite.
+    // COUNT instead of EXISTS: EXISTS is a boolean in Postgres and an integer in SQLite.
     let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE email = $1")
         .bind(email)
         .fetch_one(&mut *tx)
@@ -110,8 +110,8 @@ pub async fn set_user_role(pool: &Pool, user_id: &str, role: &str) -> sqlx::Resu
         == 1)
 }
 
-/// Cancella l'utente con app e sessioni (a cascata). Restituisce gli id delle
-/// app cancellate, da togliere dal registro in memoria, o `None` se non esisteva.
+/// Deletes the user with apps and sessions (cascading). Returns the ids of the
+/// deleted apps, to remove from the in-memory registry, or `None` if it did not exist.
 pub async fn delete_user(pool: &Pool, user_id: &str) -> sqlx::Result<Option<Vec<String>>> {
     let mut tx = pool.begin().await?;
     let app_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM apps WHERE user_id = $1")

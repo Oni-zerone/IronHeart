@@ -5,7 +5,7 @@ services:
       - "1025:1025"
       - "8025:8025"
 
-  # Facoltativo: Postgres per provare il database esterno in locale.
+  # Optional: Postgres to try the external database locally.
   # DATABASE_URL=postgres://ironheart:ironheart@localhost:5432/ironheart
   postgres:
     image: postgres:17-alpine

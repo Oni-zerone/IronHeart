@@ -1,9 +1,9 @@
-//! Coda delle mail di avviso. Il controllo periodico mette le mail in coda e
-//! prosegue; un task separato le manda, alcune in parallelo. Così un invio lento
-//! (o un'ondata di avvisi) non ferma il controllo delle scadenze.
+//! Alert email queue. The periodic check puts emails in the queue and moves
+//! on; a separate task sends them, a few in parallel. This way a slow send
+//! (or a wave of alerts) does not stop the deadline check.
 //!
-//! Due code: gli avvisi urgenti (app ferma, ripristino) hanno la precedenza e
-//! non si scartano; i riepiloghi dei tentativi falliti si scartano se la coda è piena.
+//! Two queues: urgent alerts (app down, recovery) take priority and are never
+//! dropped; failed-attempt summaries are dropped if the queue is full.
 
 use std::sync::{
     Arc,
@@ -43,20 +43,20 @@ impl Outbox {
         Arc::new(outbox)
     }
 
-    /// Avviso urgente: aspetta solo se la coda è piena (10.000 mail).
+    /// Urgent alert: waits only if the queue is full (10,000 emails).
     pub async fn urgent(&self, email: Email) {
         if self.urgent.send(email).await.is_err() {
-            tracing::error!("coda delle mail chiusa: avviso perso");
+            tracing::error!("email queue closed: alert lost");
         }
     }
 
-    /// Riepilogo: se la coda è piena si scarta. Restituisce `false` se scartato.
+    /// Summary: dropped if the queue is full. Returns `false` if dropped.
     pub fn report(&self, email: Email) -> bool {
         match self.reports.try_send(email) {
             Ok(()) => true,
             Err(_) => {
                 let dropped = self.dropped_reports.fetch_add(1, Ordering::Relaxed) + 1;
-                tracing::warn!(dropped, "coda dei riepiloghi piena: riepilogo scartato");
+                tracing::warn!(dropped, "summary queue full: summary dropped");
                 false
             }
         }
@@ -72,11 +72,11 @@ async fn run(mut receivers: Receivers, mailer: Mailer) {
             Some(email) = receivers.reports.recv() => email,
             else => break,
         };
-        let permit = permits.clone().acquire_owned().await.expect("semaforo aperto");
+        let permit = permits.clone().acquire_owned().await.expect("semaphore open");
         let mailer = mailer.clone();
         tokio::spawn(async move {
             if let Err(err) = mailer.send(&email).await {
-                tracing::error!(err = ?err, subject = %email.subject, "avviso non inviato");
+                tracing::error!(err = ?err, subject = %email.subject, "alert not sent");
             }
             drop(permit);
         });
@@ -96,12 +96,12 @@ mod tests {
         let (outbox, mut receivers) = Outbox::with_capacity(2, 2);
         assert!(outbox.report(email(1)));
         assert!(outbox.report(email(2)));
-        assert!(!outbox.report(email(3)), "coda piena: scartato");
+        assert!(!outbox.report(email(3)), "queue full: dropped");
         assert_eq!(outbox.dropped_reports.load(Ordering::Relaxed), 1);
 
         outbox.urgent(email(4)).await;
         outbox.urgent(email(5)).await;
-        // La terza aspetta finché qualcuno non consuma la coda.
+        // The third one waits until someone drains the queue.
         let waiting = tokio::spawn(async move { outbox.urgent(email(6)).await });
         tokio::task::yield_now().await;
         assert!(!waiting.is_finished());

@@ -9,13 +9,13 @@ export interface User {
   role: Role
   /** Master user (ADMIN_EMAIL): always an admin. */
   is_master: boolean
-  /** Solo per il master: database su cui gira l'istanza. */
+  /** Master only: the database the instance runs on. */
   database?: DatabaseInfo
 }
 
 export interface DatabaseInfo {
   backend: 'postgres' | 'sqlite'
-  /** `host:porta/database` per Postgres, percorso del file per SQLite. */
+  /** `host:port/database` for Postgres, file path for SQLite. */
   location: string
 }
 

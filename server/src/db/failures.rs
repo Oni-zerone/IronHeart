@@ -1,4 +1,4 @@
-//! Tentativi di heartbeat falliti, sommati per periodo.
+//! Failed heartbeat attempts, summed per period.
 
 use std::collections::BTreeMap;
 
@@ -7,15 +7,15 @@ use uuid::Uuid;
 
 use super::Pool;
 
-/// Conteggi di un periodo, o somma di più periodi.
+/// Counts of a period, or the sum of several periods.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct FailureCounts {
     pub bad_signature: i64,
     pub replay: i64,
     pub clock_skew: i64,
-    /// IP → tentativi (al massimo 20 per periodo).
+    /// IP → attempts (at most 20 per period).
     pub ips: BTreeMap<String, i64>,
-    /// Tentativi da IP oltre i primi 20.
+    /// Attempts from IPs beyond the first 20.
     pub other_ips: i64,
 }
 
@@ -68,16 +68,16 @@ pub async fn insert_failure_bucket(
     .execute(pool)
     .await;
     match result {
-        // L'app può essere stata cancellata nel frattempo: i suoi conteggi non servono più.
+        // The app may have been deleted in the meantime: its counts are no longer needed.
         Err(sqlx::Error::Database(err)) if err.is_foreign_key_violation() => Ok(()),
         other => other.map(|_| ()),
     }
 }
 
-/// Conteggi accumulati in memoria per un'app: `(app_id, inizio del periodo, conteggi)`.
+/// Counts accumulated in memory for an app: `(app_id, period start, counts)`.
 pub type PendingFailures = (String, i64, FailureCounts);
 
-/// Righe per istruzione: 9 parametri ciascuna.
+/// Rows per statement: 9 parameters each.
 const BUCKETS_PER_STATEMENT: usize = 500;
 
 fn insert_failure_buckets_sql(rows: usize) -> String {
@@ -98,15 +98,15 @@ fn insert_failure_buckets_sql(rows: usize) -> String {
     )
 }
 
-/// Scrive i conteggi di un giro del controllo, 500 app per istruzione. Le app
-/// cancellate nel frattempo si saltano.
+/// Writes the counts of one round of the check, 500 apps per statement. Apps
+/// deleted in the meantime are skipped.
 pub async fn insert_failure_buckets(
     pool: &Pool,
     flushed_at: i64,
     pending: &[PendingFailures],
 ) -> sqlx::Result<()> {
     for chunk in pending.chunks(BUCKETS_PER_STATEMENT) {
-        // Contiene solo segnaposto: i valori passano come parametri.
+        // Contains only placeholders: the values are passed as parameters.
         let mut query = sqlx::query(sqlx::AssertSqlSafe(insert_failure_buckets_sql(chunk.len())));
         for (app_id, period_start, counts) in chunk {
             query = query
@@ -122,7 +122,7 @@ pub async fn insert_failure_buckets(
         }
         match query.execute(pool).await {
             Ok(_) => {}
-            // Un'app cancellata fra il controllo EXISTS e l'inserimento: riga per riga.
+            // An app deleted between the EXISTS check and the insert: row by row.
             Err(sqlx::Error::Database(err)) if err.is_foreign_key_violation() => {
                 for (app_id, period_start, counts) in chunk {
                     insert_failure_bucket(pool, app_id, *period_start, flushed_at, counts).await?;
@@ -134,7 +134,7 @@ pub async fn insert_failure_buckets(
     Ok(())
 }
 
-/// Periodi di un'app scritti dopo `flushed_after`, dal più recente.
+/// Periods of an app written after `flushed_after`, most recent first.
 pub async fn failure_buckets_since(
     pool: &Pool,
     app_id: &str,
@@ -179,14 +179,14 @@ pub async fn failure_summary_since(
     Ok(total)
 }
 
-/// Totali per app di un utente, per l'elenco della dashboard.
+/// Per-app totals for a user, for the dashboard list.
 pub async fn failure_totals_for_user(
     pool: &Pool,
     user_id: &str,
     flushed_after: i64,
 ) -> sqlx::Result<Vec<(String, i64)>> {
     sqlx::query_as(
-        // SUM di BIGINT in Postgres è NUMERIC: il cast lo riporta a i64.
+        // SUM of BIGINT in Postgres is NUMERIC: the cast brings it back to i64.
         "SELECT b.app_id, CAST(SUM(b.bad_signature + b.replay + b.clock_skew) AS BIGINT)
          FROM failure_buckets b JOIN apps a ON a.id = b.app_id
          WHERE a.user_id = $1 AND b.flushed_at > $2
@@ -230,10 +230,10 @@ mod tests {
         assert_eq!(summary.bad_signature, 6);
         assert_eq!(summary.ips, [("1.1.1.1".into(), 2), ("2.2.2.2".into(), 4)].into());
 
-        // Conteggi di un'app già cancellata: ignorati senza errore.
+        // Counts of an app already deleted: ignored without error.
         insert_failure_bucket(&pool, "missing", 0, 40, &bucket(1, "x")).await.unwrap();
 
-        // In blocco: stessi conteggi, l'app mancante si salta.
+        // In bulk: same counts, the missing app is skipped.
         let pending = vec![
             ("a".to_owned(), 30, bucket(8, "3.3.3.3")),
             ("missing".to_owned(), 30, bucket(1, "x")),

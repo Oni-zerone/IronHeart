@@ -1,19 +1,19 @@
-//! Generatore di carico per l'endpoint di heartbeat.
+//! Load generator for the heartbeat endpoint.
 //!
 //! ```sh
 //! cargo run --release --example loadtest -- --url http://127.0.0.1:8080 --mode bad \
 //!     --keys keys.csv --concurrency 64 --duration 30 [--spoof-ips 5000] [--valid-every 10]
 //! ```
 //!
-//! Modalità:
-//! - `unknown`: chiavi inesistenti (il caso più economico per il server);
-//! - `bad`: chiavi esistenti con firma sbagliata (contati come tentativi falliti);
-//! - `valid`: ping validi, al massimo uno al secondo per chiave;
-//! - `mixed`: attacco `bad` con tutta la concorrenza e, in parallelo, un ping valido
-//!   per ogni chiave ogni `--valid-every` secondi (i ping veri sopravvivono?).
+//! Modes:
+//! - `unknown`: nonexistent keys (the cheapest case for the server);
+//! - `bad`: existing keys with a wrong signature (counted as failed attempts);
+//! - `valid`: valid pings, at most one per second per key;
+//! - `mixed`: `bad` attack with all the concurrency and, in parallel, a valid ping
+//!   for every key every `--valid-every` seconds (do the real pings survive?).
 //!
-//! `--keys` è un CSV `key_id,secret` per riga. `--spoof-ips N` aggiunge
-//! `X-Forwarded-For` con N indirizzi diversi (il server va avviato con
+//! `--keys` is a CSV with `key_id,secret` per line. `--spoof-ips N` adds
+//! `X-Forwarded-For` with N different addresses (the server must be started with
 //! `CLIENT_IP_HEADER=x-forwarded-for`).
 
 use std::{
@@ -55,12 +55,12 @@ fn parse() -> Opts {
         "bad" => Mode::Bad,
         "valid" => Mode::Valid,
         "mixed" => Mode::Mixed,
-        other => panic!("modalità sconosciuta: {other}"),
+        other => panic!("unknown mode: {other}"),
     };
     let keys = get("--keys")
         .map(|path| {
             std::fs::read_to_string(path)
-                .expect("file delle chiavi")
+                .expect("keys file")
                 .lines()
                 .filter_map(|l| l.split_once(','))
                 .map(|(k, s)| (k.trim().to_owned(), s.trim().to_owned()))
@@ -77,7 +77,7 @@ fn parse() -> Opts {
         valid_every: Duration::from_secs(get("--valid-every").map_or(10, |v| v.parse().unwrap())),
     };
     if mode != Mode::Unknown && opts.keys.is_empty() {
-        panic!("questa modalità richiede --keys");
+        panic!("this mode requires --keys");
     }
     opts
 }
@@ -114,7 +114,7 @@ impl Stats {
             if n == 0 { 0.0 } else { self.latencies_us[((n as f64 * p) as usize).min(n - 1)] as f64 / 1000.0 }
         };
         println!(
-            "{label:<10} richieste {n:>8}  {:>8.0}/s  p50 {:>6.2} ms  p95 {:>6.2} ms  p99 {:>7.2} ms  max {:>7.2} ms  non-204 {}  errori {}",
+            "{label:<10} requests {n:>8}  {:>8.0}/s  p50 {:>6.2} ms  p95 {:>6.2} ms  p99 {:>7.2} ms  max {:>7.2} ms  non-204 {}  errors {}",
             n as f64 / elapsed.as_secs_f64(),
             pct(0.50),
             pct(0.95),
@@ -190,7 +190,7 @@ async fn main() {
                         send(&client, &opts.url, key, ts, &format!("v1={:064x}", i), ip, &mut stats).await;
                     }
                     _ => {
-                        // Una chiave libera in questo secondo, altrimenti si aspetta un attimo.
+                        // A key that is free in this second, otherwise wait a moment.
                         let n = opts.keys.len();
                         let mut sent = false;
                         for _ in 0..n {
@@ -212,7 +212,7 @@ async fn main() {
         }));
     }
 
-    // Ping veri durante l'attacco: uno per chiave ogni `valid_every`.
+    // Real pings during the attack: one per key every `valid_every`.
     let legit = (opts.mode == Mode::Mixed).then(|| {
         let (opts, client) = (opts.clone(), client.clone());
         tokio::spawn(async move {
@@ -257,19 +257,19 @@ async fn main() {
     }
     let elapsed = started.elapsed();
     let label = match flood_mode {
-        Mode::Unknown => "sconosc.",
-        Mode::Bad => "falsi",
-        _ => "validi",
+        Mode::Unknown => "unknown",
+        Mode::Bad => "forged",
+        _ => "valid",
     };
     total.report(label, elapsed);
     if let Some(legit) = legit {
         let (stats, rounds) = legit.await.unwrap();
-        println!("ping veri inviati: {} giri × {} chiavi", rounds, opts.keys.len());
-        stats.report("veri", elapsed);
+        println!("real pings sent: {} rounds × {} keys", rounds, opts.keys.len());
+        stats.report("real", elapsed);
     }
 }
 
-/// Esegue le future in parallelo senza dipendenze in più.
+/// Runs the futures in parallel without extra dependencies.
 async fn futures_join<F: std::future::Future<Output = Stats> + Send + 'static>(
     futures: impl Iterator<Item = F>,
 ) -> Vec<Stats> {

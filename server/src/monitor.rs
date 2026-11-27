@@ -1,8 +1,8 @@
-//! Controllo periodico (ogni 30 secondi): scrive i tentativi falliti, porta a
-//! `down` le app scadute, prepara gli avvisi e pulisce i dati vecchi.
+//! Periodic check (every 30 seconds): writes failed attempts, moves overdue apps
+//! to `down`, prepares alerts and cleans up old data.
 //!
-//! Gli avvisi si raggruppano per destinatario (una mail per tipo a ogni giro) e
-//! vanno nella coda delle mail (`outbox`): il controllo non aspetta gli invii.
+//! Alerts are grouped by recipient (one email per type each round) and go to
+//! the email queue (`outbox`): the check does not wait for sends.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -20,19 +20,19 @@ pub const TICK: Duration = Duration::from_secs(30);
 const FAILURE_RETENTION_MS: i64 = 7 * DAY_MS;
 const LOGIN_TTL_MS: i64 = 10 * MINUTE_MS;
 
-/// Durata delle finestre tra un riepilogo e l'altro, per livello.
+/// Length of the windows between two summaries, per level.
 pub const FAILURE_WINDOWS_MIN: [i64; 6] = [5, 10, 20, 40, 80, 120];
-/// Al massimo un riepilogo di tentativi ogni 5 minuti per destinatario, anche
-/// quando le finestre delle sue app si chiudono in momenti diversi.
+/// At most one attempt summary every 5 minutes per recipient, even
+/// when the windows of their apps close at different times.
 pub const FAILURE_DIGEST_MIN_MS: i64 = 5 * MINUTE_MS;
-/// Un giro più lento di così viene segnalato nel log.
+/// A round slower than this is reported in the log.
 const SLOW_TICK: Duration = Duration::from_secs(5);
 
 fn window_ms(level: i64) -> i64 {
     FAILURE_WINDOWS_MIN[level.clamp(0, 5) as usize] * MINUTE_MS
 }
 
-/// Prossimo stato degli avvisi sui tentativi falliti di un'app.
+/// Next state of the failed-attempt alerts of an app.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Escalation {
     pub report: bool,
@@ -40,11 +40,11 @@ pub struct Escalation {
     pub window_end: Option<i64>,
 }
 
-/// - A riposo, con tentativi: avviso subito e finestra di 5 minuti.
-/// - Finestra chiusa con tentativi: avviso, livello +1 (massimo 5).
-/// - Finestra chiusa senza tentativi: livello −1; dal livello 0 si torna a riposo.
+/// - At rest, with attempts: alert right away and a 5-minute window.
+/// - Window closed with attempts: alert, level +1 (at most 5).
+/// - Window closed without attempts: level −1; from level 0 back to rest.
 ///
-/// Restituisce `None` se non cambia nulla.
+/// Returns `None` if nothing changes.
 pub fn escalate(level: i64, window_end: Option<i64>, pending: bool, now: i64) -> Option<Escalation> {
     match window_end {
         None if pending => Some(Escalation { report: true, level: 0, window_end: Some(now + window_ms(0)) }),
@@ -62,29 +62,29 @@ pub fn escalate(level: i64, window_end: Option<i64>, pending: bool, now: i64) ->
     }
 }
 
-/// All'avvio: le scadenze superate mentre il servizio era spento ripartono da adesso.
+/// At startup: deadlines passed while the service was down restart from now.
 pub async fn reschedule_overdue(pool: &db::Pool, now: i64) -> anyhow::Result<()> {
     let overdue = db::overdue_up_apps(pool, now).await?;
     for (app_id, interval_secs, grace_secs) in &overdue {
         db::set_deadline(pool, app_id, now + (interval_secs + grace_secs) * 1000).await?;
     }
     if !overdue.is_empty() {
-        tracing::info!("scadenze rinviate dopo il riavvio: {}", overdue.len());
+        tracing::info!("deadlines postponed after restart: {}", overdue.len());
     }
     Ok(())
 }
 
-/// Stato del controllo che resta in memoria tra un giro e l'altro.
+/// State of the check kept in memory between rounds.
 #[derive(Default)]
 pub struct Memory {
-    /// Riepiloghi dei tentativi in attesa, per destinatario.
+    /// Pending attempt summaries, per recipient.
     failure_digests: HashMap<String, PendingDigest>,
 }
 
 #[derive(Default)]
 struct PendingDigest {
     last_sent_at: Option<i64>,
-    /// Per app: se un'app torna prima dell'invio, i conteggi si sommano.
+    /// Per app: if an app comes back before sending, the counts add up.
     items: BTreeMap<String, FailureItem>,
 }
 
@@ -97,10 +97,10 @@ pub fn spawn(state: AppState) {
             interval.tick().await;
             let started = Instant::now();
             if let Err(err) = tick(&state, &mut memory, now_ms()).await {
-                tracing::error!(err = ?err, "controllo periodico non riuscito");
+                tracing::error!(err = ?err, "periodic check failed");
             }
             if started.elapsed() > SLOW_TICK {
-                tracing::warn!(elapsed = ?started.elapsed(), "controllo periodico lento");
+                tracing::warn!(elapsed = ?started.elapsed(), "slow periodic check");
             }
         }
     });
@@ -112,7 +112,7 @@ pub async fn tick(state: &AppState, memory: &mut Memory, now: i64) -> anyhow::Re
     db::insert_failure_buckets(pool, now, &state.heartbeat.take_failures()).await?;
     let unattributed = state.heartbeat.take_unattributed();
     if unattributed > 0 {
-        tracing::warn!("heartbeat con chiave sconosciuta: {unattributed}");
+        tracing::warn!("heartbeats with unknown key: {unattributed}");
     }
 
     let mut downs: BTreeMap<String, Vec<DownItem>> = BTreeMap::new();
@@ -152,7 +152,7 @@ pub async fn tick(state: &AppState, memory: &mut Memory, now: i64) -> anyhow::Re
             continue;
         };
         let last_report_at = if next.report { Some(now) } else { since };
-        // Prima lo stato, poi la mail: se l'invio fallisce non si riprova a raffica.
+        // State first, then the email: if sending fails there is no burst of retries.
         db::set_failure_alert_state(pool, &app.id, next.level, next.window_end, last_report_at).await?;
         if next.report {
             let item = FailureItem {
@@ -199,8 +199,8 @@ fn queue_failure(memory: &mut Memory, to: String, item: FailureItem) {
     }
 }
 
-/// Riepiloghi da mandare adesso: destinatari con qualcosa in attesa e
-/// nessun riepilogo negli ultimi `FAILURE_DIGEST_MIN_MS`.
+/// Summaries to send now: recipients with something pending and
+/// no summary in the last `FAILURE_DIGEST_MIN_MS`.
 fn due_failure_digests(memory: &mut Memory, now: i64) -> Vec<(String, Vec<FailureItem>)> {
     let mut due = Vec::new();
     for (to, digest) in memory.failure_digests.iter_mut() {
@@ -210,7 +210,7 @@ fn due_failure_digests(memory: &mut Memory, now: i64) -> Vec<(String, Vec<Failur
             due.push((to.clone(), std::mem::take(&mut digest.items).into_values().collect()));
         }
     }
-    // Destinatari tranquilli da più di un intervallo: non serve ricordarli.
+    // Recipients quiet for more than an interval: no need to remember them.
     memory.failure_digests.retain(|_, d| {
         !d.items.is_empty() || d.last_sent_at.is_some_and(|at| now - at < FAILURE_DIGEST_MIN_MS)
     });
@@ -263,8 +263,8 @@ mod tests {
         assert_eq!(escalate(0, Some(0), false, 0), Some(Escalation { report: false, level: 0, window_end: None }));
     }
 
-    /// Un attaccante che manda un tentativo appena si chiude ogni finestra
-    /// non ottiene più di un riepilogo ogni 2 ore, a regime.
+    /// An attacker sending an attempt as soon as each window closes
+    /// gets no more than one summary every 2 hours, at steady state.
     #[test]
     fn paced_attacker_is_rate_limited() {
         let (mut level, mut end): (i64, Option<i64>) = (0, None);
@@ -277,7 +277,7 @@ mod tests {
             }
             now = end.unwrap_or(now) + 1;
         }
-        assert!(reports <= 16, "riepiloghi in un giorno: {reports}");
+        assert!(reports <= 16, "summaries in a day: {reports}");
     }
 
     fn item(app: &str, bad: i64) -> FailureItem {
@@ -291,24 +291,24 @@ mod tests {
         }
     }
 
-    /// App con finestre che si chiudono in momenti diversi: il destinatario
-    /// riceve comunque al massimo un riepilogo ogni 5 minuti, senza perdere conteggi.
+    /// Apps with windows closing at different times: the recipient still
+    /// gets at most one summary every 5 minutes, without losing counts.
     #[test]
     fn failure_digests_are_rate_limited_per_recipient() {
         let mut memory = Memory::default();
         let mut sent = vec![];
         let mut now = 0;
         for i in 0..20 {
-            // Ogni giro (30 s) un'app diversa chiude la sua finestra.
+            // Every round (30 s) a different app closes its window.
             queue_failure(&mut memory, "a@example.com".into(), item(&format!("app{}", i % 4), 1));
             for (_, items) in due_failure_digests(&mut memory, now) {
                 sent.push((now, items.iter().map(|i| i.counts.bad_signature).sum::<i64>()));
             }
             now += M / 2;
         }
-        assert_eq!(sent.iter().map(|(at, _)| *at).collect::<Vec<_>>(), [0, 5 * M], "uno ogni 5 minuti");
+        assert_eq!(sent.iter().map(|(at, _)| *at).collect::<Vec<_>>(), [0, 5 * M], "one every 5 minutes");
         let delivered: i64 = sent.iter().map(|(_, n)| n).sum();
         let pending: i64 = memory.failure_digests.values().flat_map(|d| d.items.values()).map(|i| i.counts.bad_signature).sum();
-        assert_eq!(delivered + pending, 20, "nessun conteggio perso");
+        assert_eq!(delivered + pending, 20, "no count lost");
     }
 }

@@ -1,6 +1,6 @@
-//! Misura delle operazioni sul database usate dai percorsi caldi: scrittura dei
-//! ping in blocco, controllo delle scadenze, tentativi falliti, sessioni e
-//! dashboard. Non verifica tempi (dipendono dalla macchina), li stampa.
+//! Benchmark of the database operations used by the hot paths: bulk ping
+//! writes, deadline check, failed attempts, sessions and dashboard. It does
+//! not check timings (they depend on the machine), it prints them.
 //!
 //! ```sh
 //! cargo test --release db_bench -- --ignored --nocapture
@@ -8,8 +8,8 @@
 //!     cargo test --release db_bench -- --ignored --nocapture
 //! ```
 //!
-//! Senza variabile usa un file SQLite temporaneo (WAL, come in produzione).
-//! Su Postgres il database indicato viene svuotato prima della misura.
+//! Without the variable it uses a temporary SQLite file (WAL, as in production).
+//! On Postgres the given database is wiped before the benchmark.
 
 use std::time::{Duration, Instant};
 
@@ -20,7 +20,7 @@ const APPS_PER_USER: usize = 100;
 const ROUNDS: usize = 10;
 
 fn report(label: &str, total: Duration, count: usize) {
-    println!("{label:<44} {:>9.2} ms/op  ({count} op, {:.0} ms in totale)", total.as_secs_f64() * 1000.0 / count as f64, total.as_secs_f64() * 1000.0);
+    println!("{label:<44} {:>9.2} ms/op  ({count} op, {:.0} ms total)", total.as_secs_f64() * 1000.0 / count as f64, total.as_secs_f64() * 1000.0);
 }
 
 async fn pool() -> db::Pool {
@@ -48,12 +48,12 @@ async fn pool() -> db::Pool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "misura, da lanciare a mano"]
+#[ignore = "benchmark, run manually"]
 async fn db_bench() {
     let pool = pool().await;
     let apps = USERS * APPS_PER_USER;
 
-    // ---- Utenti, sessioni e app ----
+    // ---- Users, sessions and apps ----
     let started = Instant::now();
     let mut users = Vec::new();
     for u in 0..USERS {
@@ -85,16 +85,16 @@ async fn db_bench() {
             app_ids.push(id);
         }
     }
-    report("inserimento app (con destinatario)", started.elapsed(), apps);
+    report("app insert (with recipient)", started.elapsed(), apps);
 
-    // ---- Avvio: registro delle chiavi ----
+    // ---- Startup: key registry ----
     let started = Instant::now();
     for _ in 0..ROUNDS {
         assert_eq!(db::all_keys(&pool).await.unwrap().len(), apps);
     }
-    report("all_keys (2.000 app)", started.elapsed(), ROUNDS);
+    report("all_keys (2,000 apps)", started.elapsed(), ROUNDS);
 
-    // ---- Ping in blocco: un giro di spawn_writer con tutte le app ----
+    // ---- Bulk pings: one spawn_writer round with all apps ----
     let mut flush_total = Duration::ZERO;
     for round in 1..=ROUNDS as i64 {
         let pings: Vec<PingRecord> = app_ids
@@ -106,20 +106,20 @@ async fn db_bench() {
         flush_total += started.elapsed();
         assert!(accepted.iter().all(|ok| *ok));
     }
-    report("record_pings (2.000 ping per giro)", flush_total, ROUNDS);
+    report("record_pings (2,000 pings per round)", flush_total, ROUNDS);
 
-    // ---- Controllo: nessuna scadenza, poi tutte insieme ----
+    // ---- Check: no deadlines, then all at once ----
     let started = Instant::now();
     for _ in 0..ROUNDS {
         assert!(db::mark_overdue_down(&pool, 10).await.unwrap().is_empty());
         assert!(db::take_recoveries(&pool).await.unwrap().is_empty());
         db::failure_alert_candidates(&pool).await.unwrap();
     }
-    report("giro del controllo a riposo", started.elapsed(), ROUNDS);
+    report("check round at rest", started.elapsed(), ROUNDS);
 
     let started = Instant::now();
     assert_eq!(db::mark_overdue_down(&pool, 2_000_000).await.unwrap().len(), apps);
-    report("mark_overdue_down (2.000 app ferme)", started.elapsed(), 1);
+    report("mark_overdue_down (2,000 apps down)", started.elapsed(), 1);
 
     let started = Instant::now();
     for id in &app_ids {
@@ -127,7 +127,7 @@ async fn db_bench() {
     }
     report("alert_recipients", started.elapsed(), apps);
 
-    // ---- Tentativi falliti: un giro con tutte le app sotto attacco ----
+    // ---- Failed attempts: one round with all apps under attack ----
     let counts = FailureCounts {
         bad_signature: 100,
         ips: (0..20).map(|i| (format!("10.0.0.{i}"), 5)).collect(),
@@ -136,13 +136,13 @@ async fn db_bench() {
     let pending: Vec<db::PendingFailures> = app_ids.iter().map(|id| (id.clone(), 1, counts.clone())).collect();
     let started = Instant::now();
     db::insert_failure_buckets(&pool, 2, &pending).await.unwrap();
-    report("insert_failure_buckets (2.000 app, un giro)", started.elapsed(), 1);
+    report("insert_failure_buckets (2,000 apps, one round)", started.elapsed(), 1);
 
     let started = Instant::now();
     assert_eq!(db::failure_alert_candidates(&pool).await.unwrap().len(), apps);
-    report("failure_alert_candidates (2.000 app)", started.elapsed(), 1);
+    report("failure_alert_candidates (2,000 apps)", started.elapsed(), 1);
 
-    // ---- Richieste della dashboard ----
+    // ---- Dashboard requests ----
     let started = Instant::now();
     for i in 0..1000 {
         assert!(db::session_user(&pool, &format!("token-{}", i % USERS), 2).await.unwrap().is_some());
@@ -155,5 +155,5 @@ async fn db_bench() {
         assert_eq!(db::list_apps(&pool, user_id).await.unwrap().len(), APPS_PER_USER);
         db::failure_totals_for_user(&pool, user_id, 0).await.unwrap();
     }
-    report("elenco app + totali tentativi (100 app)", started.elapsed(), 200);
+    report("app list + attempt totals (100 apps)", started.elapsed(), 200);
 }

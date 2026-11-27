@@ -1,18 +1,18 @@
-//! Utenti, login in corso, sessioni e destinatari degli avvisi.
+//! Users, pending logins, sessions and alert recipients.
 
 use serde::Serialize;
 use uuid::Uuid;
 
 use super::Pool;
 
-// ---- Utenti -----------------------------------------------------------------
+// ---- Users ------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct User {
     pub id: String,
     pub email: String,
     pub name: Option<String>,
-    /// `admin` o `user`.
+    /// `admin` or `user`.
     pub role: String,
 }
 
@@ -22,11 +22,11 @@ impl User {
     }
 }
 
-/// Accesso con Google. Entra chi è già registrato, l'utente master o chi ha un
-/// invito per questa email (l'invito si consuma). Gli altri: `None`, e non si
-/// crea nulla.
+/// Google sign-in. Allowed in: whoever is already registered, the master user, or
+/// whoever has an invite for this email (the invite is consumed). Everyone else:
+/// `None`, and nothing is created.
 ///
-/// `email` va passata in minuscolo.
+/// `email` must be passed in lowercase.
 pub async fn login_google_user(
     pool: &Pool,
     google_sub: &str,
@@ -72,7 +72,7 @@ pub async fn login_google_user(
     Ok(Some(user))
 }
 
-/// Utente di prova con ruolo `user`.
+/// Test user with the `user` role.
 #[cfg(test)]
 pub async fn upsert_google_user(
     pool: &Pool,
@@ -96,10 +96,10 @@ pub async fn upsert_google_user(
     .await
 }
 
-// ---- Destinatari degli avvisi ----------------------------------------------
+// ---- Alert recipients -------------------------------------------------------
 
-/// Indirizzi a cui mandare gli avvisi di un'app: quelli configurati,
-/// oppure l'email dell'account se l'elenco è vuoto.
+/// Addresses to send an app's alerts to: the configured ones,
+/// or the account email if the list is empty.
 pub async fn alert_recipients(pool: &Pool, app_id: &str) -> sqlx::Result<Vec<String>> {
     sqlx::query_scalar(
         "SELECT r.email FROM app_recipients r WHERE r.app_id = $1
@@ -112,7 +112,7 @@ pub async fn alert_recipients(pool: &Pool, app_id: &str) -> sqlx::Result<Vec<Str
     .await
 }
 
-// ---- Login in corso ---------------------------------------------------------
+// ---- Pending logins ---------------------------------------------------------
 
 pub struct OAuthFlow {
     pub nonce: String,
@@ -137,7 +137,7 @@ pub async fn insert_oauth_flow(
     .map(|_| ())
 }
 
-/// Recupera e cancella il login in corso, se non è più vecchio di `created_after`.
+/// Fetches and deletes the pending login, if it is not older than `created_after`.
 pub async fn take_oauth_flow(
     pool: &Pool,
     state: &str,
@@ -162,7 +162,7 @@ pub async fn delete_oauth_flows_before(pool: &Pool, before: i64) -> sqlx::Result
         .map(|_| ())
 }
 
-// ---- Sessioni ---------------------------------------------------------------
+// ---- Sessions ---------------------------------------------------------------
 
 pub async fn insert_session(
     pool: &Pool,
@@ -256,7 +256,7 @@ mod tests {
             async move { login_google_user(&pool, sub, email, None, master, 1).await.unwrap() }
         };
 
-        assert!(login("sub-x", "x@example.com", false).await.is_none(), "senza invito");
+        assert!(login("sub-x", "x@example.com", false).await.is_none(), "without an invite");
         assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users").fetch_one(&pool).await.unwrap(), 0);
 
         let master = login("sub-m", "m@example.com", true).await.unwrap();
@@ -265,13 +265,13 @@ mod tests {
         crate::db::create_invite(&pool, "x@example.com", "user", Some(&master.id), 2).await.unwrap();
         let invited = login("sub-x", "x@example.com", false).await.unwrap();
         assert_eq!(invited.role, "user");
-        assert!(crate::db::list_invites(&pool).await.unwrap().is_empty(), "invito consumato");
+        assert!(crate::db::list_invites(&pool).await.unwrap().is_empty(), "invite consumed");
 
-        // Già registrato: entra senza invito e mantiene il ruolo.
+        // Already registered: gets in without an invite and keeps the role.
         crate::db::set_user_role(&pool, &invited.id, "admin").await.unwrap();
         assert_eq!(login("sub-x", "x2@example.com", false).await.unwrap().role, "admin");
 
-        // Il master torna admin anche se il ruolo nel database è cambiato.
+        // The master becomes admin again even if the role in the database changed.
         crate::db::set_user_role(&pool, &master.id, "user").await.unwrap();
         assert_eq!(login("sub-m", "m@example.com", true).await.unwrap().role, "admin");
     }

@@ -6,6 +6,7 @@ Lightweight heartbeat service. Users sign in with Google and register their appl
 
 - **Everything in the repository is written in English**: documentation (README, `docs/`, this file), code (identifiers, comments, log messages, test names), commit messages, the dashboard UI, API error messages and alert emails.
 - Do not add new text in other languages. When you touch a file that still contains Italian, translate the parts you change.
+- Exception: migrations that have already been applied (`server/migrations/*/`) are never edited, not even their comments: `sqlx::migrate!` stores a checksum of each file, and a changed file stops existing databases from starting. Their Italian comments stay; new migrations are written in English.
 
 ## Stack
 

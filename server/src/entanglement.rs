@@ -1,9 +1,9 @@
-//! Entanglement: heartbeat in uscita verso altre istanze di IronHeart, così più
-//! istanze si controllano a vicenda. Solo l'utente master lo configura.
+//! Entanglement: outgoing heartbeats to other IronHeart instances, so several
+//! instances monitor each other. Only the master user configures it.
 //!
-//! L'altra istanza risponde sempre 204: da qui si sa solo se il ping è stato
-//! consegnato. Se la chiave è sbagliata lo segnala l'altra istanza, con i
-//! riepiloghi dei tentativi non validi.
+//! The other instance always answers 204: from here we only know whether the ping
+//! was delivered. If the key is wrong the other instance reports it, in its
+//! invalid-attempt summaries.
 
 use std::{collections::HashMap, sync::Mutex, time::Duration};
 
@@ -32,7 +32,7 @@ const INTERVAL_RANGE: std::ops::RangeInclusive<i64> = 10..=86_400;
 
 pub struct Sender {
     http: reqwest::Client,
-    /// Ultimo timestamp firmato per collegamento: deve crescere a ogni ping.
+    /// Last signed timestamp per link: it must grow with every ping.
     last_ts: Mutex<HashMap<String, i64>>,
 }
 
@@ -41,17 +41,17 @@ impl Sender {
         Ok(Self {
             http: reqwest::Client::builder()
                 .timeout(REQUEST_TIMEOUT)
-                // Il percorso firmato è fisso: un redirect non va seguito.
+                // The signed path is fixed: a redirect must not be followed.
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
             last_ts: Mutex::default(),
         })
     }
 
-    /// Timestamp in secondi, sempre maggiore del precedente per lo stesso
-    /// collegamento (al più 1 secondo avanti: dentro la tolleranza di ±5 minuti).
+    /// Timestamp in seconds, always greater than the previous one for the same
+    /// link (at most 1 second ahead: within the ±5 minute tolerance).
     fn next_timestamp(&self, id: &str, now_secs: i64) -> i64 {
-        let mut last = self.last_ts.lock().expect("lock dei timestamp");
+        let mut last = self.last_ts.lock().expect("timestamp lock");
         let ts = last.get(id).map_or(now_secs, |prev| now_secs.max(prev + 1));
         last.insert(id.to_owned(), ts);
         ts
@@ -62,7 +62,7 @@ fn secret_aad(id: &str) -> String {
     format!("entanglement:{id}")
 }
 
-/// Manda un ping firmato. `None` se è stato consegnato (204), altrimenti l'errore.
+/// Sends a signed ping. `None` if it was delivered (204), otherwise the error.
 async fn send(state: &AppState, target: &DuePing) -> Option<String> {
     let secret = match state.heartbeat.secret_box().open(
         &target.secret_enc,
@@ -71,7 +71,7 @@ async fn send(state: &AppState, target: &DuePing) -> Option<String> {
     ) {
         Ok(secret) => secret,
         Err(err) => {
-            tracing::error!(id = %target.id, err = ?err, "segreto dell'entanglement non decifrabile");
+            tracing::error!(id = %target.id, err = ?err, "entanglement secret cannot be decrypted");
             return Some("Secret cannot be decrypted on this instance".into());
         }
     };
@@ -100,7 +100,7 @@ async fn send(state: &AppState, target: &DuePing) -> Option<String> {
 async fn send_and_record(state: &AppState, target: &DuePing) -> anyhow::Result<()> {
     let error = send(state, target).await;
     if let Some(error) = &error {
-        tracing::warn!(id = %target.id, %error, "entanglement: ping non consegnato");
+        tracing::warn!(id = %target.id, %error, "entanglement: ping not delivered");
     }
     db::record_ping_result(&state.db, &target.id, now_ms(), error.as_deref()).await?;
     Ok(())
@@ -109,7 +109,7 @@ async fn send_and_record(state: &AppState, target: &DuePing) -> anyhow::Result<(
 pub fn spawn(state: AppState) {
     tokio::spawn(async move {
         if let Err(err) = db::ping_all_now(&state.db, now_ms()).await {
-            tracing::error!(err = ?err, "entanglement: avvio non riuscito");
+            tracing::error!(err = ?err, "entanglement: startup failed");
         }
         let mut interval = tokio::time::interval(TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -118,7 +118,7 @@ pub fn spawn(state: AppState) {
             let due = match db::take_due_pings(&state.db, now_ms()).await {
                 Ok(due) => due,
                 Err(err) => {
-                    tracing::error!(err = ?err, "entanglement: lettura non riuscita");
+                    tracing::error!(err = ?err, "entanglement: read failed");
                     continue;
                 }
             };
@@ -126,7 +126,7 @@ pub fn spawn(state: AppState) {
                 let state = state.clone();
                 tokio::spawn(async move {
                     if let Err(err) = send_and_record(&state, &target).await {
-                        tracing::error!(id = %target.id, err = ?err, "entanglement: esito non salvato");
+                        tracing::error!(id = %target.id, err = ?err, "entanglement: outcome not saved");
                     }
                 });
             }
@@ -134,7 +134,7 @@ pub fn spawn(state: AppState) {
     });
 }
 
-// ---- API (solo master) ------------------------------------------------------
+// ---- API (master only) -----------------------------------------------------
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -151,7 +151,7 @@ fn invalid<T>(message: impl Into<String>) -> ApiResult<T> {
 
 #[derive(Serialize)]
 struct Overview {
-    /// Indirizzo di questa istanza, da usare sull'altra per il collegamento inverso.
+    /// Address of this instance, to use on the other one for the reverse link.
     instance_url: String,
     items: Vec<db::Entanglement>,
 }
@@ -210,7 +210,7 @@ struct UpdateInput {
     base_url: Option<String>,
     interval_secs: Option<i64>,
     enabled: Option<bool>,
-    /// Da fornire insieme, per sostituire la chiave.
+    /// To be provided together, to replace the key.
     key_id: Option<String>,
     secret: Option<String>,
 }
@@ -266,11 +266,11 @@ async fn remove(
     if !db::delete_entanglement(&state.db, &id).await? {
         return Err(ApiError::NotFound);
     }
-    state.entanglement.last_ts.lock().expect("lock dei timestamp").remove(&id);
+    state.entanglement.last_ts.lock().expect("timestamp lock").remove(&id);
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Manda subito un ping e restituisce l'esito.
+/// Sends a ping right away and returns the outcome.
 async fn ping_now(
     State(state): State<AppState>,
     _: MasterUser,
@@ -307,7 +307,7 @@ fn validate_credentials(key_id: &str, secret: &str) -> ApiResult<(String, String
     Ok((key_id.to_owned(), secret.to_owned()))
 }
 
-/// Solo l'origine (schema, host, porta). HTTPS, oppure HTTP verso localhost per lo sviluppo.
+/// Only the origin (scheme, host, port). HTTPS, or HTTP to localhost for development.
 fn normalize_base_url(raw: &str) -> ApiResult<String> {
     let Ok(url) = reqwest::Url::parse(raw.trim()) else {
         return invalid("Invalid address: use for example https://heartbeat.example.com");

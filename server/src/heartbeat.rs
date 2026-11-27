@@ -1,10 +1,10 @@
-//! Endpoint di heartbeat: risponde sempre 204, nello stesso modo per ogni richiesta.
+//! Heartbeat endpoint: always answers 204, the same way for every request.
 //!
-//! I segreti delle app stanno in memoria (decifrati all'avvio), così una verifica
-//! costa una ricerca nella mappa e un HMAC, senza database. I ping validi si
-//! raccolgono in memoria (l'ultimo per app) e si scrivono in blocco una volta al
-//! secondo; i tentativi falliti si sommano in memoria e il controllo periodico
-//! li scrive (vedi `monitor`).
+//! App secrets live in memory (decrypted at startup), so a check costs a map
+//! lookup and an HMAC, without the database. Valid pings are collected in
+//! memory (the latest per app) and written in bulk once per second; failed
+//! attempts are summed in memory and the periodic check writes them (see
+//! `monitor`).
 
 use std::{
     collections::HashMap,
@@ -28,7 +28,7 @@ use crate::{
     db::{self, FailureCounts, KeyRow, PingRecord},
 };
 
-/// Ogni quanto si scrivono i ping validi raccolti.
+/// How often the collected valid pings are written.
 const PING_FLUSH_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub const KEY_HEADER: &str = "x-ironheart-key";
@@ -36,9 +36,9 @@ pub const TIMESTAMP_HEADER: &str = "x-ironheart-timestamp";
 pub const SIGNATURE_HEADER: &str = "x-ironheart-signature";
 
 const MAX_BODY_BYTES: usize = 1024;
-/// Distanza massima tra il timestamp firmato e l'ora del server.
+/// Maximum distance between the signed timestamp and the server's clock.
 const MAX_CLOCK_SKEW_SECS: i64 = 5 * 60;
-/// IP distinti tenuti per app tra una scrittura e l'altra.
+/// Distinct IPs kept per app between two writes.
 const MAX_IPS_PER_APP: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +53,7 @@ struct KeyEntry {
     secret: Vec<u8>,
     interval_secs: AtomicI64,
     grace_secs: AtomicI64,
-    /// Ultimo timestamp accettato; `i64::MIN` se nessuno.
+    /// Last accepted timestamp; `i64::MIN` if none.
     last_signed_ts: AtomicI64,
 }
 
@@ -72,10 +72,10 @@ pub struct Heartbeat {
     secret_box: SecretBox,
     keys: RwLock<Keys>,
     failures: Mutex<HashMap<String, PendingFailures>>,
-    /// Ping validi da scrivere: per app basta il più recente.
+    /// Valid pings to write: per app the latest one is enough.
     pending_pings: Mutex<HashMap<String, PingRecord>>,
     unattributed: AtomicU64,
-    /// Chiave usata quando il `key_id` non esiste, per fare comunque un HMAC.
+    /// Key used when the `key_id` does not exist, to compute an HMAC anyway.
     dummy_secret: Vec<u8>,
     client_ip_header: Option<String>,
 }
@@ -106,10 +106,10 @@ impl Heartbeat {
         for row in rows {
             let app_id = row.id.clone();
             if let Err(err) = heartbeat.insert_row(row) {
-                tracing::error!(%app_id, err = ?err, "chiave dell'app non caricata");
+                tracing::error!(%app_id, err = ?err, "app key not loaded");
             }
         }
-        tracing::info!("chiavi caricate: {total}");
+        tracing::info!("keys loaded: {total}");
         Ok(heartbeat)
     }
 
@@ -126,7 +126,7 @@ impl Heartbeat {
             grace_secs: AtomicI64::new(row.grace_secs),
             last_signed_ts: AtomicI64::new(row.last_signed_ts.unwrap_or(i64::MIN)),
         });
-        let mut keys = self.keys.write().expect("lock delle chiavi");
+        let mut keys = self.keys.write().expect("keys lock");
         if let Some(old) = keys.key_id_by_app.insert(row.id, row.key_id.clone()) {
             keys.by_key_id.remove(&old);
         }
@@ -134,7 +134,7 @@ impl Heartbeat {
         Ok(())
     }
 
-    /// Ricarica la chiave di un'app dal database (dopo creazione o rotazione).
+    /// Reloads an app's key from the database (after creation or rotation).
     pub async fn refresh_app(&self, pool: &db::Pool, app_id: &str) -> anyhow::Result<()> {
         match db::app_key(pool, app_id).await? {
             Some(row) => self.insert_row(row),
@@ -146,22 +146,22 @@ impl Heartbeat {
     }
 
     pub fn remove_app(&self, app_id: &str) {
-        let mut keys = self.keys.write().expect("lock delle chiavi");
+        let mut keys = self.keys.write().expect("keys lock");
         if let Some(key_id) = keys.key_id_by_app.remove(app_id) {
             keys.by_key_id.remove(&key_id);
         }
     }
 
     pub fn set_timing(&self, app_id: &str, interval_secs: i64, grace_secs: i64) {
-        let keys = self.keys.read().expect("lock delle chiavi");
+        let keys = self.keys.read().expect("keys lock");
         if let Some(entry) = keys.key_id_by_app.get(app_id).and_then(|k| keys.by_key_id.get(k)) {
             entry.interval_secs.store(interval_secs, Ordering::Relaxed);
             entry.grace_secs.store(grace_secs, Ordering::Relaxed);
         }
     }
 
-    /// Verifica una richiesta. Fa lo stesso lavoro (ricerca + HMAC) anche
-    /// quando il `key_id` non esiste.
+    /// Checks a request. Does the same work (lookup + HMAC) even
+    /// when the `key_id` does not exist.
     pub fn check(
         &self,
         key_id: Option<&str>,
@@ -172,7 +172,7 @@ impl Heartbeat {
     ) -> Outcome {
         let key_id = key_id.unwrap_or("");
         let timestamp = timestamp.unwrap_or("");
-        let entry = self.keys.read().expect("lock delle chiavi").by_key_id.get(key_id).cloned();
+        let entry = self.keys.read().expect("keys lock").by_key_id.get(key_id).cloned();
 
         let secret = entry.as_ref().map_or(self.dummy_secret.as_slice(), |e| e.secret.as_slice());
         let body_hash = crypto::sha256_hex(body.unwrap_or_default());
@@ -193,7 +193,7 @@ impl Heartbeat {
         if (now_secs - signed_ts).abs() > MAX_CLOCK_SKEW_SECS {
             return rejected(Reason::ClockSkew);
         }
-        // Atomico: due richieste con lo stesso timestamp, una sola passa.
+        // Atomic: of two requests with the same timestamp, only one passes.
         if entry.last_signed_ts.fetch_max(signed_ts, Ordering::SeqCst) >= signed_ts {
             return rejected(Reason::Replay);
         }
@@ -202,7 +202,7 @@ impl Heartbeat {
     }
 
     pub fn record_failure(&self, app_id: &str, reason: Reason, ip: Option<String>, now: i64) {
-        let mut failures = self.failures.lock().expect("lock dei tentativi");
+        let mut failures = self.failures.lock().expect("failures lock");
         let pending = failures
             .entry(app_id.to_owned())
             .or_insert_with(|| PendingFailures { since: now, counts: FailureCounts::default() });
@@ -220,14 +220,14 @@ impl Heartbeat {
         }
     }
 
-    /// Tentativi accumulati dall'ultima chiamata: (app, inizio del periodo, conteggi).
+    /// Attempts accumulated since the last call: (app, period start, counts).
     pub fn take_failures(&self) -> Vec<(String, i64, FailureCounts)> {
-        let failures = std::mem::take(&mut *self.failures.lock().expect("lock dei tentativi"));
+        let failures = std::mem::take(&mut *self.failures.lock().expect("failures lock"));
         failures.into_iter().map(|(app, p)| (app, p.since, p.counts)).collect()
     }
 
     fn queue_ping(&self, ping: PingRecord) {
-        let mut pending = self.pending_pings.lock().expect("lock dei ping");
+        let mut pending = self.pending_pings.lock().expect("pings lock");
         match pending.get(&ping.app_id) {
             Some(existing) if existing.signed_ts >= ping.signed_ts => {}
             _ => {
@@ -236,11 +236,11 @@ impl Heartbeat {
         }
     }
 
-    /// Scrive i ping raccolti in una transazione. Quelli che il database
-    /// rifiuta (timestamp non nuovo) si contano come ripetuti.
+    /// Writes the collected pings in one transaction. Those the database
+    /// rejects (timestamp not new) are counted as replays.
     pub async fn flush_pings(&self, pool: &db::Pool) -> anyhow::Result<usize> {
         let pings: Vec<PingRecord> =
-            std::mem::take(&mut *self.pending_pings.lock().expect("lock dei ping")).into_values().collect();
+            std::mem::take(&mut *self.pending_pings.lock().expect("pings lock")).into_values().collect();
         if pings.is_empty() {
             return Ok(0);
         }
@@ -259,8 +259,8 @@ impl Heartbeat {
 
     fn client_ip(&self, headers: &HeaderMap, peer: Option<SocketAddr>) -> Option<String> {
         match self.client_ip_header.as_deref() {
-            // nginx (CapRover) aggiunge in fondo l'indirizzo da cui riceve la richiesta:
-            // i valori prima di quello li scrive il client e non sono affidabili.
+            // nginx (CapRover) appends the address it receives the request from:
+            // the values before it are written by the client and are not trustworthy.
             Some("x-forwarded-for") => headers
                 .get("x-forwarded-for")
                 .and_then(|v| v.to_str().ok())
@@ -273,7 +273,7 @@ impl Heartbeat {
     }
 }
 
-/// Scrive i ping validi una volta al secondo.
+/// Writes valid pings once per second.
 pub fn spawn_writer(state: AppState) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(PING_FLUSH_EVERY);
@@ -281,7 +281,7 @@ pub fn spawn_writer(state: AppState) {
         loop {
             interval.tick().await;
             if let Err(err) = state.heartbeat.flush_pings(&state.db).await {
-                tracing::error!(err = ?err, "ping non registrati");
+                tracing::error!(err = ?err, "pings not recorded");
             }
         }
     });
@@ -314,7 +314,7 @@ pub async fn handler(State(state): State<AppState>, request: Request) -> StatusC
     );
     match outcome {
         Outcome::Valid { app_id, signed_ts, deadline_after_ms } => {
-            // Solo in memoria: un ping valido non deve rispondere più lentamente di uno falso.
+            // Memory only: a valid ping must not be answered more slowly than a forged one.
             heartbeat.queue_ping(PingRecord {
                 app_id,
                 signed_ts,
@@ -394,7 +394,7 @@ mod tests {
             Outcome::Valid { app_id, signed_ts, deadline_after_ms } => {
                 assert_eq!((app_id.as_str(), signed_ts, deadline_after_ms), ("app", NOW, 90_000));
             }
-            _ => panic!("atteso valido"),
+            _ => panic!("expected valid"),
         }
         assert_eq!(reason(check(&hb, "key", NOW, &sig)), Some(Reason::Replay));
         let older = signed(&secret, NOW - 1, b"");
@@ -410,7 +410,7 @@ mod tests {
         assert_eq!(reason(check(&hb, "key", NOW, "v1=zz")), Some(Reason::BadSignature));
         let late = NOW - MAX_CLOCK_SKEW_SECS - 1;
         assert_eq!(reason(check(&hb, "key", late, &signed(&secret, late, b""))), Some(Reason::ClockSkew));
-        // Body diverso da quello firmato, o troppo grande (None).
+        // Body different from the signed one, or too large (None).
         let sig = signed(&secret, NOW, b"");
         let tampered = hb.check(Some("key"), Some(&NOW.to_string()), Some(&sig), Some(b"x"), NOW);
         assert_eq!(reason(tampered), Some(Reason::BadSignature));
@@ -422,7 +422,7 @@ mod tests {
     #[tokio::test]
     async fn rotated_key_replaces_the_old_one() {
         let (hb, secret, pool) = setup_with_pool().await;
-        let sealed = hb.secret_box().seal(b"ihs_nuovo", "app");
+        let sealed = hb.secret_box().seal(b"ihs_new", "app");
         sqlx::query("UPDATE apps SET key_id = 'key2', secret_enc = $1, last_signed_ts = NULL")
             .bind(sealed)
             .execute(&pool)
@@ -432,7 +432,7 @@ mod tests {
 
         assert!(matches!(check(&hb, "key", NOW, &signed(&secret, NOW, b"")), Outcome::Unattributed));
         let canonical = crypto::canonical_string("key2", &NOW.to_string(), &crypto::sha256_hex(b""));
-        let sig = format!("v1={}", hex::encode(crypto::sign(b"ihs_nuovo", &canonical)));
+        let sig = format!("v1={}", hex::encode(crypto::sign(b"ihs_new", &canonical)));
         assert!(matches!(check(&hb, "key2", NOW, &sig), Outcome::Valid { .. }));
 
         hb.remove_app("app");
@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(ts, NOW + 1);
         assert_eq!(hb.flush_pings(&pool).await.unwrap(), 0);
 
-        // Un timestamp già scritto viene rifiutato dal database e contato come ripetuto.
+        // A timestamp already written is rejected by the database and counted as a replay.
         hb.queue_ping(ping(NOW + 1));
         hb.flush_pings(&pool).await.unwrap();
         assert_eq!(hb.take_failures()[0].2.replay, 1);

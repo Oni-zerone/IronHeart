@@ -1,7 +1,7 @@
-//! API di amministrazione: utenti e inviti (solo admin).
+//! Administration API: users and invites (admins only).
 //!
-//! Il master (`ADMIN_EMAIL`) non si può declassare né rimuovere, e un admin
-//! non può declassare né rimuovere se stesso.
+//! The master (`ADMIN_EMAIL`) cannot be demoted or removed, and an admin
+//! cannot demote or remove themselves.
 
 use axum::{
     Json, Router,
@@ -84,22 +84,22 @@ async fn invite(
     Ok((StatusCode::CREATED, Json(overview(&state).await?)))
 }
 
-/// Avviso all'invitato. Se l'invio fallisce, l'invito resta valido.
+/// Notice to the invitee. If sending fails, the invite stays valid.
 async fn send_invite_email(state: &AppState, admin: &db::User, to: &str) {
     let who = admin.name.clone().unwrap_or_else(|| admin.email.clone());
     let url = format!("{}/", state.public_base_url);
     let text = format!(
-        "{who} ti ha invitato su IronHeart, il servizio che controlla l'heartbeat delle applicazioni.\n\n\
-         Accedi con l'account Google di questo indirizzo: {url}\n"
+        "{who} invited you to IronHeart, the service that monitors application heartbeats.\n\n\
+         Sign in with the Google account for this address: {url}\n"
     );
     let html = format!(
-        "<p>{} ti ha invitato su IronHeart, il servizio che controlla l'heartbeat delle applicazioni.</p>\
-         <p><a href=\"{url}\">Accedi</a> con l'account Google di questo indirizzo.</p>",
+        "<p>{} invited you to IronHeart, the service that monitors application heartbeats.</p>\
+         <p><a href=\"{url}\">Sign in</a> with the Google account for this address.</p>",
         who.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
     );
-    let email = Email { to: to.to_owned(), subject: "Invito a IronHeart".into(), text, html };
+    let email = Email { to: to.to_owned(), subject: "Invitation to IronHeart".into(), text, html };
     if let Err(err) = state.mailer.send(&email).await {
-        tracing::error!(err = ?err, "mail di invito non inviata");
+        tracing::error!(err = ?err, "invite email not sent");
     }
 }
 
@@ -141,11 +141,11 @@ async fn remove(
     for app_id in &app_ids {
         state.heartbeat.remove_app(app_id);
     }
-    tracing::info!(user_id = %id, apps = app_ids.len(), "utente rimosso");
+    tracing::info!(user_id = %id, apps = app_ids.len(), "user removed");
     Ok(Json(overview(&state).await?))
 }
 
-/// Il master e l'admin stesso non si toccano.
+/// The master and the admin themselves are off limits.
 async fn protect(state: &AppState, admin: &db::User, target_id: &str) -> ApiResult<()> {
     let target = db::find_user(&state.db, target_id).await?.ok_or(ApiError::NotFound)?;
     if target.email == state.admin_email.as_ref() {

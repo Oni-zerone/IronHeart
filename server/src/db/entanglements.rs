@@ -1,4 +1,4 @@
-//! Collegamenti verso altre istanze (entanglement).
+//! Links to other instances (entanglement).
 
 use serde::Serialize;
 
@@ -27,7 +27,7 @@ macro_rules! entanglement_columns {
     };
 }
 
-/// Booleano salvato come INTEGER 0/1 (vedi CLAUDE.md), in JSON come `true`/`false`.
+/// Boolean stored as INTEGER 0/1 (see CLAUDE.md), in JSON as `true`/`false`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct Flag(pub bool);
@@ -58,7 +58,7 @@ pub async fn get_entanglement(pool: &Pool, id: &str) -> sqlx::Result<Option<Enta
         .await
 }
 
-/// Il primo ping parte subito (`next_ping_at = now`).
+/// The first ping goes out right away (`next_ping_at = now`).
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_entanglement(
     pool: &Pool,
@@ -88,7 +88,7 @@ pub async fn insert_entanglement(
     .map(|_| ())
 }
 
-/// Aggiorna i dati; il ping successivo parte subito. Chiave e segreto solo se forniti.
+/// Updates the data; the next ping goes out right away. Key and secret only if provided.
 pub async fn update_entanglement(
     pool: &Pool,
     id: &str,
@@ -147,8 +147,8 @@ pub struct DuePing {
     pub secret_key_version: i64,
 }
 
-/// Prende i collegamenti da pingare e sposta subito la prossima scadenza, così
-/// un ping lento non viene mandato due volte.
+/// Takes the links to ping and moves the next deadline forward right away, so
+/// a slow ping is not sent twice.
 pub async fn take_due_pings(pool: &Pool, now: i64) -> sqlx::Result<Vec<DuePing>> {
     sqlx::query_as(
         "UPDATE entanglements SET next_ping_at = $1 + interval_secs * 1000
@@ -160,7 +160,7 @@ pub async fn take_due_pings(pool: &Pool, now: i64) -> sqlx::Result<Vec<DuePing>>
     .await
 }
 
-/// Da usare per «Invia ora»: stessi dati, senza toccare la scadenza.
+/// For "Send now": same data, without touching the deadline.
 pub async fn ping_target(pool: &Pool, id: &str) -> sqlx::Result<Option<DuePing>> {
     sqlx::query_as(
         "SELECT id, base_url, key_id, secret_enc, secret_key_version FROM entanglements WHERE id = $1",
@@ -190,7 +190,7 @@ pub async fn record_ping_result(
     .map(|_| ())
 }
 
-/// All'avvio: i collegamenti attivi mandano subito un ping.
+/// At startup: active links send a ping right away.
 pub async fn ping_all_now(pool: &Pool, now: i64) -> sqlx::Result<()> {
     sqlx::query("UPDATE entanglements SET next_ping_at = $1 WHERE enabled = 1")
         .bind(now)

@@ -1,4 +1,4 @@
-//! API della dashboard per le app dell'utente collegato.
+//! Dashboard API for the signed-in user's apps.
 
 use std::collections::HashMap;
 
@@ -67,7 +67,7 @@ fn invalid<T>(message: impl Into<String>) -> ApiResult<T> {
 struct AppView {
     #[serde(flatten)]
     app: db::App,
-    /// Destinatari configurati; vuoto = email dell'account.
+    /// Configured recipients; empty = the account email.
     recipients: Vec<String>,
     failures_24h: i64,
 }
@@ -88,7 +88,7 @@ struct Credentials {
 #[derive(Serialize)]
 struct WithCredentials<T: Serialize> {
     app: T,
-    /// Mostrato una volta sola: nel database il segreto è cifrato.
+    /// Shown only once: in the database the secret is encrypted.
     credentials: Credentials,
 }
 
@@ -209,12 +209,12 @@ async fn update(
     let window_ms = (interval_secs + grace_secs) * 1000;
     let (app_state, next_deadline_at) = match (input.paused, app.state.as_str()) {
         (Some(true), _) => ("paused", None),
-        // Ripresa: si aspetta un intervallo intero da adesso.
+        // Resume: wait a full interval from now.
         (Some(false), "paused") => match app.last_seen_at {
             Some(_) => ("up", Some(now + window_ms)),
             None => ("new", None),
         },
-        // Intervallo cambiato su un'app attiva: la scadenza parte dall'ultimo segnale.
+        // Interval changed on an active app: the deadline starts from the last signal.
         (_, "up") => ("up", app.last_seen_at.map(|seen| seen + window_ms).or(app.next_deadline_at)),
         (_, other) => (other, app.next_deadline_at),
     };
@@ -320,7 +320,7 @@ mod tests {
     fn recipients_are_normalized() {
         let input = vec![" Ops@Example.com ".into(), "ops@example.com".into(), "".into(), "dev@example.com".into()];
         assert_eq!(normalize_recipients(&input).ok().unwrap(), ["ops@example.com", "dev@example.com"]);
-        assert!(normalize_recipients(&["non-una-mail".into()]).is_err());
+        assert!(normalize_recipients(&["not-an-email".into()]).is_err());
         let many: Vec<String> = (0..11).map(|i| format!("u{i}@example.com")).collect();
         assert!(normalize_recipients(&many).is_err());
     }

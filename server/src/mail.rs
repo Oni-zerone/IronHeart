@@ -1,7 +1,7 @@
-//! Invio delle email: Brevo (API HTTP) in produzione, SMTP verso Mailpit in locale.
+//! Email sending: Brevo (HTTP API) in production, SMTP to Mailpit locally.
 //!
-//! Su DigitalOcean le porte SMTP in uscita sono bloccate, quindi in produzione
-//! si usa solo l'API HTTP.
+//! On DigitalOcean outgoing SMTP ports are blocked, so in production only
+//! the HTTP API is used.
 
 use anyhow::{Context, bail};
 use lettre::{
@@ -14,8 +14,8 @@ use crate::config::{MailConfig, MailTransport};
 
 const BREVO_URL: &str = "https://api.brevo.com/v3/smtp/email";
 
-/// Una email verso un solo destinatario: con più destinatari si invia una
-/// email per ciascuno, così nessuno vede gli indirizzi degli altri.
+/// An email to a single recipient: with several recipients one email is sent
+/// to each, so nobody sees the other addresses.
 pub struct Email {
     pub to: String,
     pub subject: String,
@@ -46,7 +46,7 @@ impl Mailer {
                 api_key: api_key.clone(),
             },
             MailTransport::Smtp { host, port } => Transport::Smtp(
-                // Solo per Mailpit in locale: nessuna cifratura né autenticazione.
+                // Only for local Mailpit: no encryption or authentication.
                 AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
                     .port(*port)
                     .build(),
@@ -93,11 +93,11 @@ impl Mailer {
             .json(&body)
             .send()
             .await
-            .context("Brevo non raggiungibile")?;
+            .context("Brevo unreachable")?;
         let status = response.status();
         if !status.is_success() {
             let detail = response.text().await.unwrap_or_default();
-            bail!("Brevo ha risposto {status}: {detail}");
+            bail!("Brevo answered {status}: {detail}");
         }
         Ok(())
     }
@@ -110,13 +110,13 @@ impl Mailer {
         let from = Mailbox::new(Some(self.from_name.clone()), self.from_email.parse()?);
         let message = Message::builder()
             .from(from)
-            .to(email.to.parse().context("destinatario non valido")?)
+            .to(email.to.parse().context("invalid recipient")?)
             .subject(&email.subject)
             .multipart(MultiPart::alternative_plain_html(
                 email.text.clone(),
                 email.html.clone(),
             ))?;
-        smtp.send(message).await.context("invio SMTP non riuscito")?;
+        smtp.send(message).await.context("SMTP send failed")?;
         Ok(())
     }
 }
@@ -147,18 +147,18 @@ mod tests {
         let body = BrevoEmail {
             sender: BrevoAddress { email: "noreply@example.com", name: Some("IronHeart") },
             to: [BrevoAddress { email: "a@example.com", name: None }],
-            subject: "Oggetto",
-            html_content: "<p>Ciao</p>",
-            text_content: "Ciao",
+            subject: "Subject",
+            html_content: "<p>Hello</p>",
+            text_content: "Hello",
         };
         assert_eq!(
             serde_json::to_value(&body).unwrap(),
             serde_json::json!({
                 "sender": { "email": "noreply@example.com", "name": "IronHeart" },
                 "to": [{ "email": "a@example.com" }],
-                "subject": "Oggetto",
-                "htmlContent": "<p>Ciao</p>",
-                "textContent": "Ciao",
+                "subject": "Subject",
+                "htmlContent": "<p>Hello</p>",
+                "textContent": "Hello",
             })
         );
     }
