@@ -215,25 +215,26 @@ cargo run --release --example loadtest -- --url https://heartbeat.example.com \
 
 ## Load test
 
-Run on 2026-11-27 locally, in a Docker container limited to **1 vCPU and 1 GB** (the size of the production droplet), with a release build, 2,000 apps split across 20 users and the generator on the same Mac (Apple M1 Pro). One M1 CPU is probably faster than a droplet's shared vCPU: in production the numbers will be lower, and the first limit will be nginx with TLS, before the service.
+Run on 2026-11-27 locally, with the release Docker image (`scratch`, the same one used in production) limited to **1 vCPU and 1 GB** (the size of the production droplet), local SQLite on a volume, 2,000 apps split across 20 users and the generator on the same Mac (Apple M1 Pro). One M1 CPU is probably faster than a droplet's shared vCPU: in production the numbers will be lower, and the first limit will be nginx with TLS, before the service.
 
-| Scenario (20 s) | Requests/s | p50 | p95 | p99 | CPU | Process memory |
+| Scenario (20 s) | Requests/s | p50 | p95 | p99 | CPU | Container memory (peak) |
 |---|---:|---:|---:|---:|---:|---:|
-| Unknown keys, 64 connections | 34,208 | 1.8 ms | 2.9 ms | 3.8 ms | 72% | 16 MB |
-| Forged signatures on real keys, 64 connections, 5,000 IPs | 27,427 | 2.0 ms | 3.7 ms | 7.7 ms | 73% | 21 MB |
-| Forged signatures, 256 connections, 5,000 IPs | 32,041 | 7.5 ms | 13.6 ms | 23.0 ms | 100% | 30 MB |
-| Valid pings (at most 1/s per app, so 2,000/s) | 2,099 | 1.9 ms | 6.8 ms | 11.2 ms | 29% | 35 MB |
-| Attack (128 connections) + real pings from every app every 10 s, 40 s | 32,292 forged + 200 real | 3.8 ms | 6.1 ms | 9.2 ms | 98% | 43 MB (peak) |
+| Unknown keys, 64 connections | 37,108 | 1.6 ms | 2.7 ms | 3.4 ms | 70% | 9 MiB |
+| Forged signatures on real keys, 64 connections, 5,000 IPs | 34,481 | 1.7 ms | 2.8 ms | 3.9 ms | 82% | 19 MiB |
+| Forged signatures, 256 connections, 5,000 IPs | 40,279 | 6.4 ms | 9.5 ms | 11.0 ms | 85% | 22 MiB |
+| Valid pings (at most 1/s per app, so 2,000/s) | 2,099 | 1.8 ms | 6.4 ms | 9.7 ms | 15% | 23 MiB |
+| Attack (128 connections) + real pings from every app every 10 s, 40 s | 37,944 forged + 200 real | 3.3 ms | 5.1 ms | 6.1 ms | 84% | 25 MiB |
 
 Results:
 
-- **Real pings survive the attack**: with more than 32,000 forged requests per second, all 2,000 apps recorded their ping and none was reported down.
-- **Always `204`**: no other response across more than 3 million requests. The generator recorded 11 network errors out of 1.3 million in the mixed scenario (9 on real pings, all recovered on the next round): they do not come from the server's responses, and most likely come from Docker Desktop's port proxy.
-- **Every forged attempt is counted**: 1,189,545 sent, 1,189,545 written to the summaries.
-- **Email under control**: the attack on all 2,000 apps produced 20 emails, one per recipient; 2,000 apps going down together produced another 20, within one round of the monitor.
-- **Peak process memory**: 43 MB. The SQLite WAL file stayed below 5 MB.
-- `/health` answered in 1–3 ms throughout the tests.
-- Only one round of the periodic check was slower than 5 seconds (6.8 s), with the CPU already at 100% from the attack; sending emails no longer slows it down.
+- **Real pings survive the attack**: with almost 38,000 forged requests per second, all 2,000 apps recorded their ping and none was reported down. The state was read from the volume after stopping the container.
+- **Always `204`**: no other response and no network error across more than 3 million requests.
+- **Every forged attempt is counted**: 3,013,390 sent, 3,013,390 written to the summaries.
+- **Email under control**: the attack on all 2,000 apps produced 20 emails, one per recipient.
+- **No slow round** of the periodic check and no errors in the log. The SQLite database ended at 7 MB.
+- The Telegram channel (PR #9, with a fake Bot API and one linked chat per user) gave the same numbers, within 3%, and 20 messages, one per chat.
+
+**Bug found by this test**: the `scratch` image has no `/tmp`, so SQLite could not create the temporary file it needs for the bulk ping write (`UPDATE … FROM (VALUES …)` with 500 rows) and failed with `disk I/O error` (`SQLITE_IOERR_GETTEMPPATH`): valid pings got a `204` but were never written, and all 2,000 apps stayed `new`. The earlier test had been run before the switch to `scratch`. Now every connection sets `PRAGMA temp_store = MEMORY`: only that scratch data of a single statement stays in memory, while the database and its WAL stay on the volume as before.
 
 ### What changed since the first test
 
@@ -242,7 +243,7 @@ The first test, on the same machine, had shown three problems, fixed before this
 | | Before | After |
 |---|---|---|
 | Emails after an attack on 2,000 apps | 2,000, one per app, sent one at a time: the deadline check stalled for minutes | 20, one per recipient, put in a separate queue |
-| Valid pings at 2,000/s | CPU 100%, p99 54 ms, container memory 130 MB | CPU 29%, p99 11 ms, 35 MB |
+| Valid pings at 2,000/s | CPU 100%, p99 54 ms, container memory 130 MB | CPU 15%, p99 10 ms, 23 MiB |
 | SQLite WAL file | 163 MB, never shrinking | below 5 MB (`journal_size_limit` at 16 MB) |
 
 The fixes:

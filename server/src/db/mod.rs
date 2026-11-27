@@ -45,12 +45,15 @@ impl Backend {
 
 /// Settings of every SQLite connection. After every checkpoint the WAL file
 /// goes back to at most 16 MB: without this limit, under load, it grows and never
-/// shrinks again.
+/// shrinks again. Temporary data (the bulk ping `UPDATE … FROM (VALUES …)`)
+/// stays in memory: the `scratch` image has no `/tmp`, and with temporary files
+/// SQLite fails with `SQLITE_IOERR_GETTEMPPATH` and loses the pings.
 const SQLITE_PRAGMAS: &str = "PRAGMA journal_mode = WAL;
      PRAGMA synchronous = NORMAL;
      PRAGMA foreign_keys = ON;
      PRAGMA busy_timeout = 5000;
-     PRAGMA journal_size_limit = 16777216;";
+     PRAGMA journal_size_limit = 16777216;
+     PRAGMA temp_store = MEMORY;";
 
 pub async fn connect(database_url: &str) -> anyhow::Result<Pool> {
     sqlx::any::install_default_drivers();
