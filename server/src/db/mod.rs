@@ -79,19 +79,40 @@ pub async fn connect(database_url: &str) -> anyhow::Result<Pool> {
     Ok(pool)
 }
 
-/// Descrizione per il log, senza credenziali.
-pub fn describe(database_url: &str) -> String {
-    match Backend::from_url(database_url) {
-        Ok(Backend::Postgres) => match reqwest::Url::parse(database_url) {
-            Ok(url) => format!(
-                "Postgres su {}:{}{}",
-                url.host_str().unwrap_or("?"),
-                url.port().unwrap_or(5432),
-                url.path()
-            ),
-            Err(_) => "Postgres".into(),
-        },
-        _ => format!("SQLite locale ({})", database_url.split('?').next().unwrap_or_default()),
+/// Database in uso, senza credenziali: per il log e per la dashboard del master.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DatabaseInfo {
+    /// `postgres` o `sqlite`.
+    pub backend: &'static str,
+    /// `host:porta/database` per Postgres, percorso del file per SQLite.
+    pub location: String,
+}
+
+impl DatabaseInfo {
+    pub fn from_url(database_url: &str) -> Self {
+        match Backend::from_url(database_url) {
+            Ok(Backend::Postgres) => Self {
+                backend: "postgres",
+                location: reqwest::Url::parse(database_url)
+                    .map(|url| {
+                        format!("{}:{}{}", url.host_str().unwrap_or("?"), url.port().unwrap_or(5432), url.path())
+                    })
+                    .unwrap_or_default(),
+            },
+            _ => Self {
+                backend: "sqlite",
+                location: database_url.split('?').next().unwrap_or_default().to_owned(),
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for DatabaseInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.backend {
+            "postgres" => write!(f, "Postgres su {}", self.location),
+            _ => write!(f, "SQLite locale ({})", self.location),
+        }
     }
 }
 
@@ -163,7 +184,10 @@ mod tests {
         assert_eq!(Backend::from_url("postgres://u:p@h/db").unwrap(), Backend::Postgres);
         assert_eq!(Backend::from_url("postgresql://u:p@h/db").unwrap(), Backend::Postgres);
         assert!(Backend::from_url("mysql://h/db").is_err());
-        assert_eq!(describe("postgres://u:segreto@db.example.com/ih?sslmode=require"), "Postgres su db.example.com:5432/ih");
+        let info = DatabaseInfo::from_url("postgres://u:segreto@db.example.com/ih?sslmode=require");
+        assert_eq!(info, DatabaseInfo { backend: "postgres", location: "db.example.com:5432/ih".into() });
+        assert_eq!(info.to_string(), "Postgres su db.example.com:5432/ih");
+        assert_eq!(DatabaseInfo::from_url("sqlite://data/x.db?mode=rwc").location, "sqlite://data/x.db");
         assert_eq!(sqlite_create_if_missing("sqlite://data/x.db"), "sqlite://data/x.db?mode=rwc");
     }
 

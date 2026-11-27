@@ -51,6 +51,7 @@ Le stesse query girano su SQLite (ripiego locale, se `DATABASE_URL` manca) e su 
 - Ruoli: `admin` (invita, cambia ruolo, rimuove utenti; API `/api/admin/*`, estrattore `AdminUser`) e `user` (solo le proprie app). Le app restano personali anche per gli admin.
 - Un admin non può declassare né rimuovere se stesso. Rimuovere un utente cancella a cascata app e sessioni, e le sue app vanno tolte dal registro in memoria.
 - Le email (account, inviti, `ADMIN_EMAIL`) si confrontano in minuscolo.
+- Solo per il master, `/api/me` include `database` (`db::DatabaseInfo`: `postgres` o `sqlite` e dove si trova, senza credenziali); la barra in alto lo mostra come chip, giallo per SQLite locale.
 
 ## Entanglement (solo master)
 

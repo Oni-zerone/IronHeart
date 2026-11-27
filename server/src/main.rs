@@ -40,6 +40,8 @@ pub struct AppState {
     public_base_url: Arc<str>,
     admin_email: Arc<str>,
     entanglement: Arc<entanglement::Sender>,
+    /// Database in uso, mostrato al master.
+    database: Arc<db::DatabaseInfo>,
 }
 
 #[tokio::main]
@@ -57,7 +59,8 @@ async fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let db = db::connect(&config.database_url).await?;
-    tracing::info!("database: {}", db::describe(&config.database_url));
+    let database = Arc::new(db::DatabaseInfo::from_url(&config.database_url));
+    tracing::info!("database: {database}");
     let auth = auth::Auth::discover(&config).await?;
     let mailer = mail::Mailer::new(&config.mail)?;
     tracing::info!("invio email con {}", mailer.describe());
@@ -75,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
         public_base_url: config.public_base_url.as_str().into(),
         admin_email: config.admin_email.as_str().into(),
         entanglement: Arc::new(entanglement::Sender::new()?),
+        database,
     };
     monitor::spawn(state.clone());
     heartbeat::spawn_writer(state.clone());
@@ -124,6 +128,7 @@ pub fn test_state(db: db::Pool, heartbeat: Arc<heartbeat::Heartbeat>) -> AppStat
         public_base_url: "http://localhost".into(),
         admin_email: "master@example.com".into(),
         entanglement: Arc::new(entanglement::Sender::new().unwrap()),
+        database: Arc::new(db::DatabaseInfo::from_url("sqlite::memory:")),
     }
 }
 
@@ -142,11 +147,15 @@ struct Me {
     #[serde(flatten)]
     user: db::User,
     is_master: bool,
+    /// Solo per il master: su quale database gira l'istanza.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    database: Option<db::DatabaseInfo>,
 }
 
 async fn me(State(state): State<AppState>, auth::CurrentUser(user): auth::CurrentUser) -> Json<Me> {
     let is_master = user.email == state.admin_email.as_ref();
-    Json(Me { user, is_master })
+    let database = is_master.then(|| (*state.database).clone());
+    Json(Me { user, is_master, database })
 }
 
 /// Manda una mail di prova all'email dell'account, per verificare la configurazione.
@@ -206,4 +215,26 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Il database in uso compare in `/api/me` solo per il master.
+    #[tokio::test]
+    async fn me_shows_database_only_to_master() {
+        let pool = db::test_pool().await;
+        let secret_box = crypto::SecretBox::new(&[1; 32], 1);
+        let hb = Arc::new(heartbeat::Heartbeat::load(&pool, secret_box, None).await.unwrap());
+        let state = test_state(pool, hb);
+        let user = |email: &str| db::User { id: "u".into(), email: email.into(), name: None, role: "admin".into() };
+
+        let Json(master) = me(State(state.clone()), auth::CurrentUser(user("master@example.com"))).await;
+        let json = serde_json::to_value(&master).unwrap();
+        assert_eq!(json["database"]["backend"], "sqlite");
+
+        let Json(admin) = me(State(state), auth::CurrentUser(user("admin@example.com"))).await;
+        assert!(serde_json::to_value(&admin).unwrap().get("database").is_none());
+    }
 }
