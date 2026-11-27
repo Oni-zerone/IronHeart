@@ -129,7 +129,12 @@ pub fn test_state(db: db::Pool, heartbeat: Arc<heartbeat::Heartbeat>) -> AppStat
     let mail = config::MailConfig {
         from_email: "test@ironheart.local".into(),
         from_name: "IronHeart".into(),
-        transport: config::MailTransport::Smtp { host: "127.0.0.1".into(), port: 9 },
+        transport: config::MailTransport::Smtp(config::SmtpConfig {
+            host: "127.0.0.1".into(),
+            port: 9,
+            tls: config::SmtpTls::None,
+            credentials: None,
+        }),
     };
     let mailer = mail::Mailer::new(&mail).unwrap();
     AppState {

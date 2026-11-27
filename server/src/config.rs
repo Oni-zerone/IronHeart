@@ -1,6 +1,6 @@
-use std::net::SocketAddr;
+use std::{collections::HashMap, net::SocketAddr};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 
 pub struct Config {
     pub bind_addr: SocketAddr,
@@ -27,29 +27,130 @@ pub struct MailConfig {
     pub transport: MailTransport,
 }
 
+/// Email provider (`MAIL_TRANSPORT`): an HTTP API or standard SMTP.
+#[derive(PartialEq)]
+#[cfg_attr(test, derive(Debug))]
 pub enum MailTransport {
-    /// Production: Brevo transactional API.
     Brevo { api_key: String },
-    /// Development: unencrypted SMTP to Mailpit.
-    Smtp { host: String, port: u16 },
+    Resend { api_key: String },
+    Postmark { server_token: String, message_stream: String },
+    Mailgun { api_key: String, domain: String, region: MailgunRegion },
+    /// Scaleway Transactional Email.
+    Scaleway { secret_key: String, project_id: String, region: String },
+    /// Any SMTP server: Mailpit locally, fallback for every other provider.
+    Smtp(SmtpConfig),
 }
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum MailgunRegion {
+    Us,
+    Eu,
+}
+
+#[derive(PartialEq)]
+#[cfg_attr(test, derive(Debug))]
+pub struct SmtpConfig {
+    pub host: String,
+    pub port: u16,
+    pub tls: SmtpTls,
+    /// Username and password, given together or not at all.
+    pub credentials: Option<(String, String)>,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum SmtpTls {
+    /// Plain text: only towards a local host (Mailpit).
+    None,
+    StartTls,
+    /// Implicit TLS (SMTPS).
+    Tls,
+}
+
+const MAIL_TRANSPORTS: &str = "brevo, resend, postmark, mailgun, scaleway, smtp";
 
 impl MailConfig {
     fn from_env() -> anyhow::Result<Self> {
-        let transport = match env_or("MAIL_TRANSPORT", "smtp").as_str() {
-            "brevo" => MailTransport::Brevo { api_key: required("BREVO_API_KEY")? },
-            "smtp" => MailTransport::Smtp {
-                host: env_or("SMTP_HOST", "localhost"),
-                port: env_or("SMTP_PORT", "1025").parse().context("invalid SMTP_PORT")?,
+        Self::from_vars(&std::env::vars().collect())
+    }
+
+    /// Reads the email configuration from a map of variables (the environment, or a test).
+    /// Empty values count as missing.
+    pub fn from_vars(vars: &HashMap<String, String>) -> anyhow::Result<Self> {
+        let get = |key: &str| {
+            vars.get(key).map(|v| v.trim()).filter(|v| !v.is_empty()).map(str::to_owned)
+        };
+        let transport_name = get("MAIL_TRANSPORT").unwrap_or_else(|| "smtp".into());
+        let need = |key: &str| {
+            get(key).with_context(|| format!("missing variable {key} (MAIL_TRANSPORT={transport_name})"))
+        };
+        let transport = match transport_name.to_lowercase().as_str() {
+            "brevo" => MailTransport::Brevo { api_key: need("BREVO_API_KEY")? },
+            "resend" => MailTransport::Resend { api_key: need("RESEND_API_KEY")? },
+            "postmark" => MailTransport::Postmark {
+                server_token: need("POSTMARK_SERVER_TOKEN")?,
+                message_stream: get("POSTMARK_MESSAGE_STREAM").unwrap_or_else(|| "outbound".into()),
             },
-            other => anyhow::bail!("unknown MAIL_TRANSPORT: {other} (brevo or smtp)"),
+            "mailgun" => MailTransport::Mailgun {
+                api_key: need("MAILGUN_API_KEY")?,
+                domain: need("MAILGUN_DOMAIN")?,
+                region: match get("MAILGUN_REGION").map(|v| v.to_lowercase()).as_deref() {
+                    None | Some("us") => MailgunRegion::Us,
+                    Some("eu") => MailgunRegion::Eu,
+                    Some(other) => bail!("invalid MAILGUN_REGION: {other} (us or eu)"),
+                },
+            },
+            "scaleway" => MailTransport::Scaleway {
+                secret_key: need("SCW_SECRET_KEY")?,
+                project_id: need("SCW_PROJECT_ID")?,
+                region: get("SCW_REGION").unwrap_or_else(|| "fr-par".into()),
+            },
+            "smtp" => MailTransport::Smtp(smtp_config(&get)?),
+            other => bail!("unknown MAIL_TRANSPORT: {other} (valid: {MAIL_TRANSPORTS})"),
         };
         Ok(Self {
-            from_email: env_or("MAIL_FROM_EMAIL", "noreply@ironheart.local"),
-            from_name: env_or("MAIL_FROM_NAME", "IronHeart"),
+            from_email: get("MAIL_FROM_EMAIL").unwrap_or_else(|| "noreply@ironheart.local".into()),
+            from_name: get("MAIL_FROM_NAME").unwrap_or_else(|| "IronHeart".into()),
             transport,
         })
     }
+}
+
+fn smtp_config(get: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<SmtpConfig> {
+    let host = get("SMTP_HOST").unwrap_or_else(|| "localhost".into());
+    let local = is_local_host(&host);
+    let tls = match get("SMTP_TLS").map(|v| v.to_lowercase()).as_deref() {
+        None if local => SmtpTls::None,
+        None => SmtpTls::StartTls,
+        Some("none") => SmtpTls::None,
+        Some("starttls") => SmtpTls::StartTls,
+        Some("tls") => SmtpTls::Tls,
+        Some(other) => bail!("invalid SMTP_TLS: {other} (none, starttls or tls)"),
+    };
+    let port = match get("SMTP_PORT") {
+        Some(port) => port.parse().context("invalid SMTP_PORT")?,
+        None => match tls {
+            SmtpTls::None => 1025,
+            SmtpTls::StartTls => 587,
+            SmtpTls::Tls => 465,
+        },
+    };
+    let credentials = match (get("SMTP_USERNAME"), get("SMTP_PASSWORD")) {
+        (Some(user), Some(password)) => Some((user, password)),
+        (None, None) => None,
+        (Some(_), None) => bail!("missing variable SMTP_PASSWORD (SMTP_USERNAME is set)"),
+        (None, Some(_)) => bail!("missing variable SMTP_USERNAME (SMTP_PASSWORD is set)"),
+    };
+    if credentials.is_some() && tls == SmtpTls::None && !local {
+        bail!(
+            "SMTP_TLS=none towards {host}: the password would travel in clear text (use starttls or tls)"
+        );
+    }
+    Ok(SmtpConfig { host, port, tls, credentials })
+}
+
+/// Hosts where plain-text SMTP is acceptable: this machine or the Mailpit container.
+fn is_local_host(host: &str) -> bool {
+    matches!(host.to_lowercase().as_str(), "localhost" | "127.0.0.1" | "::1" | "[::1]" | "mailpit")
 }
 
 impl Config {
@@ -104,4 +205,158 @@ fn env_or(key: &str, default: &str) -> String {
 
 fn required(key: &str) -> anyhow::Result<String> {
     std::env::var(key).with_context(|| format!("missing variable {key}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(pairs: &[(&str, &str)]) -> anyhow::Result<MailTransport> {
+        let vars = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        MailConfig::from_vars(&vars).map(|c| c.transport)
+    }
+
+    fn error(pairs: &[(&str, &str)]) -> String {
+        format!("{:#}", parse(pairs).expect_err("expected an error"))
+    }
+
+    fn smtp(pairs: &[(&str, &str)]) -> SmtpConfig {
+        match parse(pairs).unwrap() {
+            MailTransport::Smtp(smtp) => smtp,
+            other => panic!("expected SMTP, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn default_is_mailpit() {
+        let config = MailConfig::from_vars(&HashMap::new()).unwrap();
+        assert_eq!(config.from_email, "noreply@ironheart.local");
+        assert_eq!(config.from_name, "IronHeart");
+        assert_eq!(
+            config.transport,
+            MailTransport::Smtp(SmtpConfig {
+                host: "localhost".into(),
+                port: 1025,
+                tls: SmtpTls::None,
+                credentials: None,
+            })
+        );
+    }
+
+    #[test]
+    fn http_providers() {
+        assert_eq!(
+            parse(&[("MAIL_TRANSPORT", "brevo"), ("BREVO_API_KEY", "k")]).unwrap(),
+            MailTransport::Brevo { api_key: "k".into() }
+        );
+        assert_eq!(
+            parse(&[("MAIL_TRANSPORT", "resend"), ("RESEND_API_KEY", "re_k")]).unwrap(),
+            MailTransport::Resend { api_key: "re_k".into() }
+        );
+        assert_eq!(
+            parse(&[("MAIL_TRANSPORT", "postmark"), ("POSTMARK_SERVER_TOKEN", "t")]).unwrap(),
+            MailTransport::Postmark { server_token: "t".into(), message_stream: "outbound".into() }
+        );
+        assert_eq!(
+            parse(&[
+                ("MAIL_TRANSPORT", "mailgun"),
+                ("MAILGUN_API_KEY", "k"),
+                ("MAILGUN_DOMAIN", "mg.example.com"),
+                ("MAILGUN_REGION", "EU"),
+            ])
+            .unwrap(),
+            MailTransport::Mailgun {
+                api_key: "k".into(),
+                domain: "mg.example.com".into(),
+                region: MailgunRegion::Eu,
+            }
+        );
+        assert_eq!(
+            parse(&[
+                ("MAIL_TRANSPORT", "scaleway"),
+                ("SCW_SECRET_KEY", "s"),
+                ("SCW_PROJECT_ID", "p")
+            ])
+            .unwrap(),
+            MailTransport::Scaleway {
+                secret_key: "s".into(),
+                project_id: "p".into(),
+                region: "fr-par".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn missing_variables_are_named() {
+        assert!(error(&[("MAIL_TRANSPORT", "brevo")]).contains("BREVO_API_KEY"));
+        // An empty value counts as missing (`BREVO_API_KEY=` in .env).
+        let err = error(&[("MAIL_TRANSPORT", "resend"), ("RESEND_API_KEY", " ")]);
+        assert!(err.contains("RESEND_API_KEY"), "{err}");
+        assert!(error(&[("MAIL_TRANSPORT", "postmark")]).contains("POSTMARK_SERVER_TOKEN"));
+        let err = error(&[("MAIL_TRANSPORT", "mailgun"), ("MAILGUN_API_KEY", "k")]);
+        assert!(err.contains("MAILGUN_DOMAIN"), "{err}");
+        let err = error(&[("MAIL_TRANSPORT", "scaleway"), ("SCW_SECRET_KEY", "s")]);
+        assert!(err.contains("SCW_PROJECT_ID"), "{err}");
+        let err = error(&[
+            ("MAIL_TRANSPORT", "mailgun"),
+            ("MAILGUN_API_KEY", "k"),
+            ("MAILGUN_DOMAIN", "d"),
+            ("MAILGUN_REGION", "asia"),
+        ]);
+        assert!(err.contains("MAILGUN_REGION"), "{err}");
+    }
+
+    #[test]
+    fn unknown_transport_lists_valid_ones() {
+        let err = error(&[("MAIL_TRANSPORT", "ses")]);
+        assert!(err.contains("ses") && err.contains(MAIL_TRANSPORTS), "{err}");
+    }
+
+    #[test]
+    fn smtp_tls_and_default_ports() {
+        let mailpit = smtp(&[("SMTP_HOST", "mailpit")]);
+        assert_eq!((mailpit.tls, mailpit.port), (SmtpTls::None, 1025));
+        let remote = smtp(&[("SMTP_HOST", "smtp.example.com")]);
+        assert_eq!((remote.tls, remote.port), (SmtpTls::StartTls, 587));
+        let implicit = smtp(&[("SMTP_HOST", "smtp.example.com"), ("SMTP_TLS", "tls")]);
+        assert_eq!((implicit.tls, implicit.port), (SmtpTls::Tls, 465));
+        let custom = smtp(&[
+            ("SMTP_HOST", "smtp.example.com"),
+            ("SMTP_TLS", "starttls"),
+            ("SMTP_PORT", "2525"),
+        ]);
+        assert_eq!((custom.tls, custom.port), (SmtpTls::StartTls, 2525));
+        assert!(error(&[("SMTP_TLS", "ssl")]).contains("SMTP_TLS"));
+        assert!(error(&[("SMTP_PORT", "x")]).contains("SMTP_PORT"));
+    }
+
+    #[test]
+    fn smtp_credentials() {
+        let auth = smtp(&[
+            ("SMTP_HOST", "smtp.example.com"),
+            ("SMTP_USERNAME", "user"),
+            ("SMTP_PASSWORD", "secret"),
+        ]);
+        assert_eq!(auth.credentials, Some(("user".into(), "secret".into())));
+        assert!(error(&[("SMTP_USERNAME", "user")]).contains("SMTP_PASSWORD"));
+        assert!(error(&[("SMTP_PASSWORD", "secret")]).contains("SMTP_USERNAME"));
+    }
+
+    #[test]
+    fn smtp_refuses_clear_text_password() {
+        let err = error(&[
+            ("SMTP_HOST", "smtp.example.com"),
+            ("SMTP_TLS", "none"),
+            ("SMTP_USERNAME", "user"),
+            ("SMTP_PASSWORD", "secret"),
+        ]);
+        assert!(err.contains("clear text") && !err.contains("secret"), "{err}");
+        // Towards a local host it is allowed (Mailpit accepts any credentials).
+        let local =
+            smtp(&[("SMTP_HOST", "127.0.0.1"), ("SMTP_USERNAME", "u"), ("SMTP_PASSWORD", "p")]);
+        assert_eq!(local.tls, SmtpTls::None);
+        // Without credentials nothing secret travels.
+        let open = smtp(&[("SMTP_HOST", "relay.internal"), ("SMTP_TLS", "none")]);
+        assert_eq!(open.credentials, None);
+    }
 }
