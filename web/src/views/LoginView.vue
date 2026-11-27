@@ -9,18 +9,18 @@ const route = useRoute()
 const loginOutcome = computed(() => route.query.login)
 
 // The heart with a pulse line of the old icon (mdiHeartPulse), in ASCII: a solid heart (edges
-// shaded with " .:-=+*#") with the pulse line cut out of it. The line enters high on the left and
-// leaves low on the right, and outside the heart it goes on as streaks that thin out.
+// shaded with " .:-=+*#") with the pulse line cut out of it. Outside the heart, streaks that thin
+// out give a sense of speed: on the left one row above the line, on the right one row below.
 const heart = [
   '                  .-=====-.       .-=====-.',
   '                :*#########*-   -*#########*:',
-  '               =#########   #+.+#############=',
-  '              :#########  #  #*###############:',
-  '. - --- ----==           ##  #################:',
-  '               +############  ###############+',
+  '               =##########  #+.+#############=',
+  '              :##########    #*###############:',
+  '. - --- ----==:#########  #  #################:',
+  '                         ###  ###############+',
   '               .=###########   #############=.',
-  '                 .=##########  ###########=.',
-  '                   .=########   #         ==---- --- - .',
+  '                 .=##########  ##',
+  '                   .=########      #####=.==---- --- - .',
   '                     .-*######    ###*-.',
   '                        .=####   ##=.',
   '                          .=#####=.',
