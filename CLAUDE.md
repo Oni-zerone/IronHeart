@@ -72,6 +72,7 @@ The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) 
 - This instance sends heartbeats to other IronHeart instances (`entanglements`), so they monitor each other. Only the master configures it (`MasterUser`, API `/api/entanglements`, page `/entanglement`); it is an instance setting, not a user setting.
 - Each link: origin of the other instance (HTTPS, HTTP only to localhost, no path), key ID and secret of an app created there, interval from 10 seconds to 1 day, active or paused. The secret is encrypted with `SECRETS_KEY` (associated data `entanglement:<id>`) and is never returned to the client.
 - `entanglement::spawn`: every 5 seconds sends the pings that are due (`take_due_pings` moves the deadline forward immediately); at startup every active link sends a ping. The timestamp always increases per link, even with "Send now" in the same second. Redirects are not followed, 10-second timeout.
+- While this instance's Brevo key is refused (`mail_check`), pings are not sent and the link records `HELD_ERROR` as its error: the other instances see this one go down and alert with their own email. At startup the first ping waits for the first key check.
 - The other instance always answers 204: here we only record whether the ping was delivered (`last_success_at`, `last_error`). A wrong key is reported by the other instance as invalid attempts.
 
 ## Email
@@ -79,6 +80,7 @@ The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) 
 - `MAIL_TRANSPORT=brevo` (production, requires `BREVO_API_KEY`) or `smtp` (default, `SMTP_HOST`/`SMTP_PORT`, to Mailpit). Sender: `MAIL_FROM_EMAIL` and `MAIL_FROM_NAME`; on Brevo the sender or the domain must be verified.
 - One email per recipient, so nobody sees the other addresses.
 - `POST /api/me/test-email` sends a test email to the signed-in user.
+- Brevo deactivates API keys unused for 90 days (with every app up, no email goes out). `mail_check` does a `GET /v3/account` at startup and then every 7 days (every hour after a network error, 5xx/429 or a refusal, so a refusal by mistake does not hold the pings for a week), which keeps the key in use. A 401/403 is logged as an error, shown to the master in `/api/me` (`mail_key`, the `!! mail key` chip in the top bar) and holds the entanglement pings (see Entanglement): no email is attempted, since it would go through the refused key. A network error does not hold the pings. Nothing happens with SMTP.
 - Every email (alerts, invite, test) is drawn with `mail_layout::Letter` in the dashboard's ASCII style: a 56-column grid with the top bar, the ECG line (flat when an app is down), an `AsciiBox`-style frame and a `[ button ]`. The HTML part is one `<pre>` with inline styles on black; the text part is the same drawing with the URL below the frame. Text is wrapped in Rust, so body copy stays ASCII (`-`, `"`, `...`) to keep the borders aligned.
 
 ## Heartbeat

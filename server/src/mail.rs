@@ -13,6 +13,34 @@ use serde::Serialize;
 use crate::config::{MailConfig, MailTransport};
 
 const BREVO_URL: &str = "https://api.brevo.com/v3/smtp/email";
+/// Cheapest authenticated call: used to check (and keep alive) the API key.
+const BREVO_ACCOUNT_URL: &str = "https://api.brevo.com/v3/account";
+
+/// Outcome of a check of the Brevo API key.
+#[derive(Debug, PartialEq, Eq)]
+pub enum KeyCheck {
+    Valid,
+    /// Brevo refused the key (401/403): expired, revoked or wrong.
+    Rejected(String),
+    /// Brevo unreachable or answering with another error: retry later.
+    Unreachable(String),
+}
+
+impl KeyCheck {
+    fn from_response(status: reqwest::StatusCode, body: &str) -> Self {
+        let detail = || {
+            let body: String = body.chars().take(200).collect();
+            format!("Brevo answered {status}: {body}")
+        };
+        if status.is_success() {
+            Self::Valid
+        } else if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            Self::Rejected(detail())
+        } else {
+            Self::Unreachable(detail())
+        }
+    }
+}
 
 /// An email to a single recipient: with several recipients one email is sent
 /// to each, so nobody sees the other addresses.
@@ -59,11 +87,37 @@ impl Mailer {
         })
     }
 
+    /// Brevo has an API key to check; SMTP does not.
+    pub fn has_api_key(&self) -> bool {
+        matches!(self.transport, Transport::Brevo { .. })
+    }
+
     pub fn describe(&self) -> &'static str {
         match self.transport {
             Transport::Brevo { .. } => "Brevo",
             Transport::Smtp(_) => "SMTP",
         }
+    }
+
+    /// Checks the Brevo API key with an authenticated read. `None` with SMTP,
+    /// which has no key. Brevo deactivates keys that go unused for 90 days, so
+    /// this call also keeps the key alive when no alert has been sent for a while.
+    pub async fn check_key(&self) -> Option<KeyCheck> {
+        let Transport::Brevo { http, api_key } = &self.transport else { return None };
+        let response = http
+            .get(BREVO_ACCOUNT_URL)
+            .header("api-key", api_key)
+            .header("accept", "application/json")
+            .send()
+            .await;
+        Some(match response {
+            Ok(response) => {
+                let status = response.status();
+                let body = if status.is_success() { String::new() } else { response.text().await.unwrap_or_default() };
+                KeyCheck::from_response(status, &body)
+            }
+            Err(err) => KeyCheck::Unreachable(format!("Brevo unreachable: {err}")),
+        })
     }
 
     pub async fn send(&self, email: &Email) -> anyhow::Result<()> {
@@ -141,6 +195,19 @@ struct BrevoAddress<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_check_classifies_responses() {
+        use reqwest::StatusCode;
+        assert_eq!(KeyCheck::from_response(StatusCode::OK, ""), KeyCheck::Valid);
+        assert!(matches!(
+            KeyCheck::from_response(StatusCode::UNAUTHORIZED, r#"{"code":"unauthorized"}"#),
+            KeyCheck::Rejected(detail) if detail.contains("401") && detail.contains("unauthorized")
+        ));
+        assert!(matches!(KeyCheck::from_response(StatusCode::FORBIDDEN, ""), KeyCheck::Rejected(_)));
+        assert!(matches!(KeyCheck::from_response(StatusCode::BAD_GATEWAY, ""), KeyCheck::Unreachable(_)));
+        assert!(matches!(KeyCheck::from_response(StatusCode::TOO_MANY_REQUESTS, ""), KeyCheck::Unreachable(_)));
+    }
 
     #[test]
     fn brevo_payload_matches_api() {

@@ -24,6 +24,22 @@ const database = computed(() => {
         hint: `File ${info.location}: without a volume the data is lost at every deploy. Set DATABASE_URL to use Postgres.`,
       }
 })
+
+/** Brevo API key indicator for the master: shown only when the key has a problem. */
+const mailKey = computed(() => {
+  const status = currentUser.value?.mail_key
+  if (!status || status.state === 'ok') return null
+  const when = new Date(status.checked_at).toLocaleString()
+  return status.state === 'rejected'
+    ? {
+        label: 'mail key',
+        hint: `Brevo refused the API key (${when}): alert emails cannot be sent and entanglement pings are held, so the other instances report this one as down. Checked again every hour. Set a new BREVO_API_KEY and restart. ${status.error ?? ''}`,
+      }
+    : {
+        label: 'mail?',
+        hint: `Could not check the Brevo API key (${when}), retrying every hour. ${status.error ?? ''}`,
+      }
+})
 </script>
 
 <template>
@@ -49,6 +65,15 @@ const database = computed(() => {
           >
             <span class="db-long">{{ database.short }} {{ database.label }}</span>
             <span class="db-short">{{ database.short }}</span>
+          </span>
+          <span
+            v-if="mailKey"
+            class="db warn"
+            :title="mailKey.hint"
+            :aria-label="`Email: ${mailKey.hint}`"
+          >
+            <span class="db-long">!! {{ mailKey.label }}</span>
+            <span class="db-short">!!</span>
           </span>
           <span class="dim email">{{ currentUser.email }}</span>
           <button class="btn plain" type="button" @click="logout">sign out</button>

@@ -4,6 +4,9 @@
 //! The other instance always answers 204: from here we only know whether the ping
 //! was delivered. If the key is wrong the other instance reports it, in its
 //! invalid-attempt summaries.
+//!
+//! While this instance's Brevo API key is refused (`mail_check`) the pings are
+//! held back: the other instances see this one go down and alert in its place.
 
 use std::{collections::HashMap, sync::Mutex, time::Duration};
 
@@ -97,17 +100,30 @@ async fn send(state: &AppState, target: &DuePing) -> Option<String> {
     }
 }
 
+/// Recorded instead of sending while the Brevo key is refused.
+pub const HELD_ERROR: &str = "Held: Brevo refused this instance's API key, alerts cannot be sent";
+
 async fn send_and_record(state: &AppState, target: &DuePing) -> anyhow::Result<()> {
-    let error = send(state, target).await;
-    if let Some(error) = &error {
-        tracing::warn!(id = %target.id, %error, "entanglement: ping not delivered");
-    }
+    // Without working email this instance cannot alert anyone: stopping the
+    // pings lets the other instances see it go down and alert in its place.
+    // Not logged per ping: `mail_check` already logged the refusal.
+    let error = if state.mail_key.rejected() {
+        Some(HELD_ERROR.to_owned())
+    } else {
+        let error = send(state, target).await;
+        if let Some(error) = &error {
+            tracing::warn!(id = %target.id, %error, "entanglement: ping not delivered");
+        }
+        error
+    };
     db::record_ping_result(&state.db, &target.id, now_ms(), error.as_deref()).await?;
     Ok(())
 }
 
 pub fn spawn(state: AppState) {
     tokio::spawn(async move {
+        // Pings stop if the Brevo key is refused: know that before the first one.
+        state.mail_key.first_check().await;
         if let Err(err) = db::ping_all_now(&state.db, now_ms()).await {
             tracing::error!(err = ?err, "entanglement: startup failed");
         }
@@ -340,6 +356,34 @@ mod tests {
         for bad in ["http://hb.example.com", "ftp://x", "https://u:p@hb.example.com", "https://hb.example.com/api", "https://hb.example.com/?a=1", "nope"] {
             assert!(normalize_base_url(bad).is_err(), "{bad}");
         }
+    }
+
+    /// With the Brevo key refused nothing is sent: the link records the hold.
+    #[tokio::test]
+    async fn pings_are_held_while_the_mail_key_is_rejected() {
+        use std::sync::Arc;
+
+        use crate::{heartbeat, mail_check::{KeyStatus, REJECTED}};
+
+        let pool = db::test_pool().await;
+        let secret_box = crypto::SecretBox::new(&[1; 32], 1);
+        let hb = Arc::new(heartbeat::Heartbeat::load(&pool, secret_box, None).await.unwrap());
+        let state = crate::test_state(pool, hb);
+        let id = Uuid::now_v7().to_string();
+        let secret_enc = state.heartbeat.secret_box().seal(b"ihs_secret", &secret_aad(&id));
+        // Closed port: a real send would fail with "Connection failed".
+        let input = EntanglementInput { name: "peer", base_url: "http://127.0.0.1:9", interval_secs: 60, enabled: true };
+        db::insert_entanglement(&state.db, &id, &input, "abcdefghijkl", &secret_enc, 1, now_ms()).await.unwrap();
+        let target = db::ping_target(&state.db, &id).await.unwrap().unwrap();
+        let last_error = || async { db::get_entanglement(&state.db, &id).await.unwrap().unwrap().last_error };
+
+        state.mail_key.set(KeyStatus { state: REJECTED, checked_at: 1, error: None });
+        send_and_record(&state, &target).await.unwrap();
+        assert_eq!(last_error().await.as_deref(), Some(HELD_ERROR));
+
+        state.mail_key.set(KeyStatus { state: "ok", checked_at: 2, error: None });
+        send_and_record(&state, &target).await.unwrap();
+        assert_eq!(last_error().await.as_deref(), Some("Connection failed"));
     }
 
     #[test]
