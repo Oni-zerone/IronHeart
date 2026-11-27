@@ -1,6 +1,7 @@
 mod alerts;
 mod apps;
 mod auth;
+mod channels;
 mod clock;
 mod config;
 mod crypto;
@@ -83,17 +84,22 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(heartbeat::Heartbeat::load(&db, secret_box, config.client_ip_header.clone()).await?);
     monitor::reschedule_overdue(&db, clock::now_ms()).await?;
     let telegram = Arc::new(telegram::Telegram::new(config.telegram_bot_token.as_deref())?);
+    let mail_key = Arc::new(mail_check::KeyMonitor::new(mailer.has_key()));
+    if !mailer.is_enabled() {
+        tracing::info!("email off (MAIL_TRANSPORT=none): alerts only on Telegram");
+    }
 
     let state = AppState {
         outbox: outbox::Outbox::start(outbox::Senders {
             mailer: mailer.clone(),
+            mail_key: mail_key.clone(),
             telegram: telegram.clone(),
             db: db.clone(),
         }),
         telegram,
         db,
         auth,
-        mail_key: Arc::new(mail_check::KeyMonitor::new(mailer.has_key())),
+        mail_key,
         mailer,
         heartbeat,
         public_base_url: config.public_base_url.as_str().into(),
@@ -106,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
     heartbeat::spawn_writer(state.clone());
     entanglement::spawn(state.clone());
     telegram::spawn(state.clone());
+    channels::spawn(state.clone());
     let shutdown_state = state.clone();
 
     let app = Router::new()
@@ -155,9 +162,11 @@ pub fn test_state(db: db::Pool, heartbeat: Arc<heartbeat::Heartbeat>) -> AppStat
     };
     let mailer = mail::Mailer::new(&mail).unwrap();
     let telegram = Arc::new(telegram::Telegram::new(None).unwrap());
+    let mail_key = Arc::new(mail_check::KeyMonitor::new(false));
     AppState {
         outbox: outbox::Outbox::start(outbox::Senders {
             mailer: mailer.clone(),
+            mail_key: mail_key.clone(),
             telegram: telegram.clone(),
             db: db.clone(),
         }),
@@ -170,7 +179,7 @@ pub fn test_state(db: db::Pool, heartbeat: Arc<heartbeat::Heartbeat>) -> AppStat
         admin_email: "master@example.com".into(),
         entanglement: Arc::new(entanglement::Sender::new().unwrap()),
         database: Arc::new(db::DatabaseInfo::from_url("sqlite::memory:")),
-        mail_key: Arc::new(mail_check::KeyMonitor::new(false)),
+        mail_key,
     }
 }
 
@@ -195,9 +204,11 @@ struct Me {
     /// Master only: last check of the email key (absent without a key).
     #[serde(skip_serializing_if = "Option::is_none")]
     mail_key: Option<mail_check::KeyStatus>,
-    /// Present only while the Telegram bot is active: otherwise the dashboard hides Telegram.
+    /// Present only while the Telegram bot is active: linking and commands.
     #[serde(skip_serializing_if = "Option::is_none")]
     telegram: Option<TelegramInfo>,
+    /// Alert channels and their state, for the main page.
+    alerts: channels::Status,
 }
 
 #[derive(serde::Serialize)]
@@ -205,12 +216,16 @@ struct TelegramInfo {
     bot_username: String,
 }
 
-async fn me(State(state): State<AppState>, auth::CurrentUser(user): auth::CurrentUser) -> Json<Me> {
+async fn me(
+    State(state): State<AppState>,
+    auth::CurrentUser(user): auth::CurrentUser,
+) -> error::AppResult<Json<Me>> {
     let is_master = user.email == state.admin_email.as_ref();
+    let alerts = channels::status(&state, &user, is_master).await?;
     let database = is_master.then(|| (*state.database).clone());
     let mail_key = if is_master { state.mail_key.get() } else { None };
     let telegram = state.telegram.bot_username().map(|bot_username| TelegramInfo { bot_username });
-    Json(Me { user, is_master, database, mail_key, telegram })
+    Ok(Json(Me { user, is_master, database, mail_key, telegram, alerts }))
 }
 
 /// Sends a test email to the account's address, to check the configuration.
@@ -218,6 +233,9 @@ async fn send_test_email(
     State(state): State<AppState>,
     auth::CurrentUser(user): auth::CurrentUser,
 ) -> StatusCode {
+    if !state.mailer.is_enabled() {
+        return StatusCode::NOT_FOUND;
+    }
     let email = mail_layout::Letter {
         title: "Test email".into(),
         hot: false,
@@ -289,15 +307,15 @@ mod tests {
         let json = |me: &Me| serde_json::to_value(me).unwrap();
 
         // Before the first check (or without a key) there is no key status.
-        let Json(master) = me(State(state.clone()), auth::CurrentUser(user("master@example.com"))).await;
+        let Json(master) = me(State(state.clone()), auth::CurrentUser(user("master@example.com"))).await.ok().unwrap();
         assert!(json(&master).get("mail_key").is_none());
-        state.mail_key.set(mail_check::KeyStatus { provider: "Brevo", state: "rejected", checked_at: 1, error: Some("401".into()) });
+        state.mail_key.set(mail_check::KeyStatus { provider: "Brevo", state: "rejected", checked_at: 1, error: Some("401".into()), failing_since: Some(1) });
 
-        let Json(master) = me(State(state.clone()), auth::CurrentUser(user("master@example.com"))).await;
+        let Json(master) = me(State(state.clone()), auth::CurrentUser(user("master@example.com"))).await.ok().unwrap();
         assert_eq!(json(&master)["database"]["backend"], "sqlite");
         assert_eq!(json(&master)["mail_key"]["state"], "rejected");
 
-        let Json(admin) = me(State(state), auth::CurrentUser(user("admin@example.com"))).await;
+        let Json(admin) = me(State(state), auth::CurrentUser(user("admin@example.com"))).await.ok().unwrap();
         assert!(json(&admin).get("database").is_none());
         assert!(json(&admin).get("mail_key").is_none());
     }
@@ -311,11 +329,11 @@ mod tests {
         let mut state = test_state(pool, hb);
         let user = || auth::CurrentUser(db::User { id: "u".into(), email: "a@example.com".into(), name: None, role: "user".into() });
 
-        let Json(off) = me(State(state.clone()), user()).await;
+        let Json(off) = me(State(state.clone()), user()).await.ok().unwrap();
         assert!(serde_json::to_value(&off).unwrap().get("telegram").is_none());
 
         state.telegram = Arc::new(telegram::Telegram::for_tests("ironheart_bot"));
-        let Json(on) = me(State(state), user()).await;
+        let Json(on) = me(State(state), user()).await.ok().unwrap();
         assert_eq!(serde_json::to_value(&on).unwrap()["telegram"]["bot_username"], "ironheart_bot");
     }
 }

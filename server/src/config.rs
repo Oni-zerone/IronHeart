@@ -41,6 +41,8 @@ pub enum MailTransport {
     Scaleway { secret_key: String, project_id: String, region: String },
     /// Any SMTP server: Mailpit locally, fallback for every other provider.
     Smtp(SmtpConfig),
+    /// `MAIL_TRANSPORT=none`: no email at all, alerts only on Telegram.
+    None,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -68,7 +70,7 @@ pub enum SmtpTls {
     Tls,
 }
 
-const MAIL_TRANSPORTS: &str = "brevo, resend, postmark, mailgun, scaleway, smtp";
+const MAIL_TRANSPORTS: &str = "brevo, resend, postmark, mailgun, scaleway, smtp, none";
 
 impl MailConfig {
     fn from_env() -> anyhow::Result<Self> {
@@ -112,6 +114,7 @@ impl MailConfig {
                 region: get("SCW_REGION").unwrap_or_else(|| "fr-par".into()),
             },
             "smtp" => MailTransport::Smtp(smtp_config(&get, vars)?),
+            "none" => MailTransport::None,
             other => bail!("unknown MAIL_TRANSPORT: {other} (valid: {MAIL_TRANSPORTS})"),
         };
         Ok(Self {
@@ -174,6 +177,14 @@ impl Config {
         let bind_addr = env_or("BIND_ADDR", "127.0.0.1:8080")
             .parse()
             .context("invalid BIND_ADDR")?;
+        let mail = MailConfig::from_env()?;
+        let telegram_bot_token = std::env::var("TELEGRAM_BOT_TOKEN")
+            .ok()
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty());
+        if mail.transport == MailTransport::None && telegram_bot_token.is_none() {
+            bail!("no alert channel: MAIL_TRANSPORT=none needs TELEGRAM_BOT_TOKEN");
+        }
         Ok(Self {
             bind_addr,
             // External Postgres (`postgres://…`) or, if missing, the local SQLite file.
@@ -188,7 +199,7 @@ impl Config {
             google_client_id: required("GOOGLE_CLIENT_ID")?,
             google_client_secret: required("GOOGLE_CLIENT_SECRET")?,
             admin_email: required("ADMIN_EMAIL")?.trim().to_lowercase(),
-            mail: MailConfig::from_env()?,
+            mail,
             secrets_key: secrets_key()?,
             secrets_key_version: env_or("SECRETS_KEY_VERSION", "1")
                 .parse()
@@ -197,10 +208,7 @@ impl Config {
                 .ok()
                 .map(|h| h.trim().to_lowercase())
                 .filter(|h| !h.is_empty()),
-            telegram_bot_token: std::env::var("TELEGRAM_BOT_TOKEN")
-                .ok()
-                .map(|t| t.trim().to_owned())
-                .filter(|t| !t.is_empty()),
+            telegram_bot_token,
         })
     }
 
@@ -324,6 +332,11 @@ mod tests {
             ("MAILGUN_REGION", "asia"),
         ]);
         assert!(err.contains("MAILGUN_REGION"), "{err}");
+    }
+
+    #[test]
+    fn none_turns_email_off() {
+        assert_eq!(parse(&[("MAIL_TRANSPORT", "none")]).unwrap(), MailTransport::None);
     }
 
     #[test]

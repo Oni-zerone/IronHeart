@@ -67,7 +67,7 @@ All variables are listed in [.env.example](.env.example).
 | `ADMIN_EMAIL` | yes | Master user: can always sign in, is always admin, invites the others. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | yes | OAuth client, see [Google sign-in](#google-sign-in). |
 | `SECRETS_KEY` | yes | Master key for the app secrets, see [Keys and secrets](#keys-and-secrets). |
-| `MAIL_TRANSPORT` | in production | `brevo`, `resend`, `postmark`, `mailgun`, `scaleway` or `smtp` (default: Mailpit in development). Each needs its own variables, see [Email](#email). |
+| `MAIL_TRANSPORT` | in production | `brevo`, `resend`, `postmark`, `mailgun`, `scaleway` or `smtp` (default: Mailpit in development). Each needs its own variables, see [Email](#email). `none` turns email off: alerts only on [Telegram](#telegram), which then becomes required. |
 | `MAIL_FROM_EMAIL`, `MAIL_FROM_NAME` | with a provider | Sender of the alerts. The address or its domain must be verified with the provider. |
 | `DATABASE_URL` | no | `postgres://…` for an external Postgres (`?sslmode=require` for managed databases). Without it: SQLite in `/data`, which needs a volume. See [Database](#database). |
 | `CLIENT_IP_HEADER` | behind a proxy | Header with the client IP: `x-forwarded-for` (last value) or `cf-connecting-ip` with Cloudflare. Used only in the invalid-attempt summaries. |
@@ -149,20 +149,37 @@ With every app up IronHeart sends no email for months, so a broken key would onl
 
 Sends are used instead of reads because keys that may only send (Resend "Sending access", Mailgun domain sending keys, a Scaleway key with only `TransactionalEmailEmailApiCreate`) are refused on reads.
 
-If the provider refuses the key (401/403; 404 to the empty send, i.e. a wrong Mailgun domain or region; a 5xx, missing login mechanism or TLS failure on SMTP), the error is logged, the master sees `!! mail key` in the top bar, and the outgoing [entanglement](CLAUDE.md#entanglement-master-only) pings stop, so the other instances report this one as down with their own email. While refused, the key is checked again every hour and the pings resume as soon as the provider accepts it. To fix it, create a new key, set it and restart. A network error or an outage at the provider does not stop the pings.
+If the provider refuses the key (401/403; 404 to the empty send, i.e. a wrong Mailgun domain or region; a 5xx, missing login mechanism or TLS failure on SMTP), the error is logged, the master sees `!! mail key` in the top bar, and the master is told on Telegram when it works, and the outgoing [entanglement](CLAUDE.md#entanglement-master-only) pings stop if no channel reaches the master any more (see [Alert channels](#alert-channels)). While refused, the key is checked again every hour. To fix it, create a new key, set it and restart. A network error or an outage at the provider counts as a failure only after an hour; an alert email that fails to send triggers an early check.
 
 ## Telegram
 
 Each instance can have its own Telegram bot: alerts also arrive in the linked chats, and the bot answers a few fixed commands about the user's applications. It is optional.
 
 1. Create the bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and set its token in `TELEGRAM_BOT_TOKEN`.
-2. Restart. At startup the service calls `getMe`: if Telegram accepts the token, the log says `telegram: bot @<name> active`, the commands are registered with `setMyCommands`, and every user sees `/telegram` in the dashboard. Without a token, or with a token Telegram refuses, Telegram does not appear anywhere (the API answers 404).
-3. Each user opens `/telegram`, presses "link telegram" and opens the link (valid 10 minutes, single use) on the device with Telegram.
+2. Restart. At startup the service calls `getMe`: if Telegram accepts the token, the log says `telegram: bot @<name> active`, the commands are registered with `setMyCommands`, and every user sees `/telegram` in the dashboard. Without a token (missing or empty) Telegram does not appear anywhere. With a token Telegram refuses, `/telegram` only shows the error and the API answers 404.
+3. Each user opens `/telegram`, presses "link telegram" and opens the link (valid 10 minutes, single use) on the device with Telegram. "test telegram" on the main page sends a test message.
 
 - One bot per instance, read with long polling (`getUpdates`): no public endpoint is needed, but the same token must not be used by two instances (Telegram gives the updates to only one reader).
 - Telegram follows the email recipients: a chat receives an app's alerts when the address of its account receives them.
 - Commands: `/apps`, `/down`, `/status`, `/attempts`, `/pause`, `/resume` (with a confirmation button), `/test`, `/stop`, `/help`. They answer only in private chats linked to an account, and only about that account's applications.
 - If a user blocks the bot, the chat is disabled until it writes to the bot again.
+- The token is checked like an email key: daily, hourly while it fails. Polling errors count as an outage.
+
+### Alert channels
+
+An instance sends alerts by email, on Telegram, or both, depending on the configuration; the main page shows the channels and their state to every user.
+
+| Mode | Configuration |
+|---|---|
+| mail + telegram | an email provider and `TELEGRAM_BOT_TOKEN` |
+| mail | an email provider, no Telegram token |
+| telegram | `MAIL_TRANSPORT=none` and `TELEGRAM_BOT_TOKEN` (without a token the service does not start) |
+
+- A channel is **broken** when its key is refused, or when it has been unreachable for more than an hour.
+- When a channel breaks, the master is told once on the other channel (an email if Telegram broke, a Telegram message if email broke), and again when it works again. The entanglement pings go on.
+- When no channel reaches the master any more and one of them is broken, the entanglement pings stop: the linked instances report this one as down and alert in its place. Telegram reaches the master only through a chat linked to the master's account: with email broken and no master chat, the pings stop. Without entanglement nobody outside is told: configure at least one linked instance.
+- SMTP without login cannot be checked: it never stops the pings by itself, but when Telegram breaks the notice is attempted by email and the pings stop anyway.
+- Telegram only: a user must link a chat before creating applications, and the invites are not sent by email (tell the invitee the instance's address).
 
 ## Database
 

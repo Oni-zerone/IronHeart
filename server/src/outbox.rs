@@ -40,6 +40,7 @@ impl From<telegram::Message> for Message {
 #[derive(Clone)]
 pub struct Senders {
     pub mailer: Mailer,
+    pub mail_key: Arc<crate::mail_check::KeyMonitor>,
     pub telegram: Arc<Telegram>,
     pub db: db::Pool,
 }
@@ -109,6 +110,7 @@ async fn run(mut receivers: Receivers, senders: Senders) {
                 Message::Email(email) => {
                     if let Err(err) = senders.mailer.send(&email).await {
                         tracing::error!(err = ?err, subject = %email.subject, "alert not sent");
+                        senders.mail_key.recheck_soon();
                     }
                 }
                 Message::Telegram(message) => senders.telegram.deliver(&senders.db, &message).await,

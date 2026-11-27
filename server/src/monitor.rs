@@ -175,20 +175,27 @@ pub async fn tick(state: &AppState, memory: &mut Memory, now: i64) -> anyhow::Re
     let failure_digests = due_failure_digests(memory, now);
     let chats = telegram_chats(state, !downs.is_empty() || !recoveries.is_empty() || !failure_digests.is_empty()).await?;
     let chats_of = |to: &str| chats.get(to).map(Vec::as_slice).unwrap_or_default();
+    let mail = state.mailer.is_enabled();
     for (to, items) in &downs {
-        state.outbox.urgent(alerts::down_digest(to, items, now, &apps_url)).await;
+        if mail {
+            state.outbox.urgent(alerts::down_digest(to, items, now, &apps_url)).await;
+        }
         for &chat_id in chats_of(to) {
             state.outbox.urgent(telegram::Message::text(chat_id, telegram::text::down(items, now, &apps_url))).await;
         }
     }
     for (to, items) in &recoveries {
-        state.outbox.urgent(alerts::recovered_digest(to, items, &apps_url)).await;
+        if mail {
+            state.outbox.urgent(alerts::recovered_digest(to, items, &apps_url)).await;
+        }
         for &chat_id in chats_of(to) {
             state.outbox.urgent(telegram::Message::text(chat_id, telegram::text::recovered(items, &apps_url))).await;
         }
     }
     for (to, items) in failure_digests {
-        state.outbox.report(alerts::failures_digest(&to, &items, FAILURE_DIGEST_MIN_MS, &apps_url));
+        if mail {
+            state.outbox.report(alerts::failures_digest(&to, &items, FAILURE_DIGEST_MIN_MS, &apps_url));
+        }
         for &chat_id in chats_of(&to) {
             state.outbox.report(telegram::Message::text(chat_id, telegram::text::failures(&items, &apps_url)));
         }

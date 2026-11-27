@@ -19,14 +19,14 @@ const router = createRouter({
   ],
 })
 
-// Restricted pages: the backend answers 403 (404 for Telegram without an active bot) anyway.
+// Restricted pages: the backend answers 403 anyway. Telegram exists only with a token.
 router.beforeEach((to) => {
   const user = currentUser.value
   if (!user) return
   if (
     (to.meta.admin && user.role !== 'admin') ||
     (to.meta.master && !user.is_master) ||
-    (to.meta.telegram && !user.telegram)
+    (to.meta.telegram && !user.alerts.telegram)
   ) {
     return { name: 'apps' }
   }

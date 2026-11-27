@@ -100,15 +100,15 @@ async fn send(state: &AppState, target: &DuePing) -> Option<String> {
     }
 }
 
-/// Recorded instead of sending while the email key is refused.
+/// Recorded instead of sending while no alert channel reaches the master.
 pub const HELD_ERROR: &str =
-    "Held: the email provider refused this instance's key, alerts cannot be sent";
+    "Held: no alert channel of this instance works (email or Telegram), alerts cannot be sent";
 
 async fn send_and_record(state: &AppState, target: &DuePing) -> anyhow::Result<()> {
-    // Without working email this instance cannot alert anyone: stopping the
-    // pings lets the other instances see it go down and alert in its place.
-    // Not logged per ping: `mail_check` already logged the refusal.
-    let error = if state.mail_key.rejected() {
+    // Without a working alert channel this instance cannot alert anyone:
+    // stopping the pings lets the other instances see it go down and alert in
+    // its place. Not logged per ping: `channels` logs the change.
+    let error = if crate::channels::held(state).await? {
         Some(HELD_ERROR.to_owned())
     } else {
         let error = send(state, target).await;
@@ -123,8 +123,9 @@ async fn send_and_record(state: &AppState, target: &DuePing) -> anyhow::Result<(
 
 pub fn spawn(state: AppState) {
     tokio::spawn(async move {
-        // Pings stop if the email key is refused: know that before the first one.
+        // Pings stop when no alert channel works: know that before the first one.
         state.mail_key.first_check().await;
+        state.telegram.health.first_check().await;
         if let Err(err) = db::ping_all_now(&state.db, now_ms()).await {
             tracing::error!(err = ?err, "entanglement: startup failed");
         }
@@ -359,17 +360,18 @@ mod tests {
         }
     }
 
-    /// With the email key refused nothing is sent: the link records the hold.
+    /// With the only channel (email) refused nothing is sent: the link records the hold.
     #[tokio::test]
     async fn pings_are_held_while_the_mail_key_is_rejected() {
         use std::sync::Arc;
 
-        use crate::{heartbeat, mail_check::{KeyStatus, REJECTED}};
+        use crate::{heartbeat, mail_check::{KeyMonitor, KeyStatus, REJECTED}};
 
         let pool = db::test_pool().await;
         let secret_box = crypto::SecretBox::new(&[1; 32], 1);
         let hb = Arc::new(heartbeat::Heartbeat::load(&pool, secret_box, None).await.unwrap());
-        let state = crate::test_state(pool, hb);
+        let mut state = crate::test_state(pool, hb);
+        state.mail_key = Arc::new(KeyMonitor::new(true));
         let id = Uuid::now_v7().to_string();
         let secret_enc = state.heartbeat.secret_box().seal(b"ihs_secret", &secret_aad(&id));
         // Closed port: a real send would fail with "Connection failed".
@@ -378,11 +380,11 @@ mod tests {
         let target = db::ping_target(&state.db, &id).await.unwrap().unwrap();
         let last_error = || async { db::get_entanglement(&state.db, &id).await.unwrap().unwrap().last_error };
 
-        state.mail_key.set(KeyStatus { provider: "Resend", state: REJECTED, checked_at: 1, error: None });
+        state.mail_key.set(KeyStatus { provider: "Resend", state: REJECTED, checked_at: 1, error: None, failing_since: None });
         send_and_record(&state, &target).await.unwrap();
         assert_eq!(last_error().await.as_deref(), Some(HELD_ERROR));
 
-        state.mail_key.set(KeyStatus { provider: "Resend", state: "ok", checked_at: 2, error: None });
+        state.mail_key.set(KeyStatus { provider: "Resend", state: "ok", checked_at: 2, error: None, failing_since: None });
         send_and_record(&state, &target).await.unwrap();
         assert_eq!(last_error().await.as_deref(), Some("Connection failed"));
     }

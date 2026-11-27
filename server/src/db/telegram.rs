@@ -122,6 +122,17 @@ pub async fn telegram_chats_for_user(pool: &Pool, user_id: &str) -> sqlx::Result
     .await
 }
 
+/// Active chats of the account with this email (the master's, for notices).
+pub async fn telegram_chats_for_email(pool: &Pool, email: &str) -> sqlx::Result<Vec<i64>> {
+    sqlx::query_scalar(
+        "SELECT l.chat_id FROM telegram_links l JOIN users u ON u.id = l.user_id
+         WHERE u.email = $1 AND l.disabled_at IS NULL ORDER BY l.created_at",
+    )
+    .bind(email)
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn delete_telegram_link(pool: &Pool, user_id: &str, id: &str) -> sqlx::Result<bool> {
     sqlx::query("DELETE FROM telegram_links WHERE id = $1 AND user_id = $2")
         .bind(id)

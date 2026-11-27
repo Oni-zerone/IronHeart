@@ -1,9 +1,10 @@
 //! Telegram bot: alerts in a chat and fixed commands answered with IronHeart data.
 //!
-//! One bot per instance (`TELEGRAM_BOT_TOKEN`). At startup `getMe` checks the
-//! token: only if it answers is the bot active, and only then does Telegram
-//! appear in the dashboard (`/api/me` → `telegram`). A missing or refused token
-//! turns the feature off for the whole process.
+//! One bot per instance (`TELEGRAM_BOT_TOKEN`). Without a token Telegram does
+//! not exist anywhere. With a token, `getMe` checks it at startup, then daily
+//! (hourly while it fails), like the email key (`mail_check::KeyMonitor`): the
+//! bot is active only while Telegram accepts the token, and polling errors
+//! count as an outage (`channels` treats one longer than an hour as broken).
 //!
 //! Updates arrive with long polling (`getUpdates`): no public endpoint. The Bot
 //! API is called with `reqwest`, no SDK. The token is part of the URL, so
@@ -18,7 +19,13 @@ use std::{sync::RwLock, time::Duration};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
-use crate::{AppState, clock::now_ms, db};
+use crate::{
+    AppState,
+    clock::now_ms,
+    db,
+    mail::KeyCheck,
+    mail_check::{KeyMonitor, record_check},
+};
 
 const API_BASE: &str = "https://api.telegram.org";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -29,6 +36,8 @@ const MAX_STARTUP_BACKOFF: Duration = Duration::from_secs(300);
 const MAX_TEXT_CHARS: usize = 4000;
 /// Waits honored on a 429 before giving up on a message.
 const MAX_SEND_ATTEMPTS: usize = 3;
+/// Name in the logs and in `KeyStatus`.
+pub const PROVIDER: &str = "Telegram";
 
 /// A message for a chat, with optional inline buttons.
 #[derive(Debug, Clone, PartialEq)]
@@ -111,7 +120,11 @@ struct Api {
 
 pub struct Telegram {
     api: Option<Api>,
-    /// Set once `getMe` succeeded: the bot is active.
+    /// A token is set: Telegram is one of the instance's alert channels.
+    configured: bool,
+    /// Outcome of the token check and of polling.
+    pub health: KeyMonitor,
+    /// Set once `getMe` succeeded.
     username: RwLock<Option<String>>,
 }
 
@@ -124,26 +137,35 @@ impl Telegram {
             }),
             None => None,
         };
-        Ok(Self { api, username: RwLock::new(None) })
+        let configured = api.is_some();
+        Ok(Self { api, configured, health: KeyMonitor::new(configured), username: RwLock::new(None) })
     }
 
     /// Active bot without a token: the dashboard and the commands work, sends fail.
     #[cfg(test)]
     pub fn for_tests(username: &str) -> Self {
-        Self { api: None, username: RwLock::new(Some(username.into())) }
+        let telegram =
+            Self { api: None, configured: true, health: KeyMonitor::new(true), username: RwLock::new(Some(username.into())) };
+        record_check(&telegram.health, PROVIDER, KeyCheck::Valid, 0);
+        telegram
+    }
+
+    pub fn is_configured(&self) -> bool {
+        self.configured
     }
 
     /// The bot's `@username`, only while the bot is active.
     pub fn bot_username(&self) -> Option<String> {
+        if self.health.rejected() {
+            return None;
+        }
         self.username.read().expect("telegram lock").clone()
     }
 
+    /// Telegram accepted the token: linking and commands work. During an outage
+    /// the bot stays active (sends fail and are logged).
     pub fn is_active(&self) -> bool {
-        self.username.read().expect("telegram lock").is_some()
-    }
-
-    fn set_username(&self, username: Option<String>) {
-        *self.username.write().expect("telegram lock") = username;
+        self.bot_username().is_some()
     }
 
     async fn call<T: DeserializeOwned>(&self, method: &str, body: Value, timeout: Duration) -> Result<T, ApiError> {
@@ -251,36 +273,48 @@ struct CallbackMessage {
     chat: Chat,
 }
 
-/// Starts the bot if there is a token: token check, commands, then polling.
+/// Starts the bot if there is a token: the token check and the polling.
 pub fn spawn(state: AppState) {
-    if state.telegram.api.is_none() {
-        tracing::info!("telegram disabled: TELEGRAM_BOT_TOKEN not set");
+    if !state.telegram.configured {
+        tracing::info!("telegram off: TELEGRAM_BOT_TOKEN not set");
         return;
     }
-    tokio::spawn(async move { run(state).await });
+    tokio::spawn(check_loop(state.clone()));
+    tokio::spawn(poll_loop(state));
 }
 
-async fn run(state: AppState) {
+/// `getMe` at startup, then daily (hourly while it fails). When the token
+/// starts working, the commands are registered and the webhook removed.
+async fn check_loop(state: AppState) {
     let telegram = &state.telegram;
     let mut backoff = Duration::from_secs(5);
-    let me: BotUser = loop {
-        match telegram.call("getMe", json!({}), REQUEST_TIMEOUT).await {
-            Ok(me) => break me,
-            Err(ApiError::Unauthorized) => {
-                tracing::warn!("telegram disabled: the bot token was refused (getMe)");
-                return;
+    loop {
+        let was_ok = telegram.health.get().is_some_and(|s| s.state == "ok");
+        let check = match telegram.call::<BotUser>("getMe", json!({}), REQUEST_TIMEOUT).await {
+            Ok(BotUser { username: Some(username) }) => {
+                *telegram.username.write().expect("telegram lock") = Some(username.clone());
+                if !was_ok {
+                    setup(telegram).await;
+                    tracing::info!("telegram: bot @{username} active");
+                }
+                KeyCheck::Valid
             }
-            Err(err) => {
-                tracing::warn!(%err, "telegram: getMe failed, retrying in {backoff:?}");
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(MAX_STARTUP_BACKOFF);
-            }
+            Ok(BotUser { username: None }) => KeyCheck::Rejected("getMe returned no bot username".into()),
+            Err(ApiError::Unauthorized) => KeyCheck::Rejected("Telegram refused the bot token".into()),
+            Err(err) => KeyCheck::Unreachable(format!("Telegram unreachable: {err}")),
+        };
+        let unreachable = matches!(check, KeyCheck::Unreachable(_));
+        let mut wait = record_check(&telegram.health, PROVIDER, check, now_ms());
+        // Until the first answer the bot is off: retry sooner than hourly.
+        if unreachable && telegram.username.read().expect("telegram lock").is_none() {
+            wait = backoff;
+            backoff = (backoff * 2).min(MAX_STARTUP_BACKOFF);
         }
-    };
-    let Some(username) = me.username else {
-        tracing::warn!("telegram disabled: getMe returned no bot username");
-        return;
-    };
+        tokio::time::sleep(wait).await;
+    }
+}
+
+async fn setup(telegram: &Telegram) {
     // Polling does not work while a webhook is set.
     if let Err(err) = telegram.call::<bool>("deleteWebhook", json!({}), REQUEST_TIMEOUT).await {
         tracing::warn!(%err, "telegram: deleteWebhook failed");
@@ -290,12 +324,19 @@ async fn run(state: AppState) {
     if let Err(err) = telegram.call::<bool>("setMyCommands", json!({ "commands": commands }), REQUEST_TIMEOUT).await {
         tracing::warn!(%err, "telegram: setMyCommands failed");
     }
-    tracing::info!("telegram: bot @{username} active");
-    telegram.set_username(Some(username));
+}
 
+/// Long polling while the bot is active. Its outcome also feeds the health:
+/// a network error starts an outage, the next answer ends it.
+async fn poll_loop(state: AppState) {
+    let telegram = &state.telegram;
     let mut offset = 0_i64;
     let mut limiter = bot::Limiter::default();
     loop {
+        if !telegram.is_active() {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            continue;
+        }
         let body = json!({
             "offset": offset,
             "timeout": POLL_SECS,
@@ -305,9 +346,8 @@ async fn run(state: AppState) {
             match telegram.call("getUpdates", body, Duration::from_secs(POLL_SECS + 10)).await {
                 Ok(updates) => updates,
                 Err(ApiError::Unauthorized) => {
-                    telegram.set_username(None);
-                    tracing::warn!("telegram disabled: the bot token is no longer valid");
-                    return;
+                    record_check(&telegram.health, PROVIDER, KeyCheck::Rejected("Telegram refused the bot token".into()), now_ms());
+                    continue;
                 }
                 Err(ApiError::Conflict(detail)) => {
                     tracing::warn!(%detail, "telegram: another process reads this bot's updates");
@@ -319,11 +359,17 @@ async fn run(state: AppState) {
                     continue;
                 }
                 Err(err) => {
-                    tracing::warn!(%err, "telegram: getUpdates failed");
+                    if telegram.health.get().is_some_and(|s| s.state == "ok") {
+                        let detail = format!("Telegram unreachable: {err}");
+                        record_check(&telegram.health, PROVIDER, KeyCheck::Unreachable(detail), now_ms());
+                    }
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     continue;
                 }
             };
+        if telegram.health.get().is_some_and(|s| s.state == "unreachable") {
+            record_check(&telegram.health, PROVIDER, KeyCheck::Valid, now_ms());
+        }
         for update in updates {
             offset = offset.max(update.update_id + 1);
             if let Err(err) = handle_update(&state, update, &mut limiter).await {
@@ -407,7 +453,19 @@ mod tests {
     #[test]
     fn without_token_the_bot_is_off() {
         let telegram = Telegram::new(None).unwrap();
+        assert!(!telegram.is_configured());
         assert!(!telegram.is_active());
         assert_eq!(telegram.bot_username(), None);
+    }
+
+    #[test]
+    fn refused_token_turns_the_bot_off() {
+        let telegram = Telegram::for_tests("ironheart_bot");
+        assert!(telegram.is_active());
+        record_check(&telegram.health, PROVIDER, KeyCheck::Unreachable("timeout".into()), 1);
+        assert!(telegram.is_active(), "an outage keeps the bot active");
+        record_check(&telegram.health, PROVIDER, KeyCheck::Rejected("401".into()), 2);
+        assert!(!telegram.is_active());
+        assert!(telegram.is_configured());
     }
 }

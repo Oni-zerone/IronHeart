@@ -15,6 +15,25 @@ export interface User {
   mail_key?: MailKeyStatus
   /** Present only while the instance's Telegram bot is active (valid token). */
   telegram?: { bot_username: string }
+  /** Alert channels of the instance and their state. */
+  alerts: AlertChannels
+}
+
+/**
+ * `unreachable`: network error for less than an hour. `unverified`: SMTP without
+ * login, nothing to check. `broken`: key refused, or unreachable for over an hour.
+ */
+export type ChannelHealth = 'checking' | 'ok' | 'unreachable' | 'unverified' | 'broken'
+
+export interface AlertChannels {
+  mode: 'mail+telegram' | 'mail' | 'telegram'
+  /** Absent when email is off (`MAIL_TRANSPORT=none`). */
+  mail?: ChannelHealth
+  /** Absent without a Telegram token. */
+  telegram?: ChannelHealth
+  telegram_linked: boolean
+  /** Master only: no channel works, the entanglement pings are held. */
+  held?: boolean
 }
 
 export interface MailKeyStatus {

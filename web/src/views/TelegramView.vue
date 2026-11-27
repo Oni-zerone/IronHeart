@@ -14,7 +14,7 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { formatDateTime } from '@/format'
 import { useNow } from '@/grid'
-import { copy, currentUser, errorText, notify } from '@/session'
+import { copy, currentUser, errorText, loadSession, notify } from '@/session'
 
 /** While a link is pending, the page checks every few seconds whether the chat arrived. */
 const POLL_MS = 3000
@@ -39,6 +39,19 @@ const commands = [
 ]
 
 const activeLinks = computed(() => (overview.value?.links ?? []).filter((l) => l.disabled_at === null))
+
+/** The token is set but Telegram does not accept it (yet): the page only explains why. */
+const active = computed(() => Boolean(currentUser.value?.telegram))
+const problem = computed(() => {
+  switch (currentUser.value?.alerts.telegram) {
+    case 'checking':
+      return 'Checking the bot token with Telegram. Reload the page in a moment.'
+    case 'unreachable':
+      return 'Telegram cannot be reached at the moment: the bot starts as soon as it answers.'
+    default:
+      return 'Telegram refused the bot token, or has been unreachable for over an hour: alerts on Telegram are not sent. The administrator must check TELEGRAM_BOT_TOKEN and restart IronHeart.'
+  }
+})
 
 const expiresIn = computed(() => {
   if (!invite.value) return ''
@@ -73,6 +86,7 @@ async function poll() {
       invite.value = null
       stopPolling()
       notify('Chat linked.')
+      await loadSession()
     }
   } catch {
     // Retried at the next tick.
@@ -99,7 +113,7 @@ async function test() {
     notify('Test message sent.')
   } catch (err) {
     notify(errorText(err), 'error')
-    await load()
+    await Promise.all([load(), loadSession()])
   } finally {
     testing.value = false
   }
@@ -110,18 +124,31 @@ async function confirmUnlink() {
   try {
     await deleteTelegramLink(toUnlink.value.id)
     toUnlink.value = null
-    await load()
+    await Promise.all([load(), loadSession()])
   } catch (err) {
     notify(errorText(err), 'error')
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  if (active.value) load()
+})
 onBeforeUnmount(stopPolling)
 </script>
 
 <template>
-  <div class="page">
+  <div v-if="!active" class="page">
+    <div class="page-head">
+      <h1>telegram</h1>
+    </div>
+    <AsciiBox title="not working" hot>
+      <div class="notice">
+        <span class="hi">!!</span>
+        <p>{{ problem }}</p>
+      </div>
+    </AsciiBox>
+  </div>
+  <div v-else class="page">
     <div class="page-head">
       <h1>telegram</h1>
       <button class="btn" type="button" :disabled="creating" @click="createLink">

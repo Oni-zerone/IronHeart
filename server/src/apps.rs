@@ -150,6 +150,9 @@ async fn create(
     let name = validate_name(&input.name)?;
     validate_timing(input.interval_secs, input.grace_secs)?;
     let recipients = normalize_recipients(&input.recipients)?;
+    if !state.mailer.is_enabled() && db::telegram_chats_for_user(&state.db, &user.id).await?.is_empty() {
+        return invalid("Link Telegram first: it is the only alert channel of this instance.");
+    }
     if db::count_apps(&state.db, &user.id).await? >= MAX_APPS_PER_USER {
         return invalid(format!("You can register at most {MAX_APPS_PER_USER} applications."));
     }
@@ -351,6 +354,27 @@ mod tests {
         assert!(normalize_recipients(&["not-an-email".into()]).is_err());
         let many: Vec<String> = (0..11).map(|i| format!("u{i}@example.com")).collect();
         assert!(normalize_recipients(&many).is_err());
+    }
+
+    /// With email off, Telegram is the only channel: no app without a linked chat.
+    #[tokio::test]
+    async fn telegram_only_instance_needs_a_linked_chat() {
+        use std::sync::Arc;
+
+        use crate::{config, heartbeat, mail};
+
+        let pool = db::test_pool().await;
+        let hb = Arc::new(heartbeat::Heartbeat::load(&pool, crypto::SecretBox::new(&[1; 32], 1), None).await.unwrap());
+        let mut state = crate::test_state(pool, hb);
+        let off = config::MailConfig { from_email: "x@example.com".into(), from_name: "x".into(), transport: config::MailTransport::None };
+        state.mailer = mail::Mailer::new(&off).unwrap();
+        let user = db::upsert_google_user(&state.db, "s", "a@example.com", None, 1).await.unwrap();
+        let input = || Json(CreateApp { name: "nas".into(), interval_secs: 60, grace_secs: 0, recipients: vec![] });
+
+        let refused = create(State(state.clone()), CurrentUser(user.clone()), input()).await;
+        assert!(matches!(refused, Err(ApiError::Invalid(ref m)) if m.contains("Link Telegram")));
+        db::link_telegram_chat(&state.db, &user.id, 7, "@me", 1).await.unwrap();
+        assert!(create(State(state), CurrentUser(user), input()).await.is_ok());
     }
 
     #[test]

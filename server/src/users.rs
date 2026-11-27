@@ -84,8 +84,12 @@ async fn invite(
     Ok((StatusCode::CREATED, Json(overview(&state).await?)))
 }
 
-/// Notice to the invitee. If sending fails, the invite stays valid.
+/// Notice to the invitee. If sending fails, the invite stays valid. With email
+/// off the admin tells the invitee the instance's address.
 async fn send_invite_email(state: &AppState, admin: &db::User, to: &str) {
+    if !state.mailer.is_enabled() {
+        return;
+    }
     let who = admin.name.clone().unwrap_or_else(|| admin.email.clone());
     let url = format!("{}/", state.public_base_url);
     let email = Letter {

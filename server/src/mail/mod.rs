@@ -95,6 +95,8 @@ enum Transport {
         /// With credentials the login is checked like an API key.
         authenticated: bool,
     },
+    /// `MAIL_TRANSPORT=none`: email is off.
+    None,
 }
 
 impl Mailer {
@@ -135,6 +137,7 @@ impl Mailer {
                     authenticated: smtp.credentials.is_some(),
                 },
             ),
+            MailTransport::None => ("", Transport::None),
         };
         Ok(Self {
             from_email: config.from_email.clone(),
@@ -154,7 +157,13 @@ impl Mailer {
             Transport::Mailgun { .. } => "Mailgun",
             Transport::Scaleway { .. } => "Scaleway",
             Transport::Smtp { .. } => "SMTP",
+            Transport::None => "none",
         }
+    }
+
+    /// `false` with `MAIL_TRANSPORT=none`: no email is queued or sent.
+    pub fn is_enabled(&self) -> bool {
+        !matches!(self.transport, Transport::None)
     }
 
     /// Every HTTP provider has a key to check; SMTP only with credentials
@@ -162,6 +171,7 @@ impl Mailer {
     pub fn has_key(&self) -> bool {
         match self.transport {
             Transport::Smtp { authenticated, .. } => authenticated,
+            Transport::None => false,
             _ => true,
         }
     }
@@ -190,6 +200,7 @@ impl Mailer {
                     false => None,
                 };
             }
+            Transport::None => return None,
         };
         Some(match request.send().await {
             Ok(response) => {
@@ -215,6 +226,7 @@ impl Mailer {
                 scaleway::request(self, secret_key, project_id, region, email)
             }
             Transport::Smtp { transport, .. } => return smtp::send(self, transport, email).await,
+            Transport::None => bail!("email is off (MAIL_TRANSPORT=none)"),
         };
         check(self.describe(), request.send().await).await
     }

@@ -2,7 +2,16 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { createApp, listApps, sendTestEmail, type App, type AppInput, type Credentials } from '@/api'
+import {
+  createApp,
+  listApps,
+  sendTelegramTest,
+  sendTestEmail,
+  type App,
+  type AppInput,
+  type Credentials,
+} from '@/api'
+import AlertChannels from '@/components/AlertChannels.vue'
 import AppForm from '@/components/AppForm.vue'
 import AsciiBox from '@/components/AsciiBox.vue'
 import AsciiDialog from '@/components/AsciiDialog.vue'
@@ -12,7 +21,7 @@ import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import StateTag from '@/components/StateTag.vue'
 import { formatDuration, formatElapsed, formatRelative } from '@/format'
 import { useNow, usePolling } from '@/grid'
-import { errorText, notify } from '@/session'
+import { currentUser, errorText, loadSession, notify } from '@/session'
 
 const MAX_APPS = 100
 
@@ -26,6 +35,7 @@ const createError = ref('')
 const form = ref<AppInput>(emptyForm())
 const created = ref<{ id: string; name: string; credentials: Credentials } | null>(null)
 const sendingTest = ref(false)
+const sendingTelegram = ref(false)
 
 const summary = computed(() => {
   const list = apps.value ?? []
@@ -98,6 +108,21 @@ async function testEmail() {
   }
 }
 
+async function testTelegram() {
+  if (sendingTelegram.value) return
+  sendingTelegram.value = true
+  try {
+    await sendTelegramTest()
+    notify('Test message sent on Telegram.')
+  } catch (err) {
+    notify(errorText(err), 'error')
+    // A chat that refused the message is now disabled: refresh the state.
+    await loadSession()
+  } finally {
+    sendingTelegram.value = false
+  }
+}
+
 // Shortcuts: n = new application, t = test email (not while typing or with a dialog open).
 function onKey(event: KeyboardEvent) {
   if (event.metaKey || event.ctrlKey || event.altKey) return
@@ -107,7 +132,7 @@ function onKey(event: KeyboardEvent) {
   if (event.key === 'n') {
     event.preventDefault()
     openCreate()
-  } else if (event.key === 't') {
+  } else if (event.key === 't' && currentUser.value?.alerts.mail) {
     event.preventDefault()
     testEmail()
   }
@@ -126,18 +151,28 @@ usePolling(() => load(true), 15_000)
   <div class="page">
     <div class="page-head">
       <h1>applications <span v-if="apps" class="dim">({{ apps.length }}/{{ MAX_APPS }})</span></h1>
-      <button class="btn plain" type="button" aria-keyshortcuts="t" @click="testEmail">
+      <button v-if="currentUser?.alerts.mail" class="btn plain" type="button" aria-keyshortcuts="t" @click="testEmail">
         <LoadingSpinner v-if="sendingTest" /><kbd>t</kbd>est email
+      </button>
+      <button
+        v-if="currentUser?.telegram && currentUser.alerts.telegram_linked"
+        class="btn plain"
+        type="button"
+        @click="testTelegram"
+      >
+        <LoadingSpinner v-if="sendingTelegram" />test telegram
       </button>
       <button class="btn" type="button" aria-keyshortcuts="n" @click="openCreate"><kbd>n</kbd>ew application</button>
     </div>
+
+    <AlertChannels />
 
     <p v-if="!apps" class="dim"><LoadingSpinner />loading</p>
 
     <AsciiBox v-else-if="apps.length === 0" title="empty">
       <div class="form">
         <p>No applications yet. Create one to get the key to use in the heartbeat.</p>
-        <pre class="dim scroll-x">  app --(signed POST every N s)--> ironheart --(silence)--> email</pre>
+        <pre class="dim scroll-x">  app --(signed POST every N s)--> ironheart --(silence)--> alert</pre>
       </div>
     </AsciiBox>
 

@@ -53,6 +53,9 @@ function removeRecipient(index: number) {
       </label>
       <p class="help">
         Press Enter after each address. If the list is empty, alerts go to {{ currentUser?.email ?? 'you' }}.
+        <template v-if="currentUser?.alerts.mode === 'telegram'">
+          Email is off on this instance: only addresses of IronHeart accounts with a linked Telegram chat receive alerts.
+        </template>
       </p>
       <div class="chips">
         <span v-for="(email, i) in model.recipients" :key="email" class="chip">
