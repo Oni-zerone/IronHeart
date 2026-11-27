@@ -13,6 +13,7 @@ mod load_tests;
 #[cfg(test)]
 mod db_bench;
 mod mail;
+mod mail_layout;
 mod monitor;
 mod outbox;
 mod users;
@@ -176,12 +177,14 @@ async fn send_test_email(
     State(state): State<AppState>,
     auth::CurrentUser(user): auth::CurrentUser,
 ) -> StatusCode {
-    let email = mail::Email {
-        to: user.email,
-        subject: "IronHeart: test email".into(),
-        text: "If you are reading this message, IronHeart can send you alerts.".into(),
-        html: "<p>If you are reading this message, IronHeart can send you alerts.</p>".into(),
-    };
+    let email = mail_layout::Letter {
+        title: "Test email".into(),
+        hot: false,
+        pulse: mail_layout::Pulse::Beat,
+        blocks: vec![mail_layout::Block::text("If you are reading this message, IronHeart can send you alerts.")],
+        action: Some(("open IronHeart".into(), format!("{}/", state.public_base_url))),
+    }
+    .into_email(&user.email, "IronHeart: test email".into());
     match state.mailer.send(&email).await {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(err) => {
