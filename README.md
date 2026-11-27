@@ -67,9 +67,8 @@ All variables are listed in [.env.example](.env.example).
 | `ADMIN_EMAIL` | yes | Master user: can always sign in, is always admin, invites the others. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | yes | OAuth client, see [Google sign-in](#google-sign-in). |
 | `SECRETS_KEY` | yes | Master key for the app secrets, see [Keys and secrets](#keys-and-secrets). |
-| `MAIL_TRANSPORT` | in production | `brevo` (production) or `smtp` (default: unencrypted SMTP, meant for Mailpit in development). |
-| `BREVO_API_KEY` | with `brevo` | Brevo API key. |
-| `MAIL_FROM_EMAIL`, `MAIL_FROM_NAME` | with `brevo` | Sender of the alerts. On Brevo the address or its domain must be verified. |
+| `MAIL_TRANSPORT` | in production | `brevo`, `resend`, `postmark`, `mailgun`, `scaleway` or `smtp` (default: Mailpit in development). Each needs its own variables, see [Email](#email). |
+| `MAIL_FROM_EMAIL`, `MAIL_FROM_NAME` | with a provider | Sender of the alerts. The address or its domain must be verified with the provider. |
 | `DATABASE_URL` | no | `postgres://…` for an external Postgres (`?sslmode=require` for managed databases). Without it: SQLite in `/data`, which needs a volume. See [Database](#database). |
 | `CLIENT_IP_HEADER` | behind a proxy | Header with the client IP: `x-forwarded-for` (last value) or `cf-connecting-ip` with Cloudflare. Used only in the invalid-attempt summaries. |
 | `BIND_ADDR` | no | Listening address; `0.0.0.0:8080` in the image. |
@@ -79,7 +78,7 @@ All variables are listed in [.env.example](.env.example).
 - **`SECRETS_KEY`** encrypts (AES-256-GCM) the secrets of the registered apps and of the entanglement links: generate it once with `openssl rand -base64 32` and keep a copy outside the server, next to the database backups. It never changes: with a different key the existing secrets cannot be decrypted, and every app would need a new key (rotated from the dashboard) and every client updated. A database backup is useless without this key.
 - **App keys** are created in the dashboard: a public key ID (12 characters) and a secret `ihs_…`, shown only once. The database holds only the encrypted secret. If a secret is lost or leaked, rotate it from the app page: the old one stops working immediately.
 - **`GOOGLE_CLIENT_SECRET`** belongs to the OAuth client (see below). If it leaks, add a new secret to the client on Google, deploy it, then delete the old one.
-- **`BREVO_API_KEY`** is created in Brevo under *SMTP & API → API keys*. Brevo deactivates keys that go unused for 90 days, and with every app up IronHeart sends no email for months: for this reason the service checks the key at startup and then every week (`GET /v3/account`), which also keeps it in use. If Brevo refuses the key, the error is logged, the master sees `!! mail key` in the top bar, and the outgoing [entanglement](CLAUDE.md#entanglement-master-only) pings stop, so the other instances report this one as down with their own email. While refused, the key is checked again every hour and the pings resume as soon as Brevo accepts it. To fix it, create a new key, set it and restart. Give every instance its own key (better, its own Brevo account): instances that share one go down together, and none of them is left to send the alert.
+- **The email key** (`BREVO_API_KEY`, `RESEND_API_KEY`, …) is checked at startup and then every day, see [Email](#email). Give every instance its own key (better, its own account with the provider): instances that share one go down together, and none of them is left to send the alert.
 - Configuration goes in the platform's environment variables or secret store, never in the image or in the repository (`.env` is ignored by git).
 
 ### Google sign-in
@@ -114,6 +113,42 @@ cp .env.example .env               # then fill in the variables
 cd server && cargo run             # backend on :8080
 cd web && pnpm install && pnpm dev # dashboard on http://localhost:5173
 ```
+
+## Email
+
+The provider is chosen with `MAIL_TRANSPORT`; the sender is `MAIL_FROM_EMAIL` / `MAIL_FROM_NAME` and must be verified with the provider (address or domain). Every provider is one HTTP call or standard SMTP: no SDKs. The variables of each one are in [.env.example](.env.example).
+
+| `MAIL_TRANSPORT` | Type | Variables |
+|---|---|---|
+| `brevo` | HTTP API | `BREVO_API_KEY` |
+| `resend` | HTTP API | `RESEND_API_KEY` |
+| `postmark` | HTTP API | `POSTMARK_SERVER_TOKEN`, `POSTMARK_MESSAGE_STREAM` (default `outbound`) |
+| `mailgun` | HTTP API | `MAILGUN_API_KEY`, `MAILGUN_DOMAIN`, `MAILGUN_REGION` = `us` \| `eu` (default `us`) |
+| `scaleway` | HTTP API (Transactional Email) | `SCW_SECRET_KEY`, `SCW_PROJECT_ID`, `SCW_REGION` (default `fr-par`) |
+| `smtp` (default) | SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_TLS` = `none` \| `starttls` \| `tls` |
+
+- `smtp` is the fallback for any other provider (Brevo SMTP, Amazon SES via SMTP, Gmail, Fastmail, your own server). Without `SMTP_TLS` it is `tls` with `SMTP_PORT=465`, `none` towards `localhost`/`127.0.0.1`/`mailpit` and `starttls` elsewhere; the default port follows the TLS mode (1025, 587, 465). With credentials and no TLS towards a non-local host the service refuses to start. Locally it reaches Mailpit with no configuration.
+- The HTTP APIs also work where outgoing SMTP ports are blocked (some DigitalOcean accounts).
+- A wrong configuration stops the startup with the name of the missing variable; the log names only the provider, never the credentials. `POST /api/me/test-email` sends a test email to the signed-in user.
+- A failed send is not retried and there is no failover between providers.
+- Only the provider named in `MAIL_TRANSPORT` is on: the variables of the others are ignored.
+
+### Key check
+
+With every app up IronHeart sends no email for months, so a broken key would only show at the first alert. The service therefore checks the key of the configured provider at startup and then every day:
+
+| Provider | Check | Expiry, per the provider's documentation |
+|---|---|---|
+| Brevo | `GET /v3/account` | Keys unused for 90 days are deactivated: the daily read keeps the key in use. |
+| Resend | a send with an empty body, refused for the missing fields: nothing goes out | None: keys stay valid until deleted (unused ones are only flagged after 30 days). |
+| Postmark | `GET /server` | None documented. |
+| Mailgun | a send with no fields, refused for the missing fields | None for inactivity; a key can be created with a fixed lifetime (`expiration`). |
+| Scaleway | a send with only the project, refused for the missing fields | None for inactivity; a key can have an expiration date, or the organization a maximum duration. |
+| SMTP | connection and login (only with `SMTP_USERNAME`) | Depends on the server. |
+
+Sends are used instead of reads because keys that may only send (Resend "Sending access", Mailgun domain sending keys, a Scaleway key with only `TransactionalEmailEmailApiCreate`) are refused on reads.
+
+If the provider refuses the key (401/403; 404 to the empty send, i.e. a wrong Mailgun domain or region; a 5xx, missing login mechanism or TLS failure on SMTP), the error is logged, the master sees `!! mail key` in the top bar, and the outgoing [entanglement](CLAUDE.md#entanglement-master-only) pings stop, so the other instances report this one as down with their own email. While refused, the key is checked again every hour and the pings resume as soon as the provider accepts it. To fix it, create a new key, set it and restart. A network error or an outage at the provider does not stop the pings.
 
 ## Database
 

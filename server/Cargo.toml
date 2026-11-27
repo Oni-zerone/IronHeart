@@ -1,6 +1,6 @@
 [package]
 name = "ironheart"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 
@@ -13,7 +13,7 @@ base64 = "0.23.1"
 dotenvy = "0.15.7"
 hex = "0.4.3"
 hmac = "0.13.0"
-lettre = { version = "0.11.24", default-features = false, features = ["builder", "smtp-transport", "tokio1", "hostname"] }
+lettre = { version = "0.11.24", default-features = false, features = ["builder", "smtp-transport", "tokio1", "hostname", "tokio1-rustls-tls"] }
 openidconnect = "4.1.0"
 rand = "0.10.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

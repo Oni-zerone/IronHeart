@@ -5,7 +5,7 @@
 //! was delivered. If the key is wrong the other instance reports it, in its
 //! invalid-attempt summaries.
 //!
-//! While this instance's Brevo API key is refused (`mail_check`) the pings are
+//! While this instance's email key is refused (`mail_check`) the pings are
 //! held back: the other instances see this one go down and alert in its place.
 
 use std::{collections::HashMap, sync::Mutex, time::Duration};
@@ -100,8 +100,9 @@ async fn send(state: &AppState, target: &DuePing) -> Option<String> {
     }
 }
 
-/// Recorded instead of sending while the Brevo key is refused.
-pub const HELD_ERROR: &str = "Held: Brevo refused this instance's API key, alerts cannot be sent";
+/// Recorded instead of sending while the email key is refused.
+pub const HELD_ERROR: &str =
+    "Held: the email provider refused this instance's key, alerts cannot be sent";
 
 async fn send_and_record(state: &AppState, target: &DuePing) -> anyhow::Result<()> {
     // Without working email this instance cannot alert anyone: stopping the
@@ -122,7 +123,7 @@ async fn send_and_record(state: &AppState, target: &DuePing) -> anyhow::Result<(
 
 pub fn spawn(state: AppState) {
     tokio::spawn(async move {
-        // Pings stop if the Brevo key is refused: know that before the first one.
+        // Pings stop if the email key is refused: know that before the first one.
         state.mail_key.first_check().await;
         if let Err(err) = db::ping_all_now(&state.db, now_ms()).await {
             tracing::error!(err = ?err, "entanglement: startup failed");
@@ -358,7 +359,7 @@ mod tests {
         }
     }
 
-    /// With the Brevo key refused nothing is sent: the link records the hold.
+    /// With the email key refused nothing is sent: the link records the hold.
     #[tokio::test]
     async fn pings_are_held_while_the_mail_key_is_rejected() {
         use std::sync::Arc;
@@ -377,11 +378,11 @@ mod tests {
         let target = db::ping_target(&state.db, &id).await.unwrap().unwrap();
         let last_error = || async { db::get_entanglement(&state.db, &id).await.unwrap().unwrap().last_error };
 
-        state.mail_key.set(KeyStatus { state: REJECTED, checked_at: 1, error: None });
+        state.mail_key.set(KeyStatus { provider: "Resend", state: REJECTED, checked_at: 1, error: None });
         send_and_record(&state, &target).await.unwrap();
         assert_eq!(last_error().await.as_deref(), Some(HELD_ERROR));
 
-        state.mail_key.set(KeyStatus { state: "ok", checked_at: 2, error: None });
+        state.mail_key.set(KeyStatus { provider: "Resend", state: "ok", checked_at: 2, error: None });
         send_and_record(&state, &target).await.unwrap();
         assert_eq!(last_error().await.as_deref(), Some("Connection failed"));
     }

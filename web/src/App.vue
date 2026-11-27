@@ -25,7 +25,7 @@ const database = computed(() => {
       }
 })
 
-/** Brevo API key indicator for the master: shown only when the key has a problem. */
+/** Email key indicator for the master: shown only when the key has a problem. */
 const mailKey = computed(() => {
   const status = currentUser.value?.mail_key
   if (!status || status.state === 'ok') return null
@@ -33,11 +33,11 @@ const mailKey = computed(() => {
   return status.state === 'rejected'
     ? {
         label: 'mail key',
-        hint: `Brevo refused the API key (${when}): alert emails cannot be sent and entanglement pings are held, so the other instances report this one as down. Checked again every hour. Set a new BREVO_API_KEY and restart. ${status.error ?? ''}`,
+        hint: `${status.provider} refused the key (${when}): alert emails cannot be sent and entanglement pings are held, so the other instances report this one as down. Checked again every hour. Set a new key and restart. ${status.error ?? ''}`,
       }
     : {
         label: 'mail?',
-        hint: `Could not check the Brevo API key (${when}), retrying every hour. ${status.error ?? ''}`,
+        hint: `Could not check the ${status.provider} key (${when}), retrying every hour. ${status.error ?? ''}`,
       }
 })
 </script>

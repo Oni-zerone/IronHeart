@@ -1,9 +1,15 @@
-//! Weekly check of the Brevo API key (hourly while it fails).
+//! Daily check of the email provider's key (hourly while it fails).
 //!
-//! Brevo deactivates API keys that go unused for 90 days: if every app keeps
-//! pinging, no alert goes out and the key expires silently. An authenticated
-//! read at startup and then once a week keeps the key in use and tells us when
-//! it stops working.
+//! Only the configured transport is checked (`MAIL_TRANSPORT`): the other
+//! providers are off. Every provider with a key is checked the same way:
+//! Brevo, Resend, Postmark, Mailgun, Scaleway, and SMTP with a login.
+//!
+//! - Brevo deactivates API keys that go unused for 90 days: if every app keeps
+//!   pinging, no alert goes out and the key expires silently. The check is an
+//!   authenticated read, which keeps the key in use.
+//! - The others do not expire unused keys, but a key can be revoked or deleted,
+//!   and on Mailgun and Scaleway it can be created with an expiration date. The
+//!   check finds out within a day instead of at the next alert.
 //!
 //! A refused key cannot be reported by email through the same key. Instead,
 //! while the key is refused the entanglement pings are held back, so the other
@@ -17,9 +23,11 @@ use tokio::sync::watch;
 
 use crate::{AppState, clock, mail::KeyCheck};
 
-const CHECK_EVERY: Duration = Duration::from_secs(7 * 24 * 3600);
+/// Daily: an expiration date or a revocation must not leave the alerts broken
+/// for long. Far within Brevo's 90 days.
+const CHECK_EVERY: Duration = Duration::from_secs(24 * 3600);
 /// After a network error, an unexpected answer or a refusal: a refusal by
-/// mistake (an incident at Brevo) must not hold the pings for a week.
+/// mistake (an incident at the provider) must not hold the pings for a day.
 const RETRY_AFTER: Duration = Duration::from_secs(3600);
 
 pub const REJECTED: &str = "rejected";
@@ -27,6 +35,8 @@ pub const REJECTED: &str = "rejected";
 /// Last outcome of the check, shown to the master.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct KeyStatus {
+    /// Provider that was checked (`Mailer::describe`).
+    pub provider: &'static str,
     /// `ok`, `rejected` or `unreachable`.
     pub state: &'static str,
     /// Unix milliseconds.
@@ -35,9 +45,9 @@ pub struct KeyStatus {
     pub error: Option<String>,
 }
 
-/// Shared outcome of the latest check: `None` before the first one, or with SMTP.
+/// Shared outcome of the latest check: `None` before the first one, or without a key.
 pub struct KeyMonitor {
-    /// `false` with SMTP: there is no key and no check.
+    /// `false` without a key (SMTP without login): no check.
     enabled: bool,
     status: watch::Sender<Option<KeyStatus>>,
 }
@@ -60,7 +70,7 @@ impl KeyMonitor {
         self.status.borrow().as_ref().is_some_and(|s| s.state == REJECTED)
     }
 
-    /// Waits for the first check (immediately with SMTP), so that at startup
+    /// Waits for the first check (immediately without a key), so that at startup
     /// no entanglement ping goes out before we know whether the key works.
     pub async fn first_check(&self) {
         if self.enabled {
@@ -69,7 +79,7 @@ impl KeyMonitor {
     }
 }
 
-/// Checks the key at startup and then every week. Nothing with SMTP.
+/// Checks the key at startup and then every day. Nothing without a key.
 pub fn spawn(state: AppState) {
     tokio::spawn(async move {
         while let Some(check) = state.mailer.check_key().await {
@@ -82,29 +92,32 @@ pub fn spawn(state: AppState) {
 /// Stores the outcome and returns when to check again.
 fn record(state: &AppState, check: KeyCheck) -> Duration {
     let checked_at = clock::now_ms();
+    let provider = state.mailer.describe();
+    let status = |state, error| KeyStatus { provider, state, checked_at, error };
     match check {
         KeyCheck::Valid => {
             if state.mail_key.rejected() {
-                tracing::info!("Brevo API key valid again: entanglement pings resume");
+                tracing::info!(provider, "email key valid again: entanglement pings resume");
             } else {
-                tracing::info!("Brevo API key valid");
+                tracing::info!(provider, "email key valid");
             }
-            state.mail_key.set(KeyStatus { state: "ok", checked_at, error: None });
+            state.mail_key.set(status("ok", None));
             CHECK_EVERY
         }
         KeyCheck::Rejected(detail) => {
             tracing::error!(
+                provider,
                 %detail,
-                "Brevo refused the API key: alert emails cannot be sent, entanglement pings are held"
+                "the email provider refused the key: alert emails cannot be sent, entanglement pings are held"
             );
-            state.mail_key.set(KeyStatus { state: REJECTED, checked_at, error: Some(detail) });
+            state.mail_key.set(status(REJECTED, Some(detail)));
             RETRY_AFTER
         }
         KeyCheck::Unreachable(detail) => {
-            tracing::warn!(%detail, "Brevo API key check failed: retrying in an hour");
+            tracing::warn!(provider, %detail, "email key check failed: retrying in an hour");
             // A temporary error does not hide an earlier refusal.
             if !state.mail_key.rejected() {
-                state.mail_key.set(KeyStatus { state: "unreachable", checked_at, error: Some(detail) });
+                state.mail_key.set(status("unreachable", Some(detail)));
             }
             RETRY_AFTER
         }
@@ -152,7 +165,7 @@ mod tests {
 
     #[tokio::test]
     async fn first_check_waits_only_with_a_key() {
-        // SMTP: nothing to wait for.
+        // No key: nothing to wait for.
         KeyMonitor::new(false).first_check().await;
 
         let monitor = Arc::new(KeyMonitor::new(true));
@@ -162,7 +175,7 @@ mod tests {
         });
         tokio::task::yield_now().await;
         assert!(!waiting.is_finished());
-        monitor.set(KeyStatus { state: "ok", checked_at: 1, error: None });
+        monitor.set(KeyStatus { provider: "Brevo", state: "ok", checked_at: 1, error: None });
         waiting.await.unwrap();
     }
 }

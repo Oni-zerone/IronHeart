@@ -51,7 +51,7 @@ pub struct AppState {
     entanglement: Arc<entanglement::Sender>,
     /// Database in use, shown to the master.
     database: Arc<db::DatabaseInfo>,
-    /// Outcome of the weekly Brevo API key check, shown to the master.
+    /// Outcome of the daily check of the email key, shown to the master.
     mail_key: Arc<mail_check::KeyMonitor>,
 }
 
@@ -84,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         auth,
         outbox: outbox::Outbox::start(mailer.clone()),
-        mail_key: Arc::new(mail_check::KeyMonitor::new(mailer.has_api_key())),
+        mail_key: Arc::new(mail_check::KeyMonitor::new(mailer.has_key())),
         mailer,
         heartbeat,
         public_base_url: config.public_base_url.as_str().into(),
@@ -135,7 +135,12 @@ pub fn test_state(db: db::Pool, heartbeat: Arc<heartbeat::Heartbeat>) -> AppStat
     let mail = config::MailConfig {
         from_email: "test@ironheart.local".into(),
         from_name: "IronHeart".into(),
-        transport: config::MailTransport::Smtp { host: "127.0.0.1".into(), port: 9 },
+        transport: config::MailTransport::Smtp(config::SmtpConfig {
+            host: "127.0.0.1".into(),
+            port: 9,
+            tls: config::SmtpTls::None,
+            credentials: None,
+        }),
     };
     let mailer = mail::Mailer::new(&mail).unwrap();
     AppState {
@@ -170,7 +175,7 @@ struct Me {
     /// Master only: which database the instance runs on.
     #[serde(skip_serializing_if = "Option::is_none")]
     database: Option<db::DatabaseInfo>,
-    /// Master only: last check of the Brevo API key (absent with SMTP).
+    /// Master only: last check of the email key (absent without a key).
     #[serde(skip_serializing_if = "Option::is_none")]
     mail_key: Option<mail_check::KeyStatus>,
 }
@@ -257,10 +262,10 @@ mod tests {
         let user = |email: &str| db::User { id: "u".into(), email: email.into(), name: None, role: "admin".into() };
         let json = |me: &Me| serde_json::to_value(me).unwrap();
 
-        // Before the first Brevo check (or with SMTP) there is no key status.
+        // Before the first check (or without a key) there is no key status.
         let Json(master) = me(State(state.clone()), auth::CurrentUser(user("master@example.com"))).await;
         assert!(json(&master).get("mail_key").is_none());
-        state.mail_key.set(mail_check::KeyStatus { state: "rejected", checked_at: 1, error: Some("401".into()) });
+        state.mail_key.set(mail_check::KeyStatus { provider: "Brevo", state: "rejected", checked_at: 1, error: Some("401".into()) });
 
         let Json(master) = me(State(state.clone()), auth::CurrentUser(user("master@example.com"))).await;
         assert_eq!(json(&master)["database"]["backend"], "sqlite");
