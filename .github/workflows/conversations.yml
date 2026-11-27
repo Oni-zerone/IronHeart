@@ -1,0 +1,105 @@
+name: Conversations
+
+# Reports the review conversations still open on the PR, with the "Conversations" status on the head commit:
+# red if there is at least one, green otherwise. To block the merge, make "Conversations" a required status check
+# in a ruleset on main.
+# A status is used instead of the job result because the latest status per context counts, whatever event produced it.
+# Resolving a thread does not start any workflow: after resolving them, refresh with
+#   gh workflow run conversations.yml -f pr=<number>
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created, deleted]
+  # The Gemini review is published with GITHUB_TOKEN, which does not start pull_request_review
+  workflow_run:
+    workflows: [Gemini review]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number
+        required: true
+        type: number
+
+# No concurrency: every run lasts a few seconds and reads the current state, while a cancelled run would show up in
+# the PR as a failed check
+permissions: {}
+
+jobs:
+  status:
+    # No PRs from forks or Dependabot: the token is read-only and the status cannot be written.
+    # With workflow_run the PR list is empty if the run does not come from a branch of this repository
+    if: >-
+      (github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || inputs.pr) &&
+      (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) &&
+      github.actor != 'dependabot[bot]'
+    # A few seconds of API calls (curl and jq, no gh). Like the review: on a self-hosted runner if the REVIEW_RUNS_ON
+    # variable is set (e.g. ["self-hosted","caprover"], it uses no minutes), otherwise on GitHub's runners
+    runs-on: ${{ fromJSON(vars.REVIEW_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Conversations status
+        env:
+          TOKEN: ${{ github.token }}
+          API_URL: ${{ github.api_url }}
+          GRAPHQL_URL: ${{ github.graphql_url }}
+          REPOSITORY: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || inputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          api() {
+            curl -fsS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"
+          }
+
+          # Head commit read now: with workflow_run or dispatch the PR may have received more pushes
+          sha=$(api "$API_URL/repos/$REPOSITORY/pulls/$PR" | jq -r .head.sha)
+
+          # Unresolved threads, 100 per page
+          query='
+            query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  reviewThreads(first: 100, after: $endCursor) {
+                    nodes { isResolved }
+                    pageInfo { hasNextPage endCursor }
+                  }
+                }
+              }
+            }'
+          open=0
+          cursor=null
+          while :; do
+            body=$(jq -n --arg query "$query" --arg owner "${REPOSITORY%%/*}" --arg name "${REPOSITORY#*/}" \
+              --argjson number "$PR" --argjson cursor "$cursor" \
+              '{query: $query, variables: {owner: $owner, name: $name, number: $number, endCursor: $cursor}}')
+            page=$(api -X POST "$GRAPHQL_URL" -d "$body")
+            # GraphQL answers 200 even with errors
+            if jq -e 'has("errors")' <<<"$page" > /dev/null; then
+              echo "::error::$(jq -c .errors <<<"$page")"
+              exit 1
+            fi
+            threads=$(jq '.data.repository.pullRequest.reviewThreads' <<<"$page")
+            open=$((open + $(jq '[.nodes[] | select(.isResolved | not)] | length' <<<"$threads")))
+            [ "$(jq -r .pageInfo.hasNextPage <<<"$threads")" = true ] || break
+            cursor=$(jq .pageInfo.endCursor <<<"$threads")
+          done
+
+          if [ "$open" -gt 0 ]; then
+            state=failure
+            if [ "$open" -eq 1 ]; then description="1 conversation to resolve"; else description="$open conversations to resolve"; fi
+          else
+            state=success
+            description="No open conversations"
+          fi
+
+          status=$(jq -n --arg state "$state" --arg description "$description" --arg url "$RUN_URL" \
+            '{state: $state, context: "Conversations", description: $description, target_url: $url}')
+          api -X POST "$API_URL/repos/$REPOSITORY/statuses/$sha" -d "$status" > /dev/null
+          echo "PR #$PR ($sha): $description"

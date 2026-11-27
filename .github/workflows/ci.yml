@@ -1,0 +1,69 @@
+name: CI
+
+# On every PR. Pushes to main and tags run the server tests in docker.yml before the image is built.
+on:
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the PR cancels the previous check
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: server
+
+      # Every target (tests, examples) and warnings as errors
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      # Database tests on in-memory SQLite. The load test (load_tests.rs) is skipped: it only makes the run longer
+      - name: Test
+        run: cargo test --locked -- --skip 'load_tests::'
+
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Node and pnpm at the versions pinned in mise.toml
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # The lint script runs with --fix: here the linters only check
+      - name: Lint
+        run: |
+          pnpm exec oxlint .
+          pnpm exec eslint .
+
+      # Type check and build
+      - name: Build
+        run: pnpm build

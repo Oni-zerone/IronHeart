@@ -1,0 +1,99 @@
+name: Gemini review
+
+# Automatic PR review with Gemini: comments only, it does not block the merge.
+# A single call to the model (.github/scripts/gemini-review.mjs): diff and project rules (CLAUDE.md) in the prompt, no agent.
+# Later pushes only get the new commits reviewed; to redo the whole PR:
+#   gh workflow run gemini-review.yml -f pr=<number> -f full=true
+# On every run the model also re-evaluates the conversations opened by its reviews (those on files touched by the new
+# commits or with a reply): it resolves the ones it accepts as fixed. A reply in a thread only starts the
+# re-evaluation of the conversations, without a new review.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number
+        required: true
+        type: number
+      full:
+        description: Review the whole PR instead of only the new commits
+        type: boolean
+        default: false
+
+# A new push cancels the review still running on the same PR; replies in threads have their own group, so they do not
+# cancel the review of a push
+concurrency:
+  group: gemini-review-${{ github.event.pull_request.number || inputs.pr }}-${{ github.event_name == 'pull_request_review_comment' && 'replies' || 'review' }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  review:
+    # No drafts, no PRs from forks or Dependabot (they cannot see the secrets). Of the comments only replies from
+    # people count (new comments are not Gemini conversations; the workflow's own comments do not start runs anyway)
+    if: >-
+      github.event_name == 'workflow_dispatch' || (
+        !github.event.pull_request.draft &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.actor != 'dependabot[bot]' && (
+          github.event_name == 'pull_request' ||
+          (github.event.comment.in_reply_to_id && github.event.comment.user.type != 'Bot')
+        )
+      )
+    # Self-hosted runner if the REVIEW_RUNS_ON variable is set (e.g. ["self-hosted","caprover"]), otherwise GitHub's runners
+    runs-on: ${{ fromJSON(vars.REVIEW_RUNS_ON || '"ubuntu-latest"') }}
+    # large PRs take the model several minutes of reasoning
+    timeout-minutes: 20
+    permissions:
+      # write only for resolveReviewThread: with pull-requests: write alone GitHub answers FORBIDDEN
+      contents: write
+      pull-requests: write
+    steps:
+      # Without a key the review is skipped, without failing the PR
+      - name: Gemini key
+        id: key
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -n "$GEMINI_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::GEMINI_API_KEY not configured: review skipped"
+          fi
+
+      # Only the script and the root files (CLAUDE.md) are needed: diff and files come from the GitHub API
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.key.outputs.present == 'true'
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      # A self-hosted runner may not have Node
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.key.outputs.present == 'true'
+        with:
+          node-version: 24
+
+      - name: Review
+        id: review
+        if: steps.key.outputs.present == 'true'
+        # Quota exhausted or model overloaded: a warning in the run, without marking the PR red
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          REPOSITORY: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          FULL: ${{ inputs.full }}
+          EVENT: ${{ github.event_name }}
+        run: node .github/scripts/gemini-review.mjs
+
+      # With continue-on-error the job stays green even if the review did not arrive: it is reported in the run summary
+      - name: Review outcome
+        if: steps.review.outcome == 'failure'
+        run: 'echo "::warning::Gemini review not completed (quota or model unavailable): see the log of the Review step"'

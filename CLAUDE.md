@@ -34,6 +34,12 @@ Lightweight heartbeat service. Users sign in with Google and register their appl
 - `docker compose up -d mailpit`: local SMTP on `:1025`, UI on http://localhost:8025.
 - `docker compose up -d postgres`: local Postgres, `DATABASE_URL=postgres://ironheart:ironheart@localhost:5432/ironheart`.
 
+## CI and PR review
+
+- `.github/workflows/ci.yml` on every PR: `cargo clippy --all-targets -- -D warnings`, `cargo test` without the load test (`--skip load_tests::`), then in `web/` oxlint, eslint (without `--fix`) and `pnpm build`. Run the same commands locally before opening a PR.
+- `.github/workflows/gemini-review.yml` + `.github/scripts/gemini-review.mjs`: one Gemini call per push with the diff and this file as the project rules; comments only, incremental after the first review, it re-evaluates its open conversations and resolves those it accepts. Needs the `GEMINI_API_KEY` secret (skipped without it); optional variables `GEMINI_MODEL` and `REVIEW_RUNS_ON`. Full re-review: `gh workflow run gemini-review.yml -f pr=<n> -f full=true`.
+- `.github/workflows/conversations.yml`: the `Conversations` commit status is red while a review thread is unresolved. Resolving a thread starts no workflow: refresh with `gh workflow run conversations.yml -f pr=<n>`.
+
 ## Database rules (SQLite and Postgres)
 
 The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) and on Postgres (external, in production), through sqlx's `Any` pool (`db::Pool`). Therefore:
