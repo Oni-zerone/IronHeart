@@ -321,6 +321,8 @@ where
 /// as `Option<CurrentUser>` it is `None`.
 pub struct CurrentUser(pub db::User);
 
+// `Response` is the extractors' rejection type: boxing it gains nothing.
+#[allow(clippy::result_large_err)]
 async fn current_user(parts: &Parts, state: &AppState) -> Result<Option<CurrentUser>, Response> {
     let jar = CookieJar::from_headers(&parts.headers);
     let Some(token) = jar_value(&jar, SESSION_COOKIE) else {
