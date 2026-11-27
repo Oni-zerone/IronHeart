@@ -14,7 +14,7 @@ To integrate the heartbeat into another application: [docs/heartbeat-client.md](
 
 ## Installation
 
-The image is published on GHCR for `linux/amd64` and `linux/arm64`, with the dashboard embedded in the binary:
+The image is published on GHCR for `linux/amd64` and `linux/arm64`. It contains only a static binary with the dashboard embedded: ~10 MB on disk (~5 MB to download), ~3 MiB of RAM at rest, ~5 MiB at 34,000 heartbeats/s. There is no shell inside: use the logs (`docker logs`).
 
 ```sh
 docker run -d --name ironheart -p 8080:8080 \
