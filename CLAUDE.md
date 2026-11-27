@@ -80,7 +80,7 @@ The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) 
 - `MAIL_TRANSPORT=brevo` (production, requires `BREVO_API_KEY`) or `smtp` (default, `SMTP_HOST`/`SMTP_PORT`, to Mailpit). Sender: `MAIL_FROM_EMAIL` and `MAIL_FROM_NAME`; on Brevo the sender or the domain must be verified.
 - One email per recipient, so nobody sees the other addresses.
 - `POST /api/me/test-email` sends a test email to the signed-in user.
-- Brevo deactivates API keys unused for 90 days (with every app up, no email goes out). `mail_check` does a `GET /v3/account` at startup and then every 7 days (every hour after a network error or 5xx/429), which keeps the key in use. A 401/403 is logged as an error, shown to the master in `/api/me` (`mail_key`, the `!! mail key` chip in the top bar) and holds the entanglement pings (see Entanglement): no email is attempted, since it would go through the refused key. A network error does not hold the pings. Nothing happens with SMTP.
+- Brevo deactivates API keys unused for 90 days (with every app up, no email goes out). `mail_check` does a `GET /v3/account` at startup and then every 7 days (every hour after a network error, 5xx/429 or a refusal, so a refusal by mistake does not hold the pings for a week), which keeps the key in use. A 401/403 is logged as an error, shown to the master in `/api/me` (`mail_key`, the `!! mail key` chip in the top bar) and holds the entanglement pings (see Entanglement): no email is attempted, since it would go through the refused key. A network error does not hold the pings. Nothing happens with SMTP.
 
 ## Heartbeat
 

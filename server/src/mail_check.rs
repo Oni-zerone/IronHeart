@@ -1,4 +1,4 @@
-//! Weekly check of the Brevo API key.
+//! Weekly check of the Brevo API key (hourly while it fails).
 //!
 //! Brevo deactivates API keys that go unused for 90 days: if every app keeps
 //! pinging, no alert goes out and the key expires silently. An authenticated
@@ -18,7 +18,8 @@ use tokio::sync::watch;
 use crate::{AppState, clock, mail::KeyCheck};
 
 const CHECK_EVERY: Duration = Duration::from_secs(7 * 24 * 3600);
-/// After a network error or an unexpected answer.
+/// After a network error, an unexpected answer or a refusal: a refusal by
+/// mistake (an incident at Brevo) must not hold the pings for a week.
 const RETRY_AFTER: Duration = Duration::from_secs(3600);
 
 pub const REJECTED: &str = "rejected";
@@ -97,7 +98,7 @@ fn record(state: &AppState, check: KeyCheck) -> Duration {
                 "Brevo refused the API key: alert emails cannot be sent, entanglement pings are held"
             );
             state.mail_key.set(KeyStatus { state: REJECTED, checked_at, error: Some(detail) });
-            CHECK_EVERY
+            RETRY_AFTER
         }
         KeyCheck::Unreachable(detail) => {
             tracing::warn!(%detail, "Brevo API key check failed: retrying in an hour");
@@ -132,7 +133,7 @@ mod tests {
         assert_eq!(state.mail_key.get().unwrap().state, "ok");
         assert!(!state.mail_key.rejected());
 
-        assert_eq!(record(&state, KeyCheck::Rejected("401".into())), CHECK_EVERY);
+        assert_eq!(record(&state, KeyCheck::Rejected("401".into())), RETRY_AFTER);
         let status = state.mail_key.get().unwrap();
         assert_eq!((status.state, status.error.as_deref()), (REJECTED, Some("401")));
         assert!(state.mail_key.rejected());
