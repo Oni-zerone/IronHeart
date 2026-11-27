@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     let heartbeat =
         Arc::new(heartbeat::Heartbeat::load(&db, secret_box, config.client_ip_header.clone()).await?);
     monitor::reschedule_overdue(&db, clock::now_ms()).await?;
-    let telegram = Arc::new(telegram::Telegram::new(config.telegram_bot_token.as_deref())?);
+    let telegram = Arc::new(telegram::Telegram::new(config.telegram_bot_token.as_deref(), &config.telegram_api_url)?);
     let mail_key = Arc::new(mail_check::KeyMonitor::new(mailer.has_key()));
     if !mailer.is_enabled() {
         tracing::info!("email off (MAIL_TRANSPORT=none): alerts only on Telegram");
@@ -161,7 +161,7 @@ pub fn test_state(db: db::Pool, heartbeat: Arc<heartbeat::Heartbeat>) -> AppStat
         }),
     };
     let mailer = mail::Mailer::new(&mail).unwrap();
-    let telegram = Arc::new(telegram::Telegram::new(None).unwrap());
+    let telegram = Arc::new(telegram::Telegram::new(None, telegram::DEFAULT_API_URL).unwrap());
     let mail_key = Arc::new(mail_check::KeyMonitor::new(false));
     AppState {
         outbox: outbox::Outbox::start(outbox::Senders {

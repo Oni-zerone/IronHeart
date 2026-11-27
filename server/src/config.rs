@@ -21,6 +21,8 @@ pub struct Config {
     pub client_ip_header: Option<String>,
     /// Bot token from BotFather (`TELEGRAM_BOT_TOKEN`): without it Telegram is off.
     pub telegram_bot_token: Option<String>,
+    /// Bot API origin (`TELEGRAM_API_URL`): Telegram's, or a local Bot API server.
+    pub telegram_api_url: String,
 }
 
 pub struct MailConfig {
@@ -209,6 +211,11 @@ impl Config {
                 .map(|h| h.trim().to_lowercase())
                 .filter(|h| !h.is_empty()),
             telegram_bot_token,
+            telegram_api_url: std::env::var("TELEGRAM_API_URL")
+                .ok()
+                .map(|u| u.trim().trim_end_matches('/').to_owned())
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| crate::telegram::DEFAULT_API_URL.to_owned()),
         })
     }
 

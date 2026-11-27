@@ -127,7 +127,7 @@ mod tests {
 
     #[tokio::test]
     async fn inactive_bot_hides_everything() {
-        let (state, user) = state(Telegram::new(None).unwrap()).await;
+        let (state, user) = state(Telegram::new(None, crate::telegram::DEFAULT_API_URL).unwrap()).await;
         let me = || CurrentUser(user.clone());
         assert!(matches!(overview(State(state.clone()), me()).await, Err(ApiError::NotFound)));
         assert!(matches!(create_link(State(state.clone()), me()).await, Err(ApiError::NotFound)));

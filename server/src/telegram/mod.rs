@@ -27,7 +27,9 @@ use crate::{
     mail_check::{KeyMonitor, record_check},
 };
 
-const API_BASE: &str = "https://api.telegram.org";
+/// Telegram's Bot API; `TELEGRAM_API_URL` points elsewhere (a local Bot API
+/// server, or a mock in the load test).
+pub const DEFAULT_API_URL: &str = "https://api.telegram.org";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Long polling: Telegram holds the request up to this long when there is nothing new.
 const POLL_SECS: u64 = 50;
@@ -129,11 +131,11 @@ pub struct Telegram {
 }
 
 impl Telegram {
-    pub fn new(token: Option<&str>) -> anyhow::Result<Self> {
+    pub fn new(token: Option<&str>, api_url: &str) -> anyhow::Result<Self> {
         let api = match token {
             Some(token) => Some(Api {
                 http: reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?,
-                base: format!("{API_BASE}/bot{token}"),
+                base: format!("{}/bot{token}", api_url.trim_end_matches('/')),
             }),
             None => None,
         };
@@ -522,7 +524,7 @@ mod tests {
 
     #[test]
     fn without_token_the_bot_is_off() {
-        let telegram = Telegram::new(None).unwrap();
+        let telegram = Telegram::new(None, DEFAULT_API_URL).unwrap();
         assert!(!telegram.is_configured());
         assert!(!telegram.is_active());
         assert_eq!(telegram.bot_username(), None);

@@ -164,6 +164,7 @@ Each instance can have its own Telegram bot: alerts also arrive in the linked ch
 - Commands: `/apps`, `/down`, `/status`, `/attempts`, `/pause`, `/resume` (with a confirmation button), `/test`, `/stop`, `/help`. They answer only in private chats linked to an account, and only about that account's applications.
 - If a user blocks the bot, the chat is disabled until it writes to the bot again.
 - The token is checked like an email key: daily, hourly while it fails. Polling errors count as an outage.
+- `TELEGRAM_API_URL` (default `https://api.telegram.org`) points the bot to a local [Bot API server](https://github.com/tdlib/telegram-bot-api), or to a mock in the load test.
 
 ### Alert channels
 
