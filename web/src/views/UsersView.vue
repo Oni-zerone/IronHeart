@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { mdiAccountPlusOutline, mdiDeleteOutline, mdiEmailRemoveOutline } from '@mdi/js'
 
 import {
   inviteUser,
@@ -12,6 +11,9 @@ import {
   type UserSummary,
   type UsersOverview,
 } from '@/api'
+import AsciiBox from '@/components/AsciiBox.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { ROLE_LABEL, ROLE_OPTIONS, formatDateTime } from '@/format'
 import { currentUser, errorText, notify } from '@/session'
 
@@ -54,6 +56,10 @@ function locked(user: UserSummary) {
   return user.is_master || user.id === currentUser.value?.id
 }
 
+function changeRole(user: UserSummary, role: string) {
+  run(() => setUserRole(user.id, role as Role), 'Role updated.')
+}
+
 async function confirmRemove() {
   const user = toRemove.value
   if (!user) return
@@ -65,159 +71,137 @@ onMounted(() => run(listUsers))
 </script>
 
 <template>
-  <v-container class="py-6" max-width="960">
-    <h1 class="text-h5 mb-4">Users</h1>
+  <div class="page">
+    <div class="page-head"><h1>users</h1></div>
 
-    <v-card title="Invite" class="mb-6">
-      <v-card-text>
-        <p class="mb-4">
-          Access is by invitation only. The person receives an email and, the first time they sign in
-          with the Google account for that address, gets the chosen role. Users can manage only their
-          own applications; administrators can also invite and remove users.
+    <AsciiBox title="invite">
+      <div class="form">
+        <p>
+          Access is by invitation only. The person receives an email and, at the first sign-in with the Google
+          account of that address, gets the chosen role. Users manage only their own applications;
+          admins can also invite and remove users.
         </p>
-        <v-alert v-if="inviteError" type="error" variant="tonal" class="mb-4">{{ inviteError }}</v-alert>
-        <form class="d-flex flex-wrap ga-3" @submit.prevent="invite">
-          <v-text-field
+        <div v-if="inviteError" class="notice">
+          <span class="hi">!!</span>
+          <p>{{ inviteError }}</p>
+        </div>
+        <form class="row" @submit.prevent="invite">
+          <input
+            id="invite-email"
             v-model="inviteEmail"
-            label="Email"
+            class="input grow email"
             type="email"
-            hide-details
-            class="invite-email"
+            placeholder="email to invite"
+            aria-label="Email"
+            spellcheck="false"
           />
-          <v-select
-            v-model="inviteRole"
-            :items="ROLE_OPTIONS"
-            label="Role"
-            hide-details
-            class="invite-role"
-          />
-          <v-btn
-            :prepend-icon="mdiAccountPlusOutline"
-            :loading="inviting"
-            :disabled="!inviteEmail.trim()"
-            type="submit"
-            color="primary"
-            variant="flat"
-            size="large"
-          >
-            Invite
-          </v-btn>
+          <span class="select">
+            <select id="invite-role" v-model="inviteRole" aria-label="Role">
+              <option v-for="o in ROLE_OPTIONS" :key="o.value" :value="o.value">{{ o.title }}</option>
+            </select>
+          </span>
+          <button class="btn" type="submit" :disabled="inviting || !inviteEmail.trim()">
+            <LoadingSpinner v-if="inviting" />invite
+          </button>
         </form>
-      </v-card-text>
-    </v-card>
+      </div>
+    </AsciiBox>
 
-    <v-progress-linear v-if="!overview" indeterminate />
+    <p v-if="!overview" class="dim"><LoadingSpinner />loading</p>
     <template v-else>
-      <v-card title="Account" class="mb-6">
-        <v-table>
-          <thead>
-            <tr>
-              <th>User</th>
-              <th>Role</th>
-              <th class="text-end">Apps</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="user in overview.users" :key="user.id">
-              <td>
-                <div>{{ user.name ?? user.email }}</div>
-                <div v-if="user.name" class="text-body-2 text-medium-emphasis">{{ user.email }}</div>
-              </td>
-              <td class="role-cell">
-                <v-chip v-if="user.is_master" size="small" color="primary" variant="tonal">
-                  Master
-                </v-chip>
-                <span v-else-if="locked(user)">{{ ROLE_LABEL[user.role] }} (you)</span>
-                <v-select
-                  v-else
-                  :model-value="user.role"
-                  :items="ROLE_OPTIONS"
-                  :disabled="busy"
-                  :aria-label="`Role of ${user.email}`"
-                  density="compact"
-                  variant="plain"
-                  hide-details
-                  @update:model-value="(role: Role) => run(() => setUserRole(user.id, role), 'Role updated.')"
-                />
-              </td>
-              <td class="text-end">{{ user.app_count }}</td>
-              <td class="text-end">
-                <v-btn
+      <AsciiBox title="accounts" :right="`${overview.users.length}`">
+        <div class="scroll-x">
+          <div class="tbl accounts" role="table" aria-label="Accounts">
+            <span class="th" role="columnheader">user</span>
+            <span class="th" role="columnheader">role</span>
+            <span class="th num" role="columnheader">apps</span>
+            <span class="th" role="columnheader"><span class="sr-only">actions</span></span>
+            <span class="rule" aria-hidden="true">{{ '-'.repeat(300) }}</span>
+            <template v-for="user in overview.users" :key="user.id">
+              <span role="cell">
+                <span>{{ user.name ?? user.email }}</span>
+                <template v-if="user.name"><br /><span class="dim">{{ user.email }}</span></template>
+              </span>
+              <span role="cell">
+                <span v-if="user.is_master" class="acc">[master]</span>
+                <span v-else-if="locked(user)">{{ ROLE_LABEL[user.role] }} <span class="dim">(you)</span></span>
+                <span v-else class="select">
+                  <select
+                    :value="user.role"
+                    :disabled="busy"
+                    :aria-label="`Role of ${user.email}`"
+                    @change="changeRole(user, ($event.target as HTMLSelectElement).value)"
+                  >
+                    <option v-for="o in ROLE_OPTIONS" :key="o.value" :value="o.value">{{ o.title }}</option>
+                  </select>
+                </span>
+              </span>
+              <span class="num" role="cell">{{ user.app_count }}</span>
+              <span role="cell">
+                <button
                   v-if="!locked(user)"
-                  :icon="mdiDeleteOutline"
+                  class="link-btn danger"
+                  type="button"
                   :aria-label="`Remove ${user.email}`"
-                  variant="text"
-                  color="error"
-                  size="small"
                   @click="toRemove = user"
-                />
-              </td>
-            </tr>
-          </tbody>
-        </v-table>
-      </v-card>
+                >[remove]</button>
+              </span>
+            </template>
+          </div>
+        </div>
+      </AsciiBox>
 
-      <v-card title="Pending invites">
-        <v-card-text v-if="overview.invites.length === 0">No pending invites.</v-card-text>
-        <v-table v-else>
-          <thead>
-            <tr>
-              <th>Email</th>
-              <th>Role</th>
-              <th>Invited on</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="invite in overview.invites" :key="invite.email">
-              <td>{{ invite.email }}</td>
-              <td>{{ ROLE_LABEL[invite.role] }}</td>
-              <td>{{ formatDateTime(invite.created_at) }}</td>
-              <td class="text-end">
-                <v-btn
-                  :icon="mdiEmailRemoveOutline"
+      <AsciiBox title="pending invites" :right="`${overview.invites.length}`">
+        <p v-if="overview.invites.length === 0">No pending invites.</p>
+        <div v-else class="scroll-x">
+          <div class="tbl invites" role="table" aria-label="Pending invites">
+            <span class="th" role="columnheader">email</span>
+            <span class="th" role="columnheader">role</span>
+            <span class="th" role="columnheader">invited</span>
+            <span class="th" role="columnheader"><span class="sr-only">actions</span></span>
+            <span class="rule" aria-hidden="true">{{ '-'.repeat(300) }}</span>
+            <template v-for="invite in overview.invites" :key="invite.email">
+              <span role="cell">{{ invite.email }}</span>
+              <span role="cell">{{ ROLE_LABEL[invite.role] }}</span>
+              <span class="dim" role="cell">{{ formatDateTime(invite.created_at) }}</span>
+              <span role="cell">
+                <button
+                  class="link-btn"
+                  type="button"
                   :aria-label="`Revoke the invite for ${invite.email}`"
                   :disabled="busy"
-                  variant="text"
-                  size="small"
                   @click="run(() => revokeInvite(invite.email), 'Invite revoked.')"
-                />
-              </td>
-            </tr>
-          </tbody>
-        </v-table>
-      </v-card>
+                >[revoke]</button>
+              </span>
+            </template>
+          </div>
+        </div>
+      </AsciiBox>
     </template>
 
-    <v-dialog :model-value="toRemove !== null" max-width="480" @update:model-value="toRemove = null">
-      <v-card v-if="toRemove" :title="`Remove ${toRemove.email}?`">
-        <v-card-text>
-          They lose access immediately.
-          <strong v-if="toRemove.app_count > 0">
-            Their {{ toRemove.app_count }} applications are deleted too, with keys and history.
-          </strong>
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn @click="toRemove = null">Cancel</v-btn>
-          <v-btn :loading="busy" color="error" variant="flat" @click="confirmRemove">Remove</v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
-  </v-container>
+    <ConfirmDialog
+      v-if="toRemove"
+      :title="`remove ${toRemove.email}?`"
+      action="remove"
+      danger
+      :busy="busy"
+      @confirm="confirmRemove"
+      @cancel="toRemove = null"
+    >
+      They lose access immediately.
+      <strong v-if="toRemove.app_count > 0">
+        Their {{ toRemove.app_count }} applications are deleted too, with keys and history.
+      </strong>
+    </ConfirmDialog>
+  </div>
 </template>
 
 <style scoped>
-.invite-email {
-  flex: 1 1 260px;
+.email {
+  flex-basis: 28ch;
 }
-
-.invite-role {
-  flex: 0 0 200px;
-}
-
-.role-cell {
-  min-width: 180px;
+.accounts,
+.invites {
+  grid-template-columns: minmax(24ch, auto) auto auto auto;
 }
 </style>

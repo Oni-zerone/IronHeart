@@ -15,10 +15,23 @@ export async function logout(): Promise<void> {
 }
 
 /** Short message at the bottom of the screen, shared by all pages. */
-export const toast = ref({ show: false, text: '', color: 'success' })
+export const toast = ref<{ text: string; error: boolean } | null>(null)
+let toastTimer: ReturnType<typeof setTimeout> | undefined
 
-export function notify(text: string, color: 'success' | 'error' = 'success') {
-  toast.value = { show: true, text, color }
+export function notify(text: string, kind: 'success' | 'error' = 'success') {
+  toast.value = { text, error: kind === 'error' }
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => (toast.value = null), 3000)
+}
+
+/** Copies to the clipboard and says how it went. */
+export async function copy(text: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    notify('Copied to the clipboard.')
+  } catch {
+    notify('Copy failed: select the text by hand.', 'error')
+  }
 }
 
 export function errorText(err: unknown): string {
