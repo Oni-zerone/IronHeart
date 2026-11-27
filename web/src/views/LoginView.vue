@@ -11,17 +11,17 @@ const loginOutcome = computed(() => route.query.login)
 
 <template>
   <v-container class="py-8" max-width="480">
-    <v-card title="Accedi" subtitle="Usa il tuo account Google">
+    <v-card title="Sign in" subtitle="Use your Google account">
       <v-card-text>
         <v-alert v-if="loginOutcome === 'denied'" type="warning" variant="tonal" class="mb-4">
-          Questo account Google non è abilitato. Chiedi un invito a un amministratore e accedi con
-          l'indirizzo invitato.
+          This Google account is not enabled. Ask an administrator for an invite and sign in with
+          the invited address.
         </v-alert>
         <v-alert v-else-if="loginOutcome === 'failed'" type="error" variant="tonal" class="mb-4">
-          Accesso non riuscito. Riprova.
+          Sign-in failed. Please try again.
         </v-alert>
         <v-btn :href="LOGIN_URL" :prepend-icon="mdiGoogle" color="primary" size="large" block>
-          Accedi con Google
+          Sign in with Google
         </v-btn>
       </v-card-text>
     </v-card>

@@ -1,104 +1,104 @@
-# Prompt: integrare l'heartbeat di IronHeart in un'applicazione
+# Prompt: integrating the IronHeart heartbeat into an application
 
-Copia questo documento così com'è a chi deve implementare il client (una persona o un assistente AI), insieme al codice dell'applicazione da integrare. Contiene tutto quello che serve: non c'è bisogno di leggere il codice di IronHeart.
+Copy this document as is to whoever has to implement the client (a person or an AI assistant), together with the code of the application to integrate. It contains everything needed: there is no need to read IronHeart's code.
 
 ---
 
-## Compito
+## Task
 
-Aggiungi a questa applicazione un **heartbeat verso IronHeart**: una richiesta HTTP firmata, mandata a intervalli regolari, che dimostra che l'applicazione è viva. Se IronHeart non riceve un heartbeat valido entro l'intervallo configurato per l'applicazione, manda un avviso via mail.
+Add a **heartbeat to IronHeart** to this application: a signed HTTP request, sent at regular intervals, that proves the application is alive. If IronHeart does not receive a valid heartbeat within the interval configured for the application, it sends an alert by email.
 
-L'heartbeat deve partire **dal punto che dimostra davvero che l'applicazione funziona**: per un job pianificato, alla fine di un'esecuzione riuscita; per un servizio, da un task periodico del processo principale (non da un processo separato che resterebbe vivo anche se il servizio è bloccato).
+The heartbeat must be sent **from the point that really proves the application is working**: for a scheduled job, at the end of a successful run; for a service, from a periodic task of the main process (not from a separate process that would stay alive even if the service is stuck).
 
-## Configurazione
+## Configuration
 
-Tre valori, letti dalla configurazione dell'applicazione (variabili d'ambiente o secret manager), **mai scritti nel codice**:
+Three values, read from the application's configuration (environment variables or a secret manager), **never hard-coded**:
 
-| Variabile | Esempio | Note |
+| Variable | Example | Notes |
 |---|---|---|
-| `IRONHEART_URL` | `https://heartbeat.esempio.it` | Solo l'origine, senza `/` finale e senza percorso. |
-| `IRONHEART_KEY_ID` | `q88gwdjtcfdr` | Pubblico: identifica l'applicazione. |
-| `IRONHEART_SECRET` | `ihs_…` | Segreto. Non va mai loggato, mostrato o mandato in rete. |
+| `IRONHEART_URL` | `https://heartbeat.example.com` | Only the origin, no trailing `/` and no path. |
+| `IRONHEART_KEY_ID` | `q88gwdjtcfdr` | Public: identifies the application. |
+| `IRONHEART_SECRET` | `ihs_…` | Secret. Never log it, display it or send it over the network. |
 
-Key ID e segreto si ottengono dalla dashboard di IronHeart quando si crea l'applicazione (il segreto si vede una sola volta). Se uno dei tre valori manca, l'heartbeat va disattivato con un avviso nel log all'avvio, senza bloccare l'applicazione.
+The key ID and the secret come from the IronHeart dashboard when the application is created (the secret is shown only once). If any of the three values is missing, the heartbeat must be disabled with a warning in the log at startup, without blocking the application.
 
-## Protocollo
+## Protocol
 
-### Richiesta
+### Request
 
 ```
 POST {IRONHEART_URL}/api/v1/heartbeat
 X-IronHeart-Key:       {IRONHEART_KEY_ID}
 X-IronHeart-Timestamp: {timestamp}
-X-IronHeart-Signature: v1={firma}
+X-IronHeart-Signature: v1={signature}
 ```
 
-- `timestamp`: secondi Unix (UTC) come intero decimale, per esempio `1764000000`.
-- Body: **vuoto** (consigliato). Se ne mandi uno, al massimo 1 KB, e va firmato esattamente con i byte inviati.
-- `Content-Type` non è richiesto.
+- `timestamp`: Unix seconds (UTC) as a decimal integer, for example `1764000000`.
+- Body: **empty** (recommended). If you send one, at most 1 KB, and it must be signed with exactly the bytes sent.
+- `Content-Type` is not required.
 
-### Firma
+### Signature
 
-1. Calcola lo SHA-256 del body in esadecimale minuscolo. Con il body vuoto è sempre:
+1. Compute the SHA-256 of the body as lowercase hex. With an empty body it is always:
    `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
-2. Costruisci la stringa canonica, con `\n` (LF, un solo carattere) come separatore e **senza** `\n` finale:
+2. Build the canonical string, with `\n` (LF, a single character) as separator and **no** trailing `\n`:
    ```
    v1\nPOST\n/api/v1/heartbeat\n{key_id}\n{timestamp}\n{sha256_body_hex}
    ```
-3. Calcola HMAC-SHA256 della stringa canonica (codificata in UTF-8) usando come chiave **la stringa del segreto così com'è**, in UTF-8, compreso il prefisso `ihs_` (non va decodificata da base64).
-4. L'intestazione è `v1=` seguito dall'HMAC in esadecimale minuscolo (64 caratteri).
+3. Compute the HMAC-SHA256 of the canonical string (UTF-8 encoded) using as key **the secret string as is**, in UTF-8, including the `ihs_` prefix (do not base64-decode it).
+4. The header is `v1=` followed by the HMAC as lowercase hex (64 characters).
 
-### Vettori di prova
+### Test vectors
 
-Usali in un test automatico del client: se non tornano, la firma è sbagliata.
+Use them in an automated test of the client: if they do not match, the signature is wrong.
 
-| | Valore |
+| | Value |
 |---|---|
 | key ID | `abcdefghijkm` |
-| segreto | `ihs_test` |
+| secret | `ihs_test` |
 | timestamp | `1764000000` |
-| firma, body vuoto | `395ebdbcd9e58a46090ac3c6ca626a0e00b94301076532b944841b3338cd5f01` |
-| body | `{"status":"ok"}` (15 byte, senza spazi né a capo) |
-| SHA-256 del body | `a29ee2b15c494311c52521766e44af56a3ad2248e7a8ab465e5206463c13d288` |
-| firma, con quel body | `f9cefe637f8e3e4b9688b79f948bf544702d7b76e983f927d6293749d20fe9b3` |
+| signature, empty body | `395ebdbcd9e58a46090ac3c6ca626a0e00b94301076532b944841b3338cd5f01` |
+| body | `{"status":"ok"}` (15 bytes, no spaces or newlines) |
+| SHA-256 of the body | `a29ee2b15c494311c52521766e44af56a3ad2248e7a8ab465e5206463c13d288` |
+| signature, with that body | `f9cefe637f8e3e4b9688b79f948bf544702d7b76e983f927d6293749d20fe9b3` |
 
-### Risposta
+### Response
 
-**IronHeart risponde sempre `204 No Content`**, anche se la firma è sbagliata, la chiave non esiste o il timestamp è fuori tolleranza: è una scelta di sicurezza, per non far capire a chi prova a falsificare un ping se ci è riuscito. Quindi:
+**IronHeart always answers `204 No Content`**, even if the signature is wrong, the key does not exist or the timestamp is out of tolerance: this is a security choice, so that whoever tries to forge a ping cannot tell whether it worked. Therefore:
 
-- un `204` significa solo che la richiesta è arrivata, **non** che sia valida;
-- qualunque altra risposta (`5xx`, redirect, errori di rete, timeout) significa che la richiesta non è arrivata al servizio;
-- la validità si verifica solo nella dashboard di IronHeart: «ultimo segnale» deve aggiornarsi e la sezione «Tentativi non validi» deve restare vuota.
+- a `204` only means the request arrived, **not** that it is valid;
+- any other response (`5xx`, redirects, network errors, timeouts) means the request did not reach the service;
+- validity can only be checked in the IronHeart dashboard: "Last signal" must update and the "Invalid attempts" section must stay empty.
 
-## Regole che il server applica
+## Rules enforced by the server
 
-Una richiesta è valida solo se:
+A request is valid only if:
 
-1. la firma corrisponde;
-2. il timestamp è entro **±5 minuti** dall'ora del server;
-3. il timestamp è **strettamente maggiore** di quello dell'ultimo heartbeat accettato per la stessa chiave.
+1. the signature matches;
+2. the timestamp is within **±5 minutes** of the server's clock;
+3. the timestamp is **strictly greater** than that of the last heartbeat accepted for the same key.
 
-Conseguenze per il client:
+Consequences for the client:
 
-- **Al massimo un heartbeat al secondo** per chiave: due richieste nello stesso secondo, la seconda viene scartata (e contata come «richiesta ripetuta»).
-- **Mai riusare una richiesta**: a ogni tentativo, compresi i retry, ricalcola timestamp e firma. Il timestamp deve sempre crescere: se il nuovo valore non è maggiore dell'ultimo mandato, usa l'ultimo + 1.
-- **L'orologio della macchina deve essere sincronizzato** (NTP). Con più di 5 minuti di scarto ogni heartbeat viene scartato come «orologio fuori tolleranza».
-- Una chiave appartiene a **una sola istanza** dell'applicazione. Se ne girano più copie (più repliche, più server), ognuna deve avere la propria applicazione e la propria chiave su IronHeart: copie che condividono la chiave si scartano a vicenda i ping.
+- **At most one heartbeat per second** per key: with two requests in the same second, the second is discarded (and counted as "Replayed").
+- **Never reuse a request**: on every attempt, retries included, recompute timestamp and signature. The timestamp must always increase: if the new value is not greater than the last one sent, use the last one + 1.
+- **The machine's clock must be synchronized** (NTP). With more than 5 minutes of skew every heartbeat is discarded as "Clock skew".
+- A key belongs to **a single instance** of the application. If several copies run (multiple replicas, multiple servers), each must have its own application and its own key on IronHeart: copies sharing a key discard each other's pings.
 
-## Comportamento richiesto al client
+## Required client behavior
 
-- **Intervallo**: manda l'heartbeat con un intervallo **più breve** di quello configurato su IronHeart, per esempio la metà, così un ping perso non basta a far scattare l'avviso. Rendilo configurabile (`IRONHEART_INTERVAL_SECS`, se serve).
-- **Timeout**: 10 secondi per richiesta.
-- **Retry**: se la richiesta non arriva (errore di rete, timeout, risposta diversa da `204`), riprova al massimo 2–3 volte con attesa crescente (per esempio 2 s, 5 s, 10 s), ricalcolando timestamp e firma a ogni tentativo; poi rinuncia fino al ciclo successivo. Non riprovare dopo un `204`.
-- **Redirect**: non seguirli. L'URL firmato è fisso; un redirect indica una configurazione sbagliata.
-- **HTTPS** obbligatorio in produzione (HTTP solo verso `localhost` in sviluppo).
-- **Non bloccare l'applicazione**: l'heartbeat gira in background; un suo errore non deve mai far fallire il lavoro dell'applicazione né rallentarlo.
-- **Log**: un avviso quando una richiesta non arriva dopo tutti i tentativi, con il motivo (mai il segreto, mai la firma completa). Niente log a ogni heartbeat riuscito, al massimo a livello debug.
-- **Arresto**: allo spegnimento ordinato smetti di mandare heartbeat; non serve un messaggio finale.
+- **Interval**: send the heartbeat at an interval **shorter** than the one configured on IronHeart, for example half of it, so a single lost ping is not enough to trigger the alert. Make it configurable (`IRONHEART_INTERVAL_SECS`, if needed).
+- **Timeout**: 10 seconds per request.
+- **Retries**: if the request does not arrive (network error, timeout, response other than `204`), retry at most 2–3 times with increasing waits (for example 2 s, 5 s, 10 s), recomputing timestamp and signature on every attempt; then give up until the next cycle. Do not retry after a `204`.
+- **Redirects**: do not follow them. The signed URL is fixed; a redirect means a wrong configuration.
+- **HTTPS** is mandatory in production (HTTP only to `localhost` in development).
+- **Do not block the application**: the heartbeat runs in the background; its errors must never make the application's work fail or slow it down.
+- **Logging**: a warning when a request does not arrive after all attempts, with the reason (never the secret, never the full signature). No log for every successful heartbeat, at most at debug level.
+- **Shutdown**: on a graceful shutdown stop sending heartbeats; no final message is needed.
 
-## Esempi di riferimento
+## Reference examples
 
-Sono implementazioni minime della firma e dell'invio, da adattare allo stile e alle librerie del progetto. Retry e pianificazione restano da aggiungere secondo le regole sopra.
+These are minimal implementations of the signature and of the sending, to be adapted to the project's style and libraries. Retries and scheduling are still to be added according to the rules above.
 
 ### Shell (cron)
 
@@ -114,7 +114,7 @@ curl -fsS --max-time 10 -X POST "$IRONHEART_URL/api/v1/heartbeat" \
   -H "X-IronHeart-Signature: v1=$SIG"
 ```
 
-### Python (solo libreria standard)
+### Python (standard library only)
 
 ```python
 import hashlib, hmac, os, time, urllib.request
@@ -130,7 +130,7 @@ def sign(secret: str, key_id: str, timestamp: int, body: bytes = b"") -> str:
 _last_ts = 0
 
 def send_heartbeat() -> bool:
-    """True se la richiesta è arrivata (204). Non dice se è valida."""
+    """True if the request arrived (204). Does not tell whether it is valid."""
     global _last_ts
     key_id, secret = os.environ["IRONHEART_KEY_ID"], os.environ["IRONHEART_SECRET"]
     ts = max(int(time.time()), _last_ts + 1)
@@ -155,9 +155,9 @@ assert sign("ihs_test", "abcdefghijkm", 1764000000) == \
     "395ebdbcd9e58a46090ac3c6ca626a0e00b94301076532b944841b3338cd5f01"
 ```
 
-Nota: `urllib` segue i redirect per default; in un'implementazione completa va disattivato (per esempio con un `HTTPRedirectHandler` che non reindirizza) oppure va usata una libreria che lo permette.
+Note: `urllib` follows redirects by default; a complete implementation must disable that (for example with an `HTTPRedirectHandler` that does not redirect) or use a library that allows it.
 
-### Node.js (18+, senza dipendenze)
+### Node.js (18+, no dependencies)
 
 ```js
 import { createHash, createHmac } from 'node:crypto'
@@ -171,7 +171,7 @@ export function sign(secret, keyId, timestamp, body = '') {
 
 let lastTs = 0
 
-/** true se la richiesta è arrivata (204). Non dice se è valida. */
+/** true if the request arrived (204). Does not tell whether it is valid. */
 export async function sendHeartbeat() {
   const { IRONHEART_URL, IRONHEART_KEY_ID: keyId, IRONHEART_SECRET: secret } = process.env
   const ts = Math.max(Math.floor(Date.now() / 1000), lastTs + 1)
@@ -223,23 +223,23 @@ func Sign(secret, keyID string, timestamp int64, body []byte) string {
 
 // Sign("ihs_test", "abcdefghijkm", 1764000000, nil)
 //   == "395ebdbcd9e58a46090ac3c6ca626a0e00b94301076532b944841b3338cd5f01"
-// Per l'invio: http.Client con Timeout di 10 s e CheckRedirect che restituisce
-// http.ErrUseLastResponse, così i redirect non vengono seguiti.
+// To send it: an http.Client with a 10 s Timeout and a CheckRedirect that returns
+// http.ErrUseLastResponse, so redirects are not followed.
 ```
 
-## Errori comuni
+## Common errors
 
-| Sintomo nella dashboard | Causa probabile |
+| Symptom in the dashboard | Likely cause |
 |---|---|
-| Nessun «ultimo segnale» e nessun tentativo non valido | Le richieste non arrivano: URL sbagliato, firewall, proxy, redirect seguito su un altro percorso. Controlla i log del client. |
-| «Firma errata» | Segreto sbagliato o decodificato invece di usarlo come stringa; `\n` finale nella stringa canonica; `\r\n` invece di `\n`; percorso diverso da `/api/v1/heartbeat`; hash del body calcolato su byte diversi da quelli inviati; key ID con spazi. |
-| «Richiesta ripetuta» | Più heartbeat nello stesso secondo, retry che riusa la stessa richiesta, più istanze che condividono la stessa chiave. |
-| «Orologio fuori tolleranza» | L'orologio della macchina è sbagliato di più di 5 minuti, oppure il timestamp è in millisecondi invece che in secondi. |
-| L'app risulta ferma anche se gli heartbeat partono | L'intervallo del client è più lungo di quello configurato su IronHeart, oppure le richieste falliscono e il client non riprova. |
+| No "Last signal" and no invalid attempts | Requests do not arrive: wrong URL, firewall, proxy, redirect followed to another path. Check the client's logs. |
+| "Bad signature" | Wrong secret, or decoded instead of used as a string; trailing `\n` in the canonical string; `\r\n` instead of `\n`; path other than `/api/v1/heartbeat`; body hash computed on bytes other than those sent; key ID with spaces. |
+| "Replayed" | Several heartbeats in the same second, a retry reusing the same request, several instances sharing the same key. |
+| "Clock skew" | The machine's clock is off by more than 5 minutes, or the timestamp is in milliseconds instead of seconds. |
+| The app is reported down even though heartbeats are sent | The client's interval is longer than the one configured on IronHeart, or requests fail and the client does not retry. |
 
-## Verifica finale
+## Final check
 
-1. Il test automatico della firma con i vettori di prova passa.
-2. Con l'applicazione avviata, nella dashboard di IronHeart lo stato dell'applicazione passa a «Attiva» e l'«ultimo segnale» si aggiorna a ogni intervallo.
-3. La sezione «Tentativi non validi» resta vuota.
-4. Fermando l'applicazione, dopo l'intervallo più la tolleranza arriva la mail «non risponde»; riavviandola arriva la mail «è di nuovo attiva».
+1. The automated signature test with the test vectors passes.
+2. With the application running, in the IronHeart dashboard the application's status becomes "Up" and "Last signal" updates at every interval.
+3. The "Invalid attempts" section stays empty.
+4. When the application is stopped, after the interval plus the grace period the "not responding" email arrives; when it is restarted, the "back up" email arrives.

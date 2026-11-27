@@ -68,15 +68,15 @@ async fn invite(
 ) -> ApiResult<(StatusCode, Json<Overview>)> {
     let email = input.email.trim().to_lowercase();
     if email.parse::<lettre::Address>().is_err() {
-        return Err(ApiError::Invalid(format!("Indirizzo non valido: {email}")));
+        return Err(ApiError::Invalid(format!("Invalid address: {email}")));
     }
     validate_role(&input.role)?;
     if email == state.admin_email.as_ref() {
-        return Err(ApiError::Invalid("È l'utente master: ha già accesso come admin.".into()));
+        return Err(ApiError::Invalid("This is the master user: they already have admin access.".into()));
     }
     match db::create_invite(&state.db, &email, &input.role, Some(&admin.id), now_ms()).await? {
         InviteOutcome::AlreadyUser => {
-            return Err(ApiError::Invalid("Questo indirizzo ha già un account.".into()));
+            return Err(ApiError::Invalid("This address already has an account.".into()));
         }
         InviteOutcome::Created => send_invite_email(&state, &admin, &email).await,
         InviteOutcome::Updated => {}
@@ -149,10 +149,10 @@ async fn remove(
 async fn protect(state: &AppState, admin: &db::User, target_id: &str) -> ApiResult<()> {
     let target = db::find_user(&state.db, target_id).await?.ok_or(ApiError::NotFound)?;
     if target.email == state.admin_email.as_ref() {
-        return Err(ApiError::Invalid("L'utente master non si può modificare.".into()));
+        return Err(ApiError::Invalid("The master user cannot be changed.".into()));
     }
     if target.id == admin.id {
-        return Err(ApiError::Invalid("Non puoi modificare il tuo stesso account.".into()));
+        return Err(ApiError::Invalid("You cannot change your own account.".into()));
     }
     Ok(())
 }
@@ -160,6 +160,6 @@ async fn protect(state: &AppState, admin: &db::User, target_id: &str) -> ApiResu
 fn validate_role(role: &str) -> ApiResult<()> {
     match role {
         "admin" | "user" => Ok(()),
-        _ => Err(ApiError::Invalid("Ruolo non valido.".into())),
+        _ => Err(ApiError::Invalid("Invalid role.".into())),
     }
 }

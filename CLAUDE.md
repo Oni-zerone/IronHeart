@@ -1,105 +1,110 @@
 # IronHeart
 
-Servizio leggero di heartbeat. Gli utenti accedono con Google e registrano le proprie applicazioni, ognuna con una API key. Se un'applicazione non chiama l'endpoint di heartbeat entro l'intervallo previsto (più la tolleranza), parte una mail all'indirizzo dell'account.
+Lightweight heartbeat service. Users sign in with Google and register their applications, each with an API key. If an application does not call the heartbeat endpoint within the expected interval (plus the grace period), an email goes to the account's address.
+
+## Language
+
+- **Everything in the repository is written in English**: documentation (README, `docs/`, this file), code (identifiers, comments, log messages, test names), commit messages, the dashboard UI, API error messages and alert emails.
+- Do not add new text in other languages. When you touch a file that still contains Italian, translate the parts you change.
 
 ## Stack
 
-- `server/`: Rust, Axum, SQLite con sqlx (WAL, `journal_size_limit` 16 MB), openidconnect, sessioni nel database, email con Brevo (API HTTP) in produzione e SMTP verso Mailpit in locale. In seguito: dashboard incorporata con rust-embed, OpenAPI con utoipa.
-- `web/`: Vue 3, TypeScript, Vite, Vue Router, Vuetify 4 con icone `@mdi/js` (SVG). Node serve solo per sviluppo e build: in produzione la dashboard è un insieme di file statici serviti dal binario Rust. PrimeVue è stato scartato perché dalla 5 non è più MIT (licenza commerciale con chiave).
-- Deploy: un solo binario in un container su una droplet DigitalOcean con CapRover, una sola istanza, volume su `/data`. L'immagine si compila in GitHub Actions e si pubblica su GHCR, non sulla droplet.
+- `server/`: Rust, Axum, SQLite with sqlx (WAL, `journal_size_limit` 16 MB), openidconnect, sessions in the database, email through Brevo (HTTP API) in production and SMTP to Mailpit locally. Later: embedded dashboard with rust-embed, OpenAPI with utoipa.
+- `web/`: Vue 3, TypeScript, Vite, Vue Router, Vuetify 4 with `@mdi/js` icons (SVG). Node is only for development and builds: in production the dashboard is a set of static files served by the Rust binary. PrimeVue was rejected because since version 5 it is no longer MIT (commercial license with a key).
+- Deployment: a single binary in a container on a DigitalOcean droplet with CapRover, a single instance, volume on `/data`. The image is built in GitHub Actions and published to GHCR, not on the droplet.
 
-## Comandi
+## Commands
 
-- `cd server && cargo run`: avvia su `127.0.0.1:8080` con il database in `server/data/ironheart.db`. Legge `.env` (modello in `.env.example`); le variabili d'ambiente hanno la precedenza.
-- Senza Vite: `PUBLIC_BASE_URL=http://localhost:8080 cargo run` e apri http://localhost:8080 (pagina provvisoria con il login).
-- `cd server && cargo test`: i test del database usano SQLite in memoria; comprende la prova di carico breve (`load_tests.rs`, `IRONHEART_LOAD_SECS` per allungarla). Generatore di carico per istanze vere: `server/examples/loadtest.rs`. Risultati in README.md.
-- Prova manuale dell'heartbeat: lo script di esempio è nella pagina dell'app (e in `web/src/snippet.ts`). Con `MAIL_TRANSPORT=smtp cargo run` gli avvisi finiscono in Mailpit anche se `.env` dice `brevo`.
-- `cd web && pnpm dev`: dashboard su http://localhost:5173; Vite inoltra `/api`, `/auth` e `/health` al backend su :8080. Con Vite, `PUBLIC_BASE_URL=http://localhost:5173`.
-- `cd web && pnpm build` (controllo dei tipi + build) e `pnpm lint`.
-- Node e pnpm sono fissati in `mise.toml`: `mise install`, poi `mise exec -- pnpm …` se la shell non li attiva.
-- `docker compose up -d mailpit`: SMTP locale su `:1025`, interfaccia su http://localhost:8025.
+- `cd server && cargo run`: starts on `127.0.0.1:8080` with the database in `server/data/ironheart.db`. Reads `.env` (template in `.env.example`); environment variables take precedence.
+- Without Vite: `PUBLIC_BASE_URL=http://localhost:8080 cargo run` and open http://localhost:8080 (temporary page with the login).
+- `cd server && cargo test`: database tests use in-memory SQLite; includes the short load test (`load_tests.rs`, `IRONHEART_LOAD_SECS` to make it longer). Load generator for real instances: `server/examples/loadtest.rs`. Results in README.md.
+- Manual heartbeat test: the example script is on the app page (and in `web/src/snippet.ts`). With `MAIL_TRANSPORT=smtp cargo run` alerts end up in Mailpit even if `.env` says `brevo`.
+- `cd web && pnpm dev`: dashboard on http://localhost:5173; Vite proxies `/api`, `/auth` and `/health` to the backend on :8080. With Vite, `PUBLIC_BASE_URL=http://localhost:5173`.
+- `cd web && pnpm build` (type check + build) and `pnpm lint`.
+- Node and pnpm are pinned in `mise.toml`: `mise install`, then `mise exec -- pnpm …` if the shell does not activate them.
+- `docker compose up -d mailpit`: local SMTP on `:1025`, UI on http://localhost:8025.
 
-## Regole per il database (portabilità verso Postgres)
+## Database rules (portability to Postgres)
 
-Per ora usiamo SQLite, ma il passaggio a Postgres deve restare un lavoro da uno o due giorni. Quindi:
+We use SQLite for now, but moving to Postgres must remain a one- or two-day job. Therefore:
 
-1. **Tutte le tabelle sono `STRICT`**, così SQLite rifiuta i tipi sbagliati invece di salvarli.
-2. **Tempi come `INTEGER` in millisecondi Unix UTC**, calcolati in Rust e passati come parametri. Niente `datetime('now')`, `CURRENT_TIMESTAMP` o aritmetica sulle date in SQL. La codifica di chrono in SQLite è testo con un numero variabile di decimali e non si ordina correttamente come stringa. In Postgres restano `BIGINT`, oppure diventano `timestamptz` nella migrazione dei dati.
-3. **ID come UUID v7 generati in Rust**, salvati come `TEXT`. Niente `AUTOINCREMENT`.
-4. **Solo SQL comune ai due database**: `INSERT … ON CONFLICT` (mai `INSERT OR REPLACE`), `RETURNING`, indici parziali. Niente `GLOB`, funzioni specifiche di SQLite o `PRAGMA` fuori da `db::connect`.
-5. **Segnaposto `$1, $2…`** anche su SQLite (sqlx li accetta), così le query restano valide in Postgres.
-6. **Tutte le query stanno in `server/src/db.rs`** (o in un modulo `db/` se cresce). Gli handler non scrivono SQL.
-7. **Booleani come `INTEGER` 0/1** con `CHECK`, ed enumerazioni come `TEXT` con `CHECK (… IN (…))`.
-8. Non scriviamo un livello di astrazione per supportare entrambi i database.
+1. **All tables are `STRICT`**, so SQLite rejects wrong types instead of storing them.
+2. **Times as `INTEGER` Unix UTC milliseconds**, computed in Rust and passed as parameters. No `datetime('now')`, `CURRENT_TIMESTAMP` or date arithmetic in SQL. chrono's SQLite encoding is text with a variable number of decimals and does not sort correctly as a string. In Postgres they stay `BIGINT`, or become `timestamptz` in the data migration.
+3. **IDs as UUID v7 generated in Rust**, stored as `TEXT`. No `AUTOINCREMENT`.
+4. **Only SQL common to both databases**: `INSERT … ON CONFLICT` (never `INSERT OR REPLACE`), `RETURNING`, partial indexes. No `GLOB`, SQLite-specific functions or `PRAGMA` outside `db::connect`.
+5. **`$1, $2…` placeholders** on SQLite too (sqlx accepts them), so queries stay valid in Postgres.
+6. **All queries live in `server/src/db.rs`** (or in a `db/` module if it grows). Handlers do not write SQL.
+7. **Booleans as `INTEGER` 0/1** with `CHECK`, and enumerations as `TEXT` with `CHECK (… IN (…))`.
+8. We do not write an abstraction layer to support both databases.
 
-## Login e sessioni
+## Login and sessions
 
-- Google OpenID Connect con PKCE, lato server: `/auth/google/login`, `/auth/google/callback`, `POST /auth/logout`. Il redirect registrato su Google è `PUBLIC_BASE_URL` + `/auth/google/callback`.
-- Il login in corso sta in `oauth_flows` (10 minuti, uso singolo) ed è legato al browser dal cookie `ih_oauth_state`.
-- La sessione è il cookie `ih_session` (HttpOnly, SameSite=Lax, Secure in HTTPS, 30 giorni); nel database c'è solo lo SHA-256 del token.
-- Negli handler: `CurrentUser` risponde 401 senza sessione, `Option<CurrentUser>` no.
-- Si accettano solo email verificate da Google.
+- Google OpenID Connect with PKCE, server side: `/auth/google/login`, `/auth/google/callback`, `POST /auth/logout`. The redirect registered on Google is `PUBLIC_BASE_URL` + `/auth/google/callback`.
+- The login in progress is stored in `oauth_flows` (10 minutes, single use) and is bound to the browser by the `ih_oauth_state` cookie.
+- The session is the `ih_session` cookie (HttpOnly, SameSite=Lax, Secure over HTTPS, 30 days); the database only holds the SHA-256 of the token.
+- In handlers: `CurrentUser` answers 401 without a session, `Option<CurrentUser>` does not.
+- Only emails verified by Google are accepted.
 
-## Utenti e ruoli
+## Users and roles
 
-- Si entra solo su invito. `ADMIN_EMAIL` è l'utente master: entra sempre, è sempre admin (il ruolo si reimposta a ogni accesso), non si può declassare né rimuovere.
-- Gli altri entrano se hanno già un account (riconosciuto dal `sub` di Google) o se c'è un invito per la loro email (`user_invites`, consumato al primo accesso in `db::login_google_user`). Senza invito il login rimanda a `/?login=denied` e non crea nulla.
-- Ruoli: `admin` (invita, cambia ruolo, rimuove utenti; API `/api/admin/*`, estrattore `AdminUser`) e `user` (solo le proprie app). Le app restano personali anche per gli admin.
-- Un admin non può declassare né rimuovere se stesso. Rimuovere un utente cancella a cascata app e sessioni, e le sue app vanno tolte dal registro in memoria.
-- Le email (account, inviti, `ADMIN_EMAIL`) si confrontano in minuscolo.
+- Access is by invitation only. `ADMIN_EMAIL` is the master user: always allowed in, always admin (the role is reset at every sign-in), cannot be demoted or removed.
+- Others get in if they already have an account (recognized by Google's `sub`) or if there is an invite for their email (`user_invites`, consumed at first sign-in in `db::login_google_user`). Without an invite the login redirects to `/?login=denied` and creates nothing.
+- Roles: `admin` (invites, changes roles, removes users; API `/api/admin/*`, `AdminUser` extractor) and `user` (only their own apps). Apps stay personal for admins too.
+- An admin cannot demote or remove themselves. Removing a user cascades to their apps and sessions, and their apps must be removed from the in-memory registry.
+- Emails (accounts, invites, `ADMIN_EMAIL`) are compared in lowercase.
 
-## Entanglement (solo master)
+## Entanglement (master only)
 
-- Questa istanza manda heartbeat ad altre istanze di IronHeart (`entanglements`), così si controllano a vicenda. Lo configura solo il master (`MasterUser`, API `/api/entanglements`, pagina `/entanglement`); è una configurazione dell'istanza, non di un utente.
-- Ogni collegamento: origine dell'altra istanza (HTTPS, HTTP solo verso localhost, niente percorso), key ID e segreto di un'app creata lì, intervallo da 10 secondi a 1 giorno, attivo o in pausa. Il segreto è cifrato con `SECRETS_KEY` (dato associato `entanglement:<id>`) e non torna mai al client.
-- `entanglement::spawn`: ogni 5 secondi manda i ping scaduti (`take_due_pings` sposta subito la scadenza); all'avvio tutti i collegamenti attivi mandano un ping. Timestamp sempre crescente per collegamento, anche con «Invia ora» nello stesso secondo. Redirect non seguiti, timeout 10 secondi.
-- L'altra istanza risponde sempre 204: qui si registra solo se il ping è stato consegnato (`last_success_at`, `last_error`). Una chiave sbagliata la segnala l'altra istanza con i tentativi non validi.
+- This instance sends heartbeats to other IronHeart instances (`entanglements`), so they monitor each other. Only the master configures it (`MasterUser`, API `/api/entanglements`, page `/entanglement`); it is an instance setting, not a user setting.
+- Each link: origin of the other instance (HTTPS, HTTP only to localhost, no path), key ID and secret of an app created there, interval from 10 seconds to 1 day, active or paused. The secret is encrypted with `SECRETS_KEY` (associated data `entanglement:<id>`) and is never returned to the client.
+- `entanglement::spawn`: every 5 seconds sends the pings that are due (`take_due_pings` moves the deadline forward immediately); at startup every active link sends a ping. The timestamp always increases per link, even with "Send now" in the same second. Redirects are not followed, 10-second timeout.
+- The other instance always answers 204: here we only record whether the ping was delivered (`last_success_at`, `last_error`). A wrong key is reported by the other instance as invalid attempts.
 
 ## Email
 
-- `MAIL_TRANSPORT=brevo` (produzione, richiede `BREVO_API_KEY`) oppure `smtp` (predefinito, `SMTP_HOST`/`SMTP_PORT`, verso Mailpit). Mittente: `MAIL_FROM_EMAIL` e `MAIL_FROM_NAME`; su Brevo il mittente o il dominio devono essere verificati.
-- Una email per destinatario, così nessuno vede gli indirizzi degli altri.
-- `POST /api/me/test-email` manda una mail di prova all'utente collegato.
+- `MAIL_TRANSPORT=brevo` (production, requires `BREVO_API_KEY`) or `smtp` (default, `SMTP_HOST`/`SMTP_PORT`, to Mailpit). Sender: `MAIL_FROM_EMAIL` and `MAIL_FROM_NAME`; on Brevo the sender or the domain must be verified.
+- One email per recipient, so nobody sees the other addresses.
+- `POST /api/me/test-email` sends a test email to the signed-in user.
 
 ## Heartbeat
 
-Protocollo (riferimento per i client, test in `crypto::tests::signature_matches_reference_vector`). La guida per chi integra un client è `docs/heartbeat-client.md`: se il protocollo cambia, vanno aggiornati insieme guida, vettori di prova e test.
+Protocol (reference for clients, test in `crypto::tests::signature_matches_reference_vector`). The guide for client integrators is `docs/heartbeat-client.md`: if the protocol changes, the guide, test vectors and tests must be updated together.
 
-- Chiave: `key_id` pubblico (12 caratteri) + segreto `ihs_…`, mostrato una sola volta. Il segreto è la chiave HMAC così com'è.
-- `POST /api/v1/heartbeat` con `X-IronHeart-Key`, `X-IronHeart-Timestamp` (secondi Unix), `X-IronHeart-Signature: v1=<hex>`.
-- Firma: HMAC-SHA256 di `v1\nPOST\n/api/v1/heartbeat\n<key_id>\n<timestamp>\n<sha256 hex del body>`. Body al massimo 1 KB.
-- Valido se: firma corretta, timestamp entro ±5 minuti, timestamp maggiore dell'ultimo accettato (quindi al massimo un ping al secondo).
+- Key: public `key_id` (12 characters) + `ihs_…` secret, shown only once. The secret is the HMAC key as is.
+- `POST /api/v1/heartbeat` with `X-IronHeart-Key`, `X-IronHeart-Timestamp` (Unix seconds), `X-IronHeart-Signature: v1=<hex>`.
+- Signature: HMAC-SHA256 of `v1\nPOST\n/api/v1/heartbeat\n<key_id>\n<timestamp>\n<sha256 hex of the body>`. Body at most 1 KB.
+- Valid if: correct signature, timestamp within ±5 minutes, timestamp greater than the last accepted one (so at most one ping per second).
 
-Regole che non vanno rotte:
+Rules that must not be broken:
 
-- **La risposta è sempre 204**, per ogni esito (anche body troppo grande o chiave sconosciuta), così un attaccante non sa se ha clonato l'heartbeat. Niente 4xx, niente 429.
-- **Stesso lavoro per ogni richiesta**: con un `key_id` sconosciuto si calcola comunque un HMAC con una chiave fittizia; il confronto è in tempo costante; un ping valido resta in memoria e non tocca il database durante la richiesta.
-- **Niente database durante la richiesta**: i segreti sono decifrati in memoria (`heartbeat::Heartbeat`), il timestamp crescente si controlla in memoria (`fetch_max`); i ping validi (l'ultimo per app) si scrivono in blocco una volta al secondo (`spawn_writer`, `db::record_pings` con `WHERE last_signed_ts < $ts`) e allo spegnimento; i tentativi falliti si sommano in memoria e il controllo li scrive ogni 30 secondi (`failure_buckets`). Nessun log per singola richiesta.
-- I segreti sono cifrati con AES-256-GCM (`SECRETS_KEY`, versione in `secret_key_version`), con l'id dell'app come dato associato.
-- Quando un'app cambia (creazione, rotazione, intervallo, cancellazione) va aggiornato anche il registro in memoria (`refresh_app`, `set_timing`, `remove_app`).
-- IP del client: `CLIENT_IP_HEADER` (`x-forwarded-for` → ultimo valore, scritto da nginx; `cf-connecting-ip` con Cloudflare), altrimenti l'indirizzo della connessione. Serve solo per i riepiloghi.
-- Il traffico volumetrico si ferma prima del servizio (Cloudflare davanti al dominio), non nel codice.
+- **The response is always 204**, for every outcome (even an oversized body or an unknown key), so an attacker cannot tell whether they cloned the heartbeat. No 4xx, no 429.
+- **Same work for every request**: with an unknown `key_id` an HMAC is still computed with a dummy key; the comparison is constant time; a valid ping stays in memory and does not touch the database during the request.
+- **No database during the request**: secrets are decrypted in memory (`heartbeat::Heartbeat`), the increasing timestamp is checked in memory (`fetch_max`); valid pings (the latest per app) are written in bulk once per second (`spawn_writer`, `db::record_pings` with `WHERE last_signed_ts < $ts`) and at shutdown; failed attempts are summed in memory and the monitor writes them every 30 seconds (`failure_buckets`). No logging per request.
+- Secrets are encrypted with AES-256-GCM (`SECRETS_KEY`, version in `secret_key_version`), with the app id as associated data.
+- When an app changes (creation, rotation, interval, deletion) the in-memory registry must be updated too (`refresh_app`, `set_timing`, `remove_app`).
+- Client IP: `CLIENT_IP_HEADER` (`x-forwarded-for` → last value, written by nginx; `cf-connecting-ip` with Cloudflare), otherwise the connection address. Used only for the summaries.
+- Volumetric traffic is stopped before the service (Cloudflare in front of the domain), not in the code.
 
-## Controllo periodico (`monitor`, ogni 30 secondi)
+## Periodic check (`monitor`, every 30 seconds)
 
-1. Scrive i tentativi falliti accumulati.
-2. Porta a `down` le app `up` con la scadenza passata (atomico) e avvisa; la mail cita i tentativi non validi dall'ultimo segnale.
-3. Manda le mail di ripristino (`recovery_pending`, impostato dal ping che riporta l'app `up`).
-4. Riepiloghi dei tentativi falliti per app: a riposo il primo parte subito, poi finestre di 5, 10, 20, 40, 80, 120 minuti; una finestra con tentativi produce un riepilogo e fa salire di livello, una senza tentativi fa scendere di un livello (mai a riposo di colpo, per non permettere raffiche di mail). Logica in `monitor::escalate`, con i test.
-5. Pulisce tentativi più vecchi di 7 giorni, sessioni scadute e login abbandonati.
+1. Writes the accumulated failed attempts.
+2. Moves `up` apps past their deadline to `down` (atomically) and alerts; the email mentions the invalid attempts since the last signal.
+3. Sends the recovery emails (`recovery_pending`, set by the ping that brings the app back `up`).
+4. Failed-attempt summaries per app: at rest the first one goes out immediately, then windows of 5, 10, 20, 40, 80, 120 minutes; a window with attempts produces a summary and moves up a level, one without attempts moves down a level (never straight back to rest, to prevent bursts of emails). Logic in `monitor::escalate`, with tests.
+5. Cleans up attempts older than 7 days, expired sessions and abandoned logins.
 
-All'avvio le scadenze già passate ripartono da adesso (`reschedule_overdue`). Lo stato viene salvato prima di mandare la mail: un invio fallito non si ritenta.
+At startup, deadlines that have already passed restart from now (`reschedule_overdue`). The state is saved before sending the email: a failed send is not retried.
 
-Mail degli avvisi:
+Alert emails:
 
-- **Il controllo non manda mail**: le mette nella coda (`outbox`), che le invia in un task separato, quattro alla volta. App ferma e ripristino sono urgenti (non si scartano, hanno la precedenza); i riepiloghi dei tentativi si scartano se la coda è piena.
-- **Un riepilogo per destinatario**: a ogni giro ogni destinatario riceve al massimo una mail per tipo con tutte le app coinvolte (`alerts::*_digest`; con una sola app è la mail singola). I riepiloghi dei tentativi partono al massimo ogni 5 minuti per destinatario (`FAILURE_DIGEST_MIN_MS`); nel frattempo i conteggi si sommano in memoria.
-- Un giro più lento di 5 secondi finisce nel log («controllo periodico lento").
+- **The monitor does not send emails**: it puts them in the queue (`outbox`), which sends them in a separate task, four at a time. App down and recovery are urgent (never dropped, they take priority); attempt summaries are dropped if the queue is full.
+- **One summary per recipient**: on each round every recipient gets at most one email per type with all the apps involved (`alerts::*_digest`; with a single app it is the single-app email). Attempt summaries go out at most every 5 minutes per recipient (`FAILURE_DIGEST_MIN_MS`); meanwhile the counts are summed in memory.
+- A round slower than 5 seconds is logged as a slow periodic check.
 
-## Regole di dominio
+## Domain rules
 
-- Ogni app può avere un elenco opzionale di destinatari degli avvisi (`app_recipients`, email in minuscolo). Se l'elenco è vuoto, gli avvisi vanno all'email dell'account proprietario (`db::alert_recipients`). Per ora gli indirizzi aggiunti non richiedono conferma.
+- Each app can have an optional list of alert recipients (`app_recipients`, lowercase emails). If the list is empty, alerts go to the owner account's email (`db::alert_recipients`). For now added addresses do not require confirmation.
 
-- App: `new` (mai un ping), `up`, `down`, `paused` (nessuna scadenza; alla ripresa si aspetta un intervallo intero). Intervallo da 30 secondi a 7 giorni, tolleranza fino a 1 giorno, al massimo 100 app per utente e 10 destinatari per app.
-- Il cambio di stato `up → down` è atomico (`UPDATE … WHERE state = 'up' RETURNING …`), così la mail parte una sola volta. Al ritorno dell'applicazione parte una mail di ripristino.
-- Dopo un riavvio del servizio, le scadenze superate mentre il servizio era spento non generano avvisi: vengono rinviate prima di essere valutate.
+- App: `new` (never pinged), `up`, `down`, `paused` (no deadline; on resume a full interval is awaited). Interval from 30 seconds to 7 days, grace period up to 1 day, at most 100 apps per user and 10 recipients per app.
+- The `up → down` transition is atomic (`UPDATE … WHERE state = 'up' RETURNING …`), so the email goes out only once. When the application comes back a recovery email is sent.
+- After a service restart, deadlines that passed while the service was down do not generate alerts: they are postponed before being evaluated.

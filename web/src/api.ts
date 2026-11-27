@@ -1,4 +1,4 @@
-// Chiamate al backend. Il cookie di sessione viaggia da solo (stessa origine).
+// Backend calls. The session cookie is sent automatically (same origin).
 
 export type Role = 'admin' | 'user'
 
@@ -7,7 +7,7 @@ export interface User {
   email: string
   name: string | null
   role: Role
-  /** Utente master (ADMIN_EMAIL): sempre admin. */
+  /** Master user (ADMIN_EMAIL): always an admin. */
   is_master: boolean
 }
 
@@ -46,7 +46,7 @@ export interface App {
   down_since: number | null
   created_at: number
   updated_at: number
-  /** Destinatari configurati; vuoto = email dell'account. */
+  /** Configured recipients; empty = the account email. */
   recipients: string[]
   failures_24h: number
 }
@@ -93,12 +93,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: init?.body ? { 'content-type': 'application/json', ...init.headers } : init?.headers,
   })
   if (!response.ok) {
-    let message = `Errore ${response.status}`
+    let message = `Error ${response.status}`
     try {
       const body = (await response.json()) as { error?: string }
       if (body.error) message = body.error
     } catch {
-      // risposta senza JSON
+      // response without JSON
     }
     throw new ApiError(response.status, message)
   }
@@ -107,7 +107,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 const json = (method: string, body: unknown): RequestInit => ({ method, body: JSON.stringify(body) })
 
-/** L'utente collegato, oppure `null` senza sessione. */
+/** The signed-in user, or `null` without a session. */
 export async function getMe(): Promise<User | null> {
   try {
     return await request<User>('/api/me')
@@ -149,7 +149,7 @@ export interface Entanglement {
   enabled: boolean
   next_ping_at: number | null
   last_attempt_at: number | null
-  /** Ultimo ping consegnato (204): la validità la vede solo l'altra istanza. */
+  /** Last delivered ping (204): only the other instance knows whether it was valid. */
   last_success_at: number | null
   last_error: string | null
   created_at: number
@@ -175,5 +175,5 @@ export const deleteEntanglement = (id: string) =>
 export const pingEntanglement = (id: string) =>
   request<Entanglement>(`/api/entanglements/${id}/ping`, { method: 'POST' })
 
-/** Il login è una navigazione completa: passa da Google e torna con il cookie. */
+/** Login is a full navigation: it goes through Google and comes back with the cookie. */
 export const LOGIN_URL = '/auth/google/login'

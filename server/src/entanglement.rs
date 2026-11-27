@@ -72,7 +72,7 @@ async fn send(state: &AppState, target: &DuePing) -> Option<String> {
         Ok(secret) => secret,
         Err(err) => {
             tracing::error!(id = %target.id, err = ?err, "segreto dell'entanglement non decifrabile");
-            return Some("Segreto non decifrabile su questa istanza".into());
+            return Some("Secret cannot be decrypted on this instance".into());
         }
     };
     let ts = state.entanglement.next_timestamp(&target.id, now_ms() / 1000).to_string();
@@ -90,10 +90,10 @@ async fn send(state: &AppState, target: &DuePing) -> Option<String> {
         .await;
     match result {
         Ok(response) if response.status() == StatusCode::NO_CONTENT => None,
-        Ok(response) => Some(format!("Risposta HTTP {}", response.status().as_u16())),
-        Err(err) if err.is_timeout() => Some("Tempo scaduto".into()),
-        Err(err) if err.is_connect() => Some("Connessione non riuscita".into()),
-        Err(err) => Some(format!("Richiesta non riuscita: {}", err.without_url()).chars().take(200).collect()),
+        Ok(response) => Some(format!("HTTP response {}", response.status().as_u16())),
+        Err(err) if err.is_timeout() => Some("Timed out".into()),
+        Err(err) if err.is_connect() => Some("Connection failed".into()),
+        Err(err) => Some(format!("Request failed: {}", err.without_url()).chars().take(200).collect()),
     }
 }
 
@@ -235,7 +235,7 @@ async fn update(
     let credentials = match (&input.key_id, &input.secret) {
         (None, None) => None,
         (Some(key_id), Some(secret)) => Some(validate_credentials(key_id, secret)?),
-        _ => return invalid("Per cambiare la chiave servono sia il key ID sia il segreto."),
+        _ => return invalid("To change the key, provide both the key ID and the secret."),
     };
 
     let secret_box = state.heartbeat.secret_box();
@@ -284,14 +284,14 @@ async fn ping_now(
 fn validate_name(name: &str) -> ApiResult<String> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 80 {
-        return invalid("Il nome deve avere da 1 a 80 caratteri.");
+        return invalid("The name must be 1 to 80 characters long.");
     }
     Ok(name.to_owned())
 }
 
 fn validate_interval(interval_secs: i64) -> ApiResult<()> {
     if !INTERVAL_RANGE.contains(&interval_secs) {
-        return invalid("L'intervallo deve essere tra 10 secondi e 1 giorno.");
+        return invalid("The interval must be between 10 seconds and 1 day.");
     }
     Ok(())
 }
@@ -299,10 +299,10 @@ fn validate_interval(interval_secs: i64) -> ApiResult<()> {
 fn validate_credentials(key_id: &str, secret: &str) -> ApiResult<(String, String)> {
     let (key_id, secret) = (key_id.trim(), secret.trim());
     if key_id.is_empty() || key_id.len() > 64 || !key_id.bytes().all(|b| b.is_ascii_alphanumeric()) {
-        return invalid("Key ID non valido.");
+        return invalid("Invalid key ID.");
     }
     if secret.is_empty() || secret.len() > 200 || !secret.is_ascii() {
-        return invalid("Segreto non valido.");
+        return invalid("Invalid secret.");
     }
     Ok((key_id.to_owned(), secret.to_owned()))
 }
@@ -310,19 +310,19 @@ fn validate_credentials(key_id: &str, secret: &str) -> ApiResult<(String, String
 /// Solo l'origine (schema, host, porta). HTTPS, oppure HTTP verso localhost per lo sviluppo.
 fn normalize_base_url(raw: &str) -> ApiResult<String> {
     let Ok(url) = reqwest::Url::parse(raw.trim()) else {
-        return invalid("Indirizzo non valido: usa per esempio https://heartbeat.esempio.it");
+        return invalid("Invalid address: use for example https://heartbeat.example.com");
     };
     let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
     match url.scheme() {
         "https" => {}
         "http" if local => {}
-        _ => return invalid("L'indirizzo deve usare HTTPS (HTTP solo verso localhost)."),
+        _ => return invalid("The address must use HTTPS (HTTP only for localhost)."),
     }
     if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
-        return invalid("L'indirizzo non può contenere credenziali, query o frammenti.");
+        return invalid("The address cannot contain credentials, a query or a fragment.");
     }
     if !matches!(url.path(), "" | "/") {
-        return invalid("Indica solo l'indirizzo dell'istanza, senza percorso.");
+        return invalid("Enter only the instance address, without a path.");
     }
     Ok(url.origin().ascii_serialization())
 }

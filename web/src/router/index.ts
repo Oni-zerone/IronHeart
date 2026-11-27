@@ -17,7 +17,7 @@ const router = createRouter({
   ],
 })
 
-// Pagine riservate: il backend risponde comunque 403.
+// Restricted pages: the backend answers 403 anyway.
 router.beforeEach((to) => {
   const user = currentUser.value
   if (!user) return

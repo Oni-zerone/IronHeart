@@ -18,7 +18,7 @@ const snippet = computed(() =>
 
 async function copy(text: string) {
   await navigator.clipboard.writeText(text)
-  notify('Copiato negli appunti.')
+  notify('Copied to clipboard.')
 }
 
 function close() {
@@ -29,36 +29,36 @@ function close() {
 
 <template>
   <v-dialog :model-value="credentials !== null" max-width="720" persistent>
-    <v-card v-if="credentials" :title="`Chiave di «${appName}»`">
+    <v-card v-if="credentials" :title="`Key for “${appName}”`">
       <v-card-text class="d-flex flex-column ga-4">
         <v-alert type="warning" variant="tonal">
-          Il segreto si vede solo adesso: salvalo nella configurazione dell'applicazione. Se lo
-          perdi, dovrai generare una nuova chiave.
+          The secret is shown only now: save it in the application's configuration. If you
+          lose it, you will have to generate a new key.
         </v-alert>
         <v-text-field :model-value="credentials.key_id" label="Key ID" readonly>
           <template #append-inner>
             <v-btn :icon="mdiContentCopy" variant="text" size="small" @click="copy(credentials.key_id)" />
           </template>
         </v-text-field>
-        <v-text-field :model-value="credentials.secret" label="Segreto" readonly class="font-mono">
+        <v-text-field :model-value="credentials.secret" label="Secret" readonly class="font-mono">
           <template #append-inner>
             <v-btn :icon="mdiContentCopy" variant="text" size="small" @click="copy(credentials.secret)" />
           </template>
         </v-text-field>
         <div>
           <div class="d-flex align-center justify-space-between mb-1">
-            <span class="text-subtitle-2">Esempio per un cron</span>
+            <span class="text-subtitle-2">Cron example</span>
             <v-btn :prepend-icon="mdiContentCopy" variant="text" size="small" @click="copy(snippet)">
-              Copia
+              Copy
             </v-btn>
           </div>
           <pre class="snippet">{{ snippet }}</pre>
         </div>
-        <v-checkbox v-model="saved" label="Ho salvato il segreto" hide-details />
+        <v-checkbox v-model="saved" label="I have saved the secret" hide-details />
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn :disabled="!saved" color="primary" variant="flat" @click="close">Chiudi</v-btn>
+        <v-btn :disabled="!saved" color="primary" variant="flat" @click="close">Close</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>

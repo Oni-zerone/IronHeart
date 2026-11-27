@@ -59,7 +59,7 @@ async function save() {
   saveError.value = ''
   try {
     setApp(await updateApp(props.id, form.value))
-    notify('Modifiche salvate.')
+    notify('Changes saved.')
   } catch (err) {
     saveError.value = errorText(err)
   } finally {
@@ -85,7 +85,7 @@ async function confirmAction() {
       credentials.value = result.credentials
     } else if (confirm.value === 'delete') {
       await deleteApp(props.id)
-      notify('Applicazione eliminata.')
+      notify('Application deleted.')
       router.replace({ name: 'apps' })
     }
     confirm.value = null
@@ -98,14 +98,14 @@ async function confirmAction() {
 
 async function copy(text: string) {
   await navigator.clipboard.writeText(text)
-  notify('Copiato negli appunti.')
+  notify('Copied to clipboard.')
 }
 
 function ipsText(ips: Record<string, number>, others: number): string {
   const list = Object.entries(ips)
     .sort((a, b) => b[1] - a[1])
     .map(([ip, n]) => `${ip} (${n})`)
-  if (others > 0) list.push(`altri ${others}`)
+  if (others > 0) list.push(`${others} others`)
   return list.join(', ')
 }
 
@@ -115,7 +115,7 @@ onMounted(load)
 <template>
   <v-container class="py-6" max-width="960">
     <v-btn :prepend-icon="mdiArrowLeft" :to="{ name: 'apps' }" variant="text" class="mb-2">
-      Applicazioni
+      Applications
     </v-btn>
     <v-progress-linear v-if="!app || !form" indeterminate />
     <template v-else>
@@ -126,21 +126,21 @@ onMounted(load)
 
       <v-row>
         <v-col cols="12" md="5">
-          <v-card title="Stato">
+          <v-card title="Status">
             <v-list density="compact">
-              <v-list-item title="Ultimo segnale" :subtitle="`${formatRelative(app.last_seen_at)} · ${formatDateTime(app.last_seen_at)}`" />
+              <v-list-item title="Last signal" :subtitle="`${formatRelative(app.last_seen_at)} · ${formatDateTime(app.last_seen_at)}`" />
               <v-list-item
                 v-if="app.state === 'up'"
-                title="Scadenza"
+                title="Deadline"
                 :subtitle="`${formatRelative(app.next_deadline_at)} · ${formatDateTime(app.next_deadline_at)}`"
               />
               <v-list-item
                 v-if="app.state === 'down'"
-                title="Ferma da"
+                title="Down since"
                 :subtitle="formatDateTime(app.down_since)"
               />
-              <v-list-item title="Controllo" :subtitle="`Ogni ${formatDuration(app.interval_secs)}, tolleranza ${formatDuration(app.grace_secs)}`" />
-              <v-list-item title="Avvisi a" :subtitle="recipientsText" />
+              <v-list-item title="Check" :subtitle="`Every ${formatDuration(app.interval_secs)}, grace period ${formatDuration(app.grace_secs)}`" />
+              <v-list-item title="Alerts to" :subtitle="recipientsText" />
               <v-list-item title="Key ID" :subtitle="app.key_id">
                 <template #append>
                   <v-btn :icon="mdiContentCopy" variant="text" size="small" @click="copy(app.key_id)" />
@@ -149,38 +149,38 @@ onMounted(load)
             </v-list>
             <v-card-actions class="flex-wrap">
               <v-btn variant="tonal" @click="togglePause">
-                {{ app.state === 'paused' ? 'Riprendi il controllo' : 'Metti in pausa' }}
+                {{ app.state === 'paused' ? 'Resume monitoring' : 'Pause' }}
               </v-btn>
-              <v-btn :prepend-icon="mdiKeyChange" @click="confirm = 'rotate'">Nuova chiave</v-btn>
+              <v-btn :prepend-icon="mdiKeyChange" @click="confirm = 'rotate'">New key</v-btn>
             </v-card-actions>
           </v-card>
         </v-col>
 
         <v-col cols="12" md="7">
-          <v-card title="Impostazioni">
+          <v-card title="Settings">
             <v-card-text>
               <v-alert v-if="saveError" type="error" variant="tonal" class="mb-4">{{ saveError }}</v-alert>
               <AppForm v-model="form" />
             </v-card-text>
             <v-card-actions>
-              <v-btn :prepend-icon="mdiDeleteOutline" color="error" @click="confirm = 'delete'">Elimina</v-btn>
+              <v-btn :prepend-icon="mdiDeleteOutline" color="error" @click="confirm = 'delete'">Delete</v-btn>
               <v-spacer />
-              <v-btn :loading="saving" color="primary" variant="flat" @click="save">Salva</v-btn>
+              <v-btn :loading="saving" color="primary" variant="flat" @click="save">Save</v-btn>
             </v-card-actions>
           </v-card>
         </v-col>
 
         <v-col cols="12">
-          <v-card title="Tentativi non validi" subtitle="Ultime 24 ore">
-            <v-card-text v-if="app.failures.length === 0">Nessun tentativo non valido.</v-card-text>
+          <v-card title="Invalid attempts" subtitle="Last 24 hours">
+            <v-card-text v-if="app.failures.length === 0">No invalid attempts.</v-card-text>
             <v-table v-else density="compact">
               <thead>
                 <tr>
-                  <th>Periodo</th>
-                  <th class="text-end">Firma errata</th>
-                  <th class="text-end">Ripetuti</th>
-                  <th class="text-end">Orologio</th>
-                  <th>Provenienza</th>
+                  <th>Period</th>
+                  <th class="text-end">Bad signature</th>
+                  <th class="text-end">Replayed</th>
+                  <th class="text-end">Clock skew</th>
+                  <th>Source</th>
                 </tr>
               </thead>
               <tbody>
@@ -197,12 +197,12 @@ onMounted(load)
         </v-col>
 
         <v-col cols="12">
-          <v-card title="Integrazione">
+          <v-card title="Integration">
             <v-card-text>
               <p class="mb-2">
-                Ogni richiesta è firmata con HMAC-SHA256 e un timestamp sempre crescente; il segreto non
-                viaggia mai. Il servizio risponde sempre 204: per verificare che funzioni, guarda qui
-                l'ultimo segnale e i tentativi non validi.
+                Every request is signed with HMAC-SHA256 and an ever-increasing timestamp; the secret is
+                never sent. The service always answers 204: to check that it works, look at the last
+                signal and the invalid attempts here.
               </p>
               <pre class="snippet">{{ snippet }}</pre>
             </v-card-text>
@@ -212,19 +212,19 @@ onMounted(load)
     </template>
 
     <v-dialog :model-value="confirm !== null" max-width="480" @update:model-value="confirm = null">
-      <v-card :title="confirm === 'rotate' ? 'Generare una nuova chiave?' : 'Eliminare l\'applicazione?'">
+      <v-card :title="confirm === 'rotate' ? 'Generate a new key?' : 'Delete the application?'">
         <v-card-text>
           {{
             confirm === 'rotate'
-              ? 'La chiave attuale smette subito di funzionare: dovrai aggiornare l\'applicazione con quella nuova.'
-              : 'L\'applicazione, la sua chiave e lo storico dei tentativi vengono cancellati.'
+              ? 'The current key stops working immediately: you will have to update the application with the new one.'
+              : 'The application, its key and its attempt history are deleted.'
           }}
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn @click="confirm = null">Annulla</v-btn>
+          <v-btn @click="confirm = null">Cancel</v-btn>
           <v-btn :loading="busy" :color="confirm === 'delete' ? 'error' : 'primary'" variant="flat" @click="confirmAction">
-            {{ confirm === 'rotate' ? 'Genera' : 'Elimina' }}
+            {{ confirm === 'rotate' ? 'Generate' : 'Delete' }}
           </v-btn>
         </v-card-actions>
       </v-card>

@@ -151,7 +151,7 @@ async fn create(
     validate_timing(input.interval_secs, input.grace_secs)?;
     let recipients = normalize_recipients(&input.recipients)?;
     if db::count_apps(&state.db, &user.id).await? >= MAX_APPS_PER_USER {
-        return invalid(format!("Puoi registrare al massimo {MAX_APPS_PER_USER} applicazioni."));
+        return invalid(format!("You can register at most {MAX_APPS_PER_USER} applications."));
     }
 
     let id = Uuid::now_v7().to_string();
@@ -277,17 +277,17 @@ async fn remove(
 fn validate_name(name: &str) -> ApiResult<String> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
-        return invalid(format!("Il nome deve avere da 1 a {MAX_NAME_CHARS} caratteri."));
+        return invalid(format!("The name must be 1 to {MAX_NAME_CHARS} characters long."));
     }
     Ok(name.to_owned())
 }
 
 fn validate_timing(interval_secs: i64, grace_secs: i64) -> ApiResult<()> {
     if !INTERVAL_RANGE.contains(&interval_secs) {
-        return invalid("L'intervallo deve essere tra 30 secondi e 7 giorni.");
+        return invalid("The interval must be between 30 seconds and 7 days.");
     }
     if !GRACE_RANGE.contains(&grace_secs) {
-        return invalid("La tolleranza deve essere tra 0 secondi e 1 giorno.");
+        return invalid("The grace period must be between 0 seconds and 1 day.");
     }
     Ok(())
 }
@@ -300,14 +300,14 @@ fn normalize_recipients(input: &[String]) -> ApiResult<Vec<String>> {
             continue;
         }
         if email.parse::<lettre::Address>().is_err() {
-            return invalid(format!("Indirizzo non valido: {email}"));
+            return invalid(format!("Invalid address: {email}"));
         }
         if !out.contains(&email) {
             out.push(email);
         }
     }
     if out.len() > MAX_RECIPIENTS {
-        return invalid(format!("Al massimo {MAX_RECIPIENTS} destinatari."));
+        return invalid(format!("At most {MAX_RECIPIENTS} recipients."));
     }
     Ok(out)
 }

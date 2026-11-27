@@ -34,10 +34,10 @@ onMounted(loadSession)
           variant="text"
           class="me-2"
         >
-          <span class="d-none d-md-inline">Utenti</span>
+          <span class="d-none d-md-inline">Users</span>
         </v-btn>
         <span class="text-body-2 me-2 d-none d-sm-inline">{{ currentUser.email }}</span>
-        <v-btn :icon="mdiLogout" title="Esci" @click="logout" />
+        <v-btn :icon="mdiLogout" title="Sign out" @click="logout" />
       </template>
     </v-app-bar>
 

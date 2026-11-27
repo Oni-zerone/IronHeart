@@ -67,9 +67,9 @@ async function testEmail() {
   sendingTest.value = true
   try {
     await sendTestEmail()
-    notify('Email di prova inviata.')
+    notify('Test email sent.')
   } catch {
-    notify('Invio non riuscito.', 'error')
+    notify('Sending failed.', 'error')
   } finally {
     sendingTest.value = false
   }
@@ -81,18 +81,18 @@ onMounted(load)
 <template>
   <v-container class="py-6" max-width="960">
     <div class="d-flex align-center flex-wrap ga-2 mb-4">
-      <h1 class="text-h5 me-auto">Applicazioni</h1>
+      <h1 class="text-h5 me-auto">Applications</h1>
       <v-btn :prepend-icon="mdiEmailFastOutline" :loading="sendingTest" variant="text" @click="testEmail">
-        Mail di prova
+        Test email
       </v-btn>
       <v-btn :prepend-icon="mdiPlus" color="primary" variant="flat" @click="openCreate">
-        Nuova applicazione
+        New application
       </v-btn>
     </div>
 
     <v-progress-linear v-if="loading" indeterminate />
     <v-card v-else-if="apps.length === 0" variant="tonal" class="pa-6 text-center">
-      Nessuna applicazione. Creane una per ottenere la chiave da usare nell'heartbeat.
+      No applications yet. Create one to get the key for the heartbeat.
     </v-card>
     <v-card v-else>
       <v-list lines="two">
@@ -101,7 +101,7 @@ onMounted(load)
           :key="app.id"
           :to="{ name: 'app', params: { id: app.id } }"
           :title="app.name"
-          :subtitle="`Ogni ${formatDuration(app.interval_secs)} · ultimo segnale ${formatRelative(app.last_seen_at)}`"
+          :subtitle="`Every ${formatDuration(app.interval_secs)} · last signal ${formatRelative(app.last_seen_at)}`"
         >
           <template #append>
             <v-chip
@@ -111,7 +111,7 @@ onMounted(load)
               variant="text"
               size="small"
               class="me-2"
-              title="Tentativi non validi nelle ultime 24 ore"
+              title="Invalid attempts in the last 24 hours"
             >
               {{ app.failures_24h }}
             </v-chip>
@@ -124,15 +124,15 @@ onMounted(load)
     </v-card>
 
     <v-dialog v-model="creating" max-width="640" :fullscreen="smAndDown" scrollable>
-      <v-card title="Nuova applicazione">
+      <v-card title="New application">
         <v-card-text class="pt-2">
           <v-alert v-if="createError" type="error" variant="tonal" class="mb-4">{{ createError }}</v-alert>
           <AppForm v-model="form" />
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn @click="creating = false">Annulla</v-btn>
-          <v-btn :loading="saving" color="primary" variant="flat" @click="submitCreate">Crea</v-btn>
+          <v-btn @click="creating = false">Cancel</v-btn>
+          <v-btn :loading="saving" color="primary" variant="flat" @click="submitCreate">Create</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>

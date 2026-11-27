@@ -40,7 +40,7 @@ async function invite() {
   inviteError.value = ''
   try {
     overview.value = await inviteUser(inviteEmail.value, inviteRole.value)
-    notify(`Invito inviato a ${inviteEmail.value.trim().toLowerCase()}.`)
+    notify(`Invite sent to ${inviteEmail.value.trim().toLowerCase()}.`)
     inviteEmail.value = ''
     inviteRole.value = 'user'
   } catch (err) {
@@ -57,7 +57,7 @@ function locked(user: UserSummary) {
 async function confirmRemove() {
   const user = toRemove.value
   if (!user) return
-  await run(() => removeUser(user.id), `${user.email} rimosso.`)
+  await run(() => removeUser(user.id), `${user.email} removed.`)
   toRemove.value = null
 }
 
@@ -66,14 +66,14 @@ onMounted(() => run(listUsers))
 
 <template>
   <v-container class="py-6" max-width="960">
-    <h1 class="text-h5 mb-4">Utenti</h1>
+    <h1 class="text-h5 mb-4">Users</h1>
 
-    <v-card title="Invita" class="mb-6">
+    <v-card title="Invite" class="mb-6">
       <v-card-text>
         <p class="mb-4">
-          Si entra solo su invito. La persona riceve una mail e, al primo accesso con l'account
-          Google di quell'indirizzo, ottiene il ruolo scelto. Gli utenti possono gestire solo le
-          proprie applicazioni; gli amministratori possono anche invitare e rimuovere utenti.
+          Access is by invitation only. The person receives an email and, the first time they sign in
+          with the Google account for that address, gets the chosen role. Users can manage only their
+          own applications; administrators can also invite and remove users.
         </p>
         <v-alert v-if="inviteError" type="error" variant="tonal" class="mb-4">{{ inviteError }}</v-alert>
         <form class="d-flex flex-wrap ga-3" @submit.prevent="invite">
@@ -87,7 +87,7 @@ onMounted(() => run(listUsers))
           <v-select
             v-model="inviteRole"
             :items="ROLE_OPTIONS"
-            label="Ruolo"
+            label="Role"
             hide-details
             class="invite-role"
           />
@@ -100,7 +100,7 @@ onMounted(() => run(listUsers))
             variant="flat"
             size="large"
           >
-            Invita
+            Invite
           </v-btn>
         </form>
       </v-card-text>
@@ -112,9 +112,9 @@ onMounted(() => run(listUsers))
         <v-table>
           <thead>
             <tr>
-              <th>Utente</th>
-              <th>Ruolo</th>
-              <th class="text-end">App</th>
+              <th>User</th>
+              <th>Role</th>
+              <th class="text-end">Apps</th>
               <th></th>
             </tr>
           </thead>
@@ -128,17 +128,17 @@ onMounted(() => run(listUsers))
                 <v-chip v-if="user.is_master" size="small" color="primary" variant="tonal">
                   Master
                 </v-chip>
-                <span v-else-if="locked(user)">{{ ROLE_LABEL[user.role] }} (tu)</span>
+                <span v-else-if="locked(user)">{{ ROLE_LABEL[user.role] }} (you)</span>
                 <v-select
                   v-else
                   :model-value="user.role"
                   :items="ROLE_OPTIONS"
                   :disabled="busy"
-                  :aria-label="`Ruolo di ${user.email}`"
+                  :aria-label="`Role of ${user.email}`"
                   density="compact"
                   variant="plain"
                   hide-details
-                  @update:model-value="(role: Role) => run(() => setUserRole(user.id, role), 'Ruolo aggiornato.')"
+                  @update:model-value="(role: Role) => run(() => setUserRole(user.id, role), 'Role updated.')"
                 />
               </td>
               <td class="text-end">{{ user.app_count }}</td>
@@ -146,7 +146,7 @@ onMounted(() => run(listUsers))
                 <v-btn
                   v-if="!locked(user)"
                   :icon="mdiDeleteOutline"
-                  :aria-label="`Rimuovi ${user.email}`"
+                  :aria-label="`Remove ${user.email}`"
                   variant="text"
                   color="error"
                   size="small"
@@ -158,14 +158,14 @@ onMounted(() => run(listUsers))
         </v-table>
       </v-card>
 
-      <v-card title="Inviti in attesa">
-        <v-card-text v-if="overview.invites.length === 0">Nessun invito in attesa.</v-card-text>
+      <v-card title="Pending invites">
+        <v-card-text v-if="overview.invites.length === 0">No pending invites.</v-card-text>
         <v-table v-else>
           <thead>
             <tr>
               <th>Email</th>
-              <th>Ruolo</th>
-              <th>Invitato il</th>
+              <th>Role</th>
+              <th>Invited on</th>
               <th></th>
             </tr>
           </thead>
@@ -177,11 +177,11 @@ onMounted(() => run(listUsers))
               <td class="text-end">
                 <v-btn
                   :icon="mdiEmailRemoveOutline"
-                  :aria-label="`Revoca l'invito di ${invite.email}`"
+                  :aria-label="`Revoke the invite for ${invite.email}`"
                   :disabled="busy"
                   variant="text"
                   size="small"
-                  @click="run(() => revokeInvite(invite.email), 'Invito revocato.')"
+                  @click="run(() => revokeInvite(invite.email), 'Invite revoked.')"
                 />
               </td>
             </tr>
@@ -191,17 +191,17 @@ onMounted(() => run(listUsers))
     </template>
 
     <v-dialog :model-value="toRemove !== null" max-width="480" @update:model-value="toRemove = null">
-      <v-card v-if="toRemove" :title="`Rimuovere ${toRemove.email}?`">
+      <v-card v-if="toRemove" :title="`Remove ${toRemove.email}?`">
         <v-card-text>
-          Perde subito l'accesso.
+          They lose access immediately.
           <strong v-if="toRemove.app_count > 0">
-            Vengono cancellate anche le sue {{ toRemove.app_count }} applicazioni, con chiavi e storico.
+            Their {{ toRemove.app_count }} applications are deleted too, with keys and history.
           </strong>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn @click="toRemove = null">Annulla</v-btn>
-          <v-btn :loading="busy" color="error" variant="flat" @click="confirmRemove">Rimuovi</v-btn>
+          <v-btn @click="toRemove = null">Cancel</v-btn>
+          <v-btn :loading="busy" color="error" variant="flat" @click="confirmRemove">Remove</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>

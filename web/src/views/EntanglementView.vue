@@ -73,10 +73,10 @@ async function save() {
   try {
     if (editing.value === 'new') {
       await createEntanglement({ ...rest, key_id, secret })
-      notify('Collegamento creato: il primo ping parte subito.')
+      notify('Link created: the first ping is sent right away.')
     } else if (editing.value) {
       replace(await updateEntanglement(editing.value.id, replaceKey.value ? { ...rest, key_id, secret } : rest))
-      notify('Collegamento aggiornato.')
+      notify('Link updated.')
     }
     editing.value = null
     await load()
@@ -100,7 +100,7 @@ async function pingNow(item: Entanglement) {
   try {
     const updated = await pingEntanglement(item.id)
     replace(updated)
-    notify(updated.last_error ? `Non consegnato: ${updated.last_error}` : 'Ping consegnato.', updated.last_error ? 'error' : 'success')
+    notify(updated.last_error ? `Not delivered: ${updated.last_error}` : 'Ping delivered.', updated.last_error ? 'error' : 'success')
   } catch (err) {
     notify(errorText(err), 'error')
   } finally {
@@ -121,14 +121,14 @@ async function confirmDelete() {
 
 async function copy(text: string) {
   await navigator.clipboard.writeText(text)
-  notify('Copiato negli appunti.')
+  notify('Copied to clipboard.')
 }
 
 function status(item: Entanglement): { color: string; text: string } {
-  if (!item.enabled) return { color: 'warning', text: 'In pausa' }
-  if (item.last_attempt_at === null) return { color: 'grey', text: 'In attesa' }
-  if (item.last_error) return { color: 'error', text: 'Non consegnato' }
-  return { color: 'success', text: 'Consegnato' }
+  if (!item.enabled) return { color: 'warning', text: 'Paused' }
+  if (item.last_attempt_at === null) return { color: 'grey', text: 'Waiting' }
+  if (item.last_error) return { color: 'error', text: 'Not delivered' }
+  return { color: 'success', text: 'Delivered' }
 }
 
 onMounted(load)
@@ -139,35 +139,35 @@ onMounted(load)
     <div class="d-flex align-center flex-wrap ga-2 mb-4">
       <h1 class="text-h5 me-auto">Entanglement</h1>
       <v-btn :prepend-icon="mdiPlus" color="primary" variant="flat" @click="openNew">
-        Nuovo collegamento
+        New link
       </v-btn>
     </div>
 
     <v-card variant="tonal" class="mb-6">
       <v-card-text class="help">
         <p class="mb-2">
-          Questa istanza manda un heartbeat ad altre istanze di IronHeart, così si controllano a
-          vicenda: se questa si ferma, l'altra manda l'avviso.
+          This instance sends a heartbeat to other IronHeart instances, so they watch each other:
+          if this one stops, the other one sends the alert.
         </p>
         <ol class="ms-5 mb-2">
-          <li>Sull'altra istanza crea un'applicazione che rappresenta questa, e copia key ID e segreto.</li>
-          <li>Qui crea un collegamento con l'indirizzo dell'altra istanza, la chiave e un intervallo più breve di quello dell'applicazione (per esempio la metà).</li>
-          <li>Per il controllo reciproco, ripeti al contrario con l'indirizzo di questa istanza.</li>
+          <li>On the other instance, create an application that represents this one, and copy its key ID and secret.</li>
+          <li>Here, create a link with the other instance's address, the key and an interval shorter than the application's (for example half of it).</li>
+          <li>For mutual monitoring, repeat the other way round with this instance's address.</li>
         </ol>
         <div class="d-flex align-center flex-wrap ga-1">
-          <span>Indirizzo di questa istanza:</span>
+          <span>This instance's address:</span>
           <code>{{ instanceUrl }}</code>
-          <v-btn :icon="mdiContentCopy" variant="text" size="small" aria-label="Copia l'indirizzo" @click="copy(instanceUrl)" />
+          <v-btn :icon="mdiContentCopy" variant="text" size="small" aria-label="Copy the address" @click="copy(instanceUrl)" />
         </div>
         <p class="text-medium-emphasis mt-2 mb-0">
-          L'altra istanza risponde sempre allo stesso modo: qui vedi solo se il ping è stato
-          consegnato. Se la chiave è sbagliata, lo segnala l'altra istanza con i tentativi non validi.
+          The other instance always answers the same way: here you only see whether the ping was
+          delivered. If the key is wrong, the other instance reports it as invalid attempts.
         </p>
       </v-card-text>
     </v-card>
 
     <v-progress-linear v-if="!items" indeterminate />
-    <v-card v-else-if="items.length === 0" class="pa-6 text-center">Nessun collegamento.</v-card>
+    <v-card v-else-if="items.length === 0" class="pa-6 text-center">No links.</v-card>
     <div v-else class="d-flex flex-column ga-4">
       <v-card v-for="item in items" :key="item.id">
         <v-card-item>
@@ -178,77 +178,77 @@ onMounted(load)
           </template>
         </v-card-item>
         <v-card-text>
-          <div>Ping ogni {{ formatDuration(item.interval_secs) }}</div>
+          <div>Ping every {{ formatDuration(item.interval_secs) }}</div>
           <div>
-            Ultima consegna: {{ formatRelative(item.last_success_at) }}
+            Last delivery: {{ formatRelative(item.last_success_at) }}
             <span v-if="item.last_success_at">({{ formatDateTime(item.last_success_at) }})</span>
           </div>
           <div v-if="item.last_error" class="text-error">
-            Ultimo tentativo {{ formatRelative(item.last_attempt_at) }}: {{ item.last_error }}
+            Last attempt {{ formatRelative(item.last_attempt_at) }}: {{ item.last_error }}
           </div>
         </v-card-text>
         <v-card-actions class="flex-wrap">
-          <v-btn :prepend-icon="mdiSend" :loading="pinging === item.id" @click="pingNow(item)">Invia ora</v-btn>
-          <v-btn variant="tonal" @click="toggle(item)">{{ item.enabled ? 'Metti in pausa' : 'Riprendi' }}</v-btn>
+          <v-btn :prepend-icon="mdiSend" :loading="pinging === item.id" @click="pingNow(item)">Send now</v-btn>
+          <v-btn variant="tonal" @click="toggle(item)">{{ item.enabled ? 'Pause' : 'Resume' }}</v-btn>
           <v-spacer />
-          <v-btn :icon="mdiPencilOutline" aria-label="Modifica" @click="openEdit(item)" />
-          <v-btn :icon="mdiDeleteOutline" aria-label="Elimina" color="error" @click="toDelete = item" />
+          <v-btn :icon="mdiPencilOutline" aria-label="Edit" @click="openEdit(item)" />
+          <v-btn :icon="mdiDeleteOutline" aria-label="Delete" color="error" @click="toDelete = item" />
         </v-card-actions>
       </v-card>
     </div>
 
     <v-dialog :model-value="editing !== null" max-width="640" :fullscreen="smAndDown" scrollable @update:model-value="editing = null">
-      <v-card :title="editing === 'new' ? 'Nuovo collegamento' : 'Modifica collegamento'">
+      <v-card :title="editing === 'new' ? 'New link' : 'Edit link'">
         <v-card-text class="pt-2">
           <v-alert v-if="formError" type="error" variant="tonal" class="mb-4">{{ formError }}</v-alert>
           <form class="d-flex flex-column ga-6" @submit.prevent="save">
             <section>
-              <label class="form-title" for="ent-name">Nome</label>
+              <label class="form-title" for="ent-name">Name</label>
               <v-text-field id="ent-name" v-model="form.name" maxlength="80" hide-details autofocus />
             </section>
             <section>
-              <label class="form-title" for="ent-url">Indirizzo dell'altra istanza</label>
-              <p class="form-help">Solo l'indirizzo, senza percorso. HTTPS obbligatorio, HTTP solo verso localhost.</p>
+              <label class="form-title" for="ent-url">Address of the other instance</label>
+              <p class="form-help">Only the address, without a path. HTTPS is required, HTTP only for localhost.</p>
               <v-text-field id="ent-url" v-model="form.base_url" type="url" hide-details />
             </section>
             <section>
-              <div class="form-title">Chiave</div>
-              <p class="form-help">Key ID e segreto dell'applicazione creata sull'altra istanza.</p>
-              <v-checkbox v-if="editing !== 'new'" v-model="replaceKey" label="Sostituisci la chiave" hide-details class="mb-2" />
+              <div class="form-title">Key</div>
+              <p class="form-help">Key ID and secret of the application created on the other instance.</p>
+              <v-checkbox v-if="editing !== 'new'" v-model="replaceKey" label="Replace the key" hide-details class="mb-2" />
               <div v-if="replaceKey" class="d-flex flex-column ga-3">
                 <v-text-field v-model="form.key_id" label="Key ID" hide-details />
-                <v-text-field v-model="form.secret" label="Segreto" type="password" autocomplete="off" hide-details />
+                <v-text-field v-model="form.secret" label="Secret" type="password" autocomplete="off" hide-details />
               </div>
             </section>
             <section>
-              <div class="form-title">Intervallo dei ping</div>
+              <div class="form-title">Ping interval</div>
               <p class="form-help">
-                Da 10 secondi a 1 giorno. Tienilo più breve dell'intervallo dell'applicazione sull'altra
-                istanza, così un ping perso non basta a far scattare l'avviso.
+                From 10 seconds to 1 day. Keep it shorter than the application's interval on the other
+                instance, so a single lost ping is not enough to trigger an alert.
               </p>
-              <DurationField v-model="form.interval_secs" label="Intervallo dei ping" />
+              <DurationField v-model="form.interval_secs" label="Ping interval" />
             </section>
-            <v-switch v-model="form.enabled" label="Attivo" color="primary" hide-details />
+            <v-switch v-model="form.enabled" label="Active" color="primary" hide-details />
           </form>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn @click="editing = null">Annulla</v-btn>
-          <v-btn :loading="saving" color="primary" variant="flat" @click="save">Salva</v-btn>
+          <v-btn @click="editing = null">Cancel</v-btn>
+          <v-btn :loading="saving" color="primary" variant="flat" @click="save">Save</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
 
     <v-dialog :model-value="toDelete !== null" max-width="480" @update:model-value="toDelete = null">
-      <v-card v-if="toDelete" :title="`Eliminare «${toDelete.name}»?`">
+      <v-card v-if="toDelete" :title="`Delete “${toDelete.name}”?`">
         <v-card-text>
-          Questa istanza smette di mandare ping: se l'applicazione sull'altra istanza è attiva,
-          tra poco risulterà ferma.
+          This instance stops sending pings: if the application on the other instance is up,
+          it will soon be reported as down.
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn @click="toDelete = null">Annulla</v-btn>
-          <v-btn color="error" variant="flat" @click="confirmDelete">Elimina</v-btn>
+          <v-btn @click="toDelete = null">Cancel</v-btn>
+          <v-btn color="error" variant="flat" @click="confirmDelete">Delete</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>

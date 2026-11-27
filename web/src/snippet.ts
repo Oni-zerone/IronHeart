@@ -1,5 +1,5 @@
-/** Script di esempio per un cron: firma HMAC con openssl e invio con curl. */
-export function shellSnippet(origin: string, keyId: string, secret = '<il tuo segreto>'): string {
+/** Example cron script: HMAC signature with openssl, sent with curl. */
+export function shellSnippet(origin: string, keyId: string, secret = '<your secret>'): string {
   return `#!/bin/sh
 KEY_ID='${keyId}'
 SECRET='${secret}'

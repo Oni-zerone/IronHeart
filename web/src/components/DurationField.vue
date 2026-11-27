@@ -4,7 +4,7 @@ import { computed } from 'vue'
 import { UNITS, splitDuration } from '@/format'
 
 const seconds = defineModel<number>({ required: true })
-/** `label` serve ai lettori di schermo: il titolo visibile sta fuori dal campo. */
+/** `label` is for screen readers: the visible title sits outside the field. */
 defineProps<{ label: string }>()
 
 const parts = computed(() => splitDuration(seconds.value))
@@ -33,7 +33,7 @@ function setUnit(unit: number) {
     <v-select
       :model-value="parts.unit"
       :items="UNITS"
-      :aria-label="`Unità di ${label.toLowerCase()}`"
+      :aria-label="`${label} unit`"
       hide-details
       class="unit"
       @update:model-value="setUnit"

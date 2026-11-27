@@ -10,29 +10,29 @@ const model = defineModel<AppInput>({ required: true })
 <template>
   <div class="d-flex flex-column ga-6">
     <section>
-      <label class="form-title" for="app-name">Nome</label>
+      <label class="form-title" for="app-name">Name</label>
       <v-text-field id="app-name" v-model="model.name" maxlength="80" hide-details autofocus />
     </section>
 
     <section>
-      <div class="form-title">Intervallo</div>
-      <p class="form-help">Tempo massimo tra due heartbeat, da 30 secondi a 7 giorni.</p>
-      <DurationField v-model="model.interval_secs" label="Intervallo" />
+      <div class="form-title">Interval</div>
+      <p class="form-help">Maximum time between two heartbeats, from 30 seconds to 7 days.</p>
+      <DurationField v-model="model.interval_secs" label="Interval" />
     </section>
 
     <section>
-      <div class="form-title">Tolleranza</div>
+      <div class="form-title">Grace period</div>
       <p class="form-help">
-        Attesa in più prima di segnalare l'applicazione come ferma, fino a 1 giorno.
+        Extra time to wait before reporting the application as down, up to 1 day.
       </p>
-      <DurationField v-model="model.grace_secs" label="Tolleranza" />
+      <DurationField v-model="model.grace_secs" label="Grace period" />
     </section>
 
     <section>
-      <label class="form-title" for="app-recipients">Destinatari degli avvisi</label>
+      <label class="form-title" for="app-recipients">Alert recipients</label>
       <p class="form-help">
-        Premi Invio dopo ogni indirizzo. Se l'elenco è vuoto, gli avvisi vanno a
-        {{ currentUser?.email ?? 'te' }}.
+        Press Enter after each address. If the list is empty, alerts go to
+        {{ currentUser?.email ?? 'you' }}.
       </p>
       <v-combobox
         id="app-recipients"
