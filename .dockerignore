@@ -1,0 +1,11 @@
+.git
+.github
+.claude
+.vscode
+**/.env
+**/.DS_Store
+**/node_modules
+**/target
+web/dist
+server/data
+data
