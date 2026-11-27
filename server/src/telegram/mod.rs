@@ -185,16 +185,26 @@ impl Telegram {
         envelope.into_result()
     }
 
+    /// Sends the message, split at line boundaries when it is too long for one
+    /// Telegram message (a long `/apps`); the buttons go with the last part.
     pub async fn send(&self, message: &Message) -> Result<(), ApiError> {
-        let text: String = message.text.chars().take(MAX_TEXT_CHARS).collect();
+        let parts = split_text(&message.text);
+        let last = parts.len() - 1;
+        for (i, text) in parts.into_iter().enumerate() {
+            let buttons: &[Vec<(String, String)>] = if i == last { &message.buttons } else { &[] };
+            self.send_part(message.chat_id, text, buttons).await?;
+        }
+        Ok(())
+    }
+
+    async fn send_part(&self, chat_id: i64, text: String, buttons: &[Vec<(String, String)>]) -> Result<(), ApiError> {
         let mut body = json!({
-            "chat_id": message.chat_id,
+            "chat_id": chat_id,
             "text": text,
             "link_preview_options": { "is_disabled": true },
         });
-        if !message.buttons.is_empty() {
-            let rows: Vec<Vec<Value>> = message
-                .buttons
+        if !buttons.is_empty() {
+            let rows: Vec<Vec<Value>> = buttons
                 .iter()
                 .map(|row| row.iter().map(|(label, data)| json!({ "text": label, "callback_data": data })).collect())
                 .collect();
@@ -206,6 +216,11 @@ impl Telegram {
     /// Alert from the queue: honors 429 waits; a chat that refuses the
     /// message is disabled so it is not tried again at every alert.
     pub async fn deliver(&self, pool: &db::Pool, message: &Message) {
+        // Queued before the token was refused: nothing can go out.
+        if self.health.rejected() {
+            tracing::warn!(chat_id = message.chat_id, "telegram: token refused, alert not sent");
+            return;
+        }
         for _ in 0..MAX_SEND_ATTEMPTS {
             match self.send(message).await {
                 Ok(()) => return,
@@ -225,6 +240,43 @@ impl Telegram {
         }
         tracing::error!(chat_id = message.chat_id, "telegram: alert not sent (rate limited)");
     }
+}
+
+/// Parts of at most `MAX_TEXT_CHARS` UTF-16 units (how Telegram counts),
+/// cut at line boundaries; a single longer line is cut where it must.
+fn split_text(text: &str) -> Vec<String> {
+    let units = |s: &str| s.encode_utf16().count();
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    for line in text.split('\n') {
+        let mut line = line.to_owned();
+        while units(&line) > MAX_TEXT_CHARS {
+            let mut cut = String::new();
+            for c in line.chars() {
+                if units(&cut) + c.len_utf16() > MAX_TEXT_CHARS {
+                    break;
+                }
+                cut.push(c);
+            }
+            line = line[cut.len()..].to_owned();
+            if !current.is_empty() {
+                parts.push(std::mem::take(&mut current));
+            }
+            parts.push(cut);
+        }
+        let extra = if current.is_empty() { 0 } else { 1 };
+        if units(&current) + extra + units(&line) > MAX_TEXT_CHARS {
+            parts.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(&line);
+    }
+    if !current.is_empty() || parts.is_empty() {
+        parts.push(current);
+    }
+    parts
 }
 
 // ---- Updates ------------------------------------------------------------------
@@ -448,6 +500,24 @@ mod tests {
             Err(ApiError::RetryAfter(7))
         ));
         assert!(matches!(envelope(r#"{"ok":false,"error_code":409,"description":"Conflict"}"#), Err(ApiError::Conflict(_))));
+    }
+
+    #[test]
+    fn long_texts_are_split_at_lines() {
+        assert_eq!(split_text("a\nb"), ["a\nb"]);
+        let line = "x".repeat(100);
+        let text = vec![line.as_str(); 100].join("\n"); // 10,099 characters
+        let parts = split_text(&text);
+        assert_eq!(parts.len(), 3);
+        assert!(parts.iter().all(|p| p.encode_utf16().count() <= MAX_TEXT_CHARS));
+        assert!(parts.iter().all(|p| p.split('\n').all(|l| l.len() == 100)), "no line is cut");
+        assert_eq!(parts.join("\n"), text);
+        // Emoji count twice for Telegram; a line longer than the limit is cut.
+        let emoji = "😀".repeat(MAX_TEXT_CHARS);
+        let parts = split_text(&emoji);
+        assert_eq!(parts.len(), 2);
+        assert!(parts.iter().all(|p| p.encode_utf16().count() <= MAX_TEXT_CHARS));
+        assert_eq!(parts.concat(), emoji);
     }
 
     #[test]

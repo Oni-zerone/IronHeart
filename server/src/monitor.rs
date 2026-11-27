@@ -176,6 +176,18 @@ pub async fn tick(state: &AppState, memory: &mut Memory, now: i64) -> anyhow::Re
     let chats = telegram_chats(state, !downs.is_empty() || !recoveries.is_empty() || !failure_digests.is_empty()).await?;
     let chats_of = |to: &str| chats.get(to).map(Vec::as_slice).unwrap_or_default();
     let mail = state.mailer.is_enabled();
+    if !mail {
+        // Telegram only: an address without a linked account chat gets nothing.
+        let unreached = downs
+            .keys()
+            .chain(recoveries.keys())
+            .chain(failure_digests.iter().map(|(to, _)| to))
+            .filter(|to| chats_of(to).is_empty())
+            .count();
+        if unreached > 0 {
+            tracing::warn!(unreached, "alerts without a channel: recipients with no linked Telegram chat");
+        }
+    }
     for (to, items) in &downs {
         if mail {
             state.outbox.urgent(alerts::down_digest(to, items, now, &apps_url)).await;

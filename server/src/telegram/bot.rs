@@ -44,10 +44,17 @@ pub struct Incoming {
     pub text: String,
 }
 
-/// Commands per chat, in windows of one minute.
+/// Command replies per second over all chats. Telegram allows about 30
+/// messages per second per bot: the rest stays free for alerts, so a flood of
+/// commands from many chats cannot get them refused (429).
+const GLOBAL_REPLIES_PER_SEC: u32 = 10;
+
+/// Commands per chat (windows of one minute) and replies over all chats
+/// (windows of one second). Beyond either limit the bot stays silent.
 #[derive(Default)]
 pub struct Limiter {
     windows: HashMap<i64, (i64, u32)>,
+    global: (i64, u32),
 }
 
 impl Limiter {
@@ -60,7 +67,15 @@ impl Limiter {
             (*start, *count) = (now, 0);
         }
         *count += 1;
-        *count <= RATE_LIMIT
+        if *count > RATE_LIMIT {
+            return false;
+        }
+        let (start, count) = &mut self.global;
+        if now - *start >= 1000 {
+            (*start, *count) = (now, 0);
+        }
+        *count += 1;
+        *count <= GLOBAL_REPLIES_PER_SEC
     }
 }
 
@@ -364,10 +379,20 @@ mod tests {
     #[test]
     fn limiter_resets_every_minute() {
         let mut limiter = Limiter::default();
-        assert!((0..RATE_LIMIT).all(|_| limiter.allow(1, 0)));
-        assert!(!limiter.allow(1, 0));
-        assert!(limiter.allow(2, 0), "per chat");
+        // One command per second, so the global limit does not interfere.
+        assert!((0..RATE_LIMIT as i64).all(|i| limiter.allow(1, i * 1000)));
+        assert!(!limiter.allow(1, 30_000));
+        assert!(limiter.allow(2, 30_000), "per chat");
         assert!(limiter.allow(1, MINUTE_MS));
+    }
+
+    /// Many chats at once: at most `GLOBAL_REPLIES_PER_SEC` replies per second.
+    #[test]
+    fn flood_from_many_chats_is_capped() {
+        let mut limiter = Limiter::default();
+        let allowed = (0..1000).filter(|chat| limiter.allow(*chat, 5)).count();
+        assert_eq!(allowed, GLOBAL_REPLIES_PER_SEC as usize);
+        assert!(limiter.allow(5000, 1005), "next second");
     }
 
     #[tokio::test]
