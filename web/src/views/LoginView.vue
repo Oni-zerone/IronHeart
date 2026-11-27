@@ -8,19 +8,53 @@ import AsciiBox from '@/components/AsciiBox.vue'
 const route = useRoute()
 const loginOutcome = computed(() => route.query.login)
 
-// "IronHeart" in figlet's standard font.
-const logo = [
-  ' ___                 _   _                 _',
-  '|_ _|_ __ ___  _ __ | | | | ___  __ _ _ __| |_',
-  " | || '__/ _ \\| '_ \\| |_| |/ _ \\/ _` | '__| __|",
-  ' | || | | (_) | | | |  _  |  __/ (_| | |  | |_',
-  '|___|_|  \\___/|_| |_|_| |_|\\___|\\__,_|_|   \\__|',
-].join('\n')
+// The heart with a pulse line of the old icon (mdiHeartPulse), drawn in ASCII.
+// `pulse` marks with "x" the characters of the line, which get their own color.
+const heart = [
+  "    _.-'''-._   _.-'''-._",
+  "  .'         '.'         '.",
+  ' /                         \\',
+  '|                           |',
+  '|         /\\                |',
+  '|________/  \\   /___________|',
+  ' \\           \\ /           /',
+  '  \\           V           /',
+  "   '.                   .'",
+  "     '.               .'",
+  "       '.           .'",
+  "         '.       .'",
+  "           '.   .'",
+  "             '.'",
+]
+const pulse = [
+  '',
+  '',
+  '',
+  '',
+  '          xx',
+  ' xxxxxxxxx  x   xxxxxxxxxxxx',
+  '             x x',
+  '              x',
+]
+
+/** Runs of characters with the same color, rows joined by newlines. */
+const logo = heart.flatMap((line, row) => {
+  const mask = pulse[row] ?? ''
+  const runs: { text: string; pulse: boolean }[] = []
+  for (let col = 0; col < line.length; col++) {
+    const isPulse = mask[col] === 'x'
+    const last = runs.at(-1)
+    if (last && last.pulse === isPulse) last.text += line[col]
+    else runs.push({ text: line[col] ?? '', pulse: isPulse })
+  }
+  if (row < heart.length - 1) runs.push({ text: '\n', pulse: false })
+  return runs
+})
 </script>
 
 <template>
   <div class="login">
-    <pre class="logo glow" role="img" aria-label="IronHeart">{{ logo }}</pre>
+    <pre class="logo glow" role="img" aria-label="IronHeart"><span v-for="(run, i) in logo" :key="i" :class="{ pulse: run.pulse }">{{ run.text }}</span></pre>
     <p class="dim">signed heartbeats · an alert when an app goes quiet</p>
     <AsciiBox class="login-box" title="sign in" right="google">
       <div class="form">
@@ -57,14 +91,31 @@ const logo = [
   white-space: pre;
   color: var(--accent);
 }
+/* The pulse line flashes twice, like a heartbeat. */
+.pulse {
+  color: var(--hi);
+  animation: heartbeat 1.4s ease-out infinite;
+}
+@keyframes heartbeat {
+  0%,
+  30%,
+  100% {
+    text-shadow: 0 0 6px rgb(198 237 255 / 35%);
+  }
+  8%,
+  38% {
+    text-shadow:
+      0 0 4px var(--hi),
+      0 0 14px var(--accent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse {
+    animation: none;
+  }
+}
 .login-box {
   width: 100%;
   max-width: 60ch;
-}
-@media (max-width: 440px) {
-  .logo {
-    font-size: 10.5px;
-    line-height: 15px;
-  }
 }
 </style>
