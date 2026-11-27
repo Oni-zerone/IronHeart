@@ -35,6 +35,11 @@ body {
 body {
   font: 400 var(--fs) / var(--lh) var(--mono);
   font-variant-numeric: tabular-nums;
+  /* JetBrains Mono would turn "==", "---", "<-" into ligatures and break the ASCII drawings. */
+  font-variant-ligatures: none;
+  font-feature-settings:
+    'liga' 0,
+    'calt' 0;
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
   padding-block: 0 calc(var(--lh) * 3);

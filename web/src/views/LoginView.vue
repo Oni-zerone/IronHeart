@@ -8,53 +8,58 @@ import AsciiBox from '@/components/AsciiBox.vue'
 const route = useRoute()
 const loginOutcome = computed(() => route.query.login)
 
-// The heart with a pulse line of the old icon (mdiHeartPulse), drawn in ASCII.
-// `pulse` marks with "x" the characters of the line, which get their own color.
+// The heart with a pulse line of the old icon (mdiHeartPulse), in ASCII: a solid heart (edges
+// shaded with " .:-=+*#") with the pulse line cut out of it. The line enters high on the left and
+// leaves low on the right, and outside the heart it goes on as streaks that thin out.
 const heart = [
-  "    _.-'''-._   _.-'''-._",
-  "  .'         '.'         '.",
-  ' /                         \\',
-  '|                           |',
-  '|         /\\                |',
-  '|________/  \\   /___________|',
-  ' \\           \\ /           /',
-  '  \\           V           /',
-  "   '.                   .'",
-  "     '.               .'",
-  "       '.           .'",
-  "         '.       .'",
-  "           '.   .'",
-  "             '.'",
+  '                  .-=====-.       .-=====-.',
+  '                :*#########*-   -*#########*:',
+  '               =#########   #+.+#############=',
+  '              :#########  #  #*###############:',
+  '. - --- ----==           ##  #################:',
+  '               +############  ###############+',
+  '               .=###########   #############=.',
+  '                 .=##########  ###########=.',
+  '                   .=########   #         ==---- --- - .',
+  '                     .-*######    ###*-.',
+  '                        .=####   ##=.',
+  '                          .=#####=.',
+  '                            .+#+.',
+  '                              -',
 ]
-const pulse = [
-  '',
-  '',
-  '',
-  '',
-  '          xx',
-  ' xxxxxxxxx  x   xxxxxxxxxxxx',
-  '             x x',
-  '              x',
-]
+/** Columns taken by the streaks: before the heart on the line's left row, after it on the right row. */
+const STREAKS: Record<number, (col: number) => boolean> = {
+  4: (col) => col < 14,
+  8: (col) => col >= 42,
+}
 
-/** Runs of characters with the same color, rows joined by newlines. */
+type Kind = 'heart' | 'streak-near' | 'streak' | 'streak-far'
+
+function kindOf(row: number, col: number, char: string): Kind {
+  if (!STREAKS[row]?.(col)) return 'heart'
+  return char === '=' ? 'streak-near' : char === '.' ? 'streak-far' : 'streak'
+}
+
+/** Runs of characters of the same kind, rows joined by newlines. */
 const logo = heart.flatMap((line, row) => {
-  const mask = pulse[row] ?? ''
-  const runs: { text: string; pulse: boolean }[] = []
+  const runs: { text: string; kind: Kind }[] = []
   for (let col = 0; col < line.length; col++) {
-    const isPulse = mask[col] === 'x'
+    const char = line[col] ?? ' '
+    const kind = char === ' ' ? (runs.at(-1)?.kind ?? 'heart') : kindOf(row, col, char)
     const last = runs.at(-1)
-    if (last && last.pulse === isPulse) last.text += line[col]
-    else runs.push({ text: line[col] ?? '', pulse: isPulse })
+    if (last && last.kind === kind) last.text += char
+    else runs.push({ text: char, kind })
   }
-  if (row < heart.length - 1) runs.push({ text: '\n', pulse: false })
+  if (row < heart.length - 1) runs.push({ text: '\n', kind: 'heart' })
   return runs
 })
 </script>
 
 <template>
   <div class="login">
-    <pre class="logo glow" role="img" aria-label="IronHeart"><span v-for="(run, i) in logo" :key="i" :class="{ pulse: run.pulse }">{{ run.text }}</span></pre>
+    <div class="logo-wrap">
+      <pre class="logo" role="img" aria-label="IronHeart"><span v-for="(run, i) in logo" :key="i" :class="run.kind">{{ run.text }}</span></pre>
+    </div>
     <p class="dim">signed heartbeats · an alert when an app goes quiet</p>
     <AsciiBox class="login-box" title="sign in" right="google">
       <div class="form">
@@ -87,30 +92,46 @@ const logo = heart.flatMap((line, row) => {
   gap: var(--lh);
   padding-block: calc(var(--lh) * 2) 0;
 }
+/* On narrow screens the drawing stays centered on the heart and loses the tips of the streaks. */
+.logo-wrap {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  overflow: hidden;
+}
 .logo {
+  flex: none;
   white-space: pre;
+}
+/* The heart glows twice, like a heartbeat. */
+.heart {
+  color: var(--accent);
+  animation: heartbeat 1.4s ease-out infinite;
+}
+.streak-near {
+  color: var(--hi);
+}
+.streak {
   color: var(--accent);
 }
-/* The pulse line flashes twice, like a heartbeat. */
-.pulse {
-  color: var(--hi);
-  animation: heartbeat 1.4s ease-out infinite;
+.streak-far {
+  color: var(--dim);
 }
 @keyframes heartbeat {
   0%,
   30%,
   100% {
-    text-shadow: 0 0 6px rgb(198 237 255 / 35%);
+    text-shadow: 0 0 6px rgb(120 197 238 / 30%);
   }
   8%,
   38% {
     text-shadow:
-      0 0 4px var(--hi),
-      0 0 14px var(--accent);
+      0 0 4px rgb(198 237 255 / 60%),
+      0 0 16px var(--accent);
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .pulse {
+  .heart {
     animation: none;
   }
 }
