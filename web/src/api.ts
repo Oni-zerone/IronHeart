@@ -11,6 +11,15 @@ export interface User {
   is_master: boolean
   /** Master only: the database the instance runs on. */
   database?: DatabaseInfo
+  /** Master only, with Brevo: last check of the API key (startup, then weekly). */
+  mail_key?: MailKeyStatus
+}
+
+export interface MailKeyStatus {
+  state: 'ok' | 'rejected' | 'unreachable'
+  /** Unix milliseconds. */
+  checked_at: number
+  error?: string
 }
 
 export interface DatabaseInfo {
