@@ -11,7 +11,7 @@ export interface User {
   is_master: boolean
   /** Master only: the database the instance runs on. */
   database?: DatabaseInfo
-  /** Master only, when the email transport has a key: last check (startup, then daily). */
+  /** Master only, when the email transport has a key: last check (startup, then weekly). */
   mail_key?: MailKeyStatus
 }
 

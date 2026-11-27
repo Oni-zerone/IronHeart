@@ -51,7 +51,7 @@ pub struct AppState {
     entanglement: Arc<entanglement::Sender>,
     /// Database in use, shown to the master.
     database: Arc<db::DatabaseInfo>,
-    /// Outcome of the daily check of the email key, shown to the master.
+    /// Outcome of the weekly check of the email key, shown to the master.
     mail_key: Arc<mail_check::KeyMonitor>,
 }
 
