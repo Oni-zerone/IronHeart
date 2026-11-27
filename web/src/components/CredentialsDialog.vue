@@ -1,75 +1,53 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { mdiContentCopy } from '@mdi/js'
 
 import type { Credentials } from '@/api'
-import { notify } from '@/session'
-import { shellSnippet } from '@/snippet'
+import { copy } from '@/session'
+import { highlightSnippet, shellSnippet } from '@/snippet'
+import AsciiDialog from './AsciiDialog.vue'
 
-const props = defineProps<{ credentials: Credentials | null; appName: string }>()
+const props = defineProps<{ credentials: Credentials; appName: string }>()
 const emit = defineEmits<{ close: [] }>()
 
 const saved = ref(false)
-const snippet = computed(() =>
-  props.credentials
-    ? shellSnippet(window.location.origin, props.credentials.key_id, props.credentials.secret)
-    : '',
-)
-
-async function copy(text: string) {
-  await navigator.clipboard.writeText(text)
-  notify('Copied to clipboard.')
-}
-
-function close() {
-  saved.value = false
-  emit('close')
-}
+const snippet = computed(() => shellSnippet(window.location.origin, props.credentials.key_id, props.credentials.secret))
 </script>
 
 <template>
-  <v-dialog :model-value="credentials !== null" max-width="720" persistent>
-    <v-card v-if="credentials" :title="`Key for “${appName}”`">
-      <v-card-text class="d-flex flex-column ga-4">
-        <v-alert type="warning" variant="tonal">
-          The secret is shown only now: save it in the application's configuration. If you
-          lose it, you will have to generate a new key.
-        </v-alert>
-        <v-text-field :model-value="credentials.key_id" label="Key ID" readonly>
-          <template #append-inner>
-            <v-btn :icon="mdiContentCopy" variant="text" size="small" @click="copy(credentials.key_id)" />
-          </template>
-        </v-text-field>
-        <v-text-field :model-value="credentials.secret" label="Secret" readonly class="font-mono">
-          <template #append-inner>
-            <v-btn :icon="mdiContentCopy" variant="text" size="small" @click="copy(credentials.secret)" />
-          </template>
-        </v-text-field>
-        <div>
-          <div class="d-flex align-center justify-space-between mb-1">
-            <span class="text-subtitle-2">Cron example</span>
-            <v-btn :prepend-icon="mdiContentCopy" variant="text" size="small" @click="copy(snippet)">
-              Copy
-            </v-btn>
-          </div>
-          <pre class="snippet">{{ snippet }}</pre>
+  <AsciiDialog :title="`key for ${appName}`" :width="88" persistent>
+    <div class="form">
+      <div class="notice">
+        <span class="hi">[!]</span>
+        <p>
+          The secret is shown only now: save it in the application's configuration. If you lose it, you
+          will have to generate a new key.
+        </p>
+      </div>
+      <dl class="kv">
+        <dt>key id</dt>
+        <dd>
+          <span class="acc">{{ credentials.key_id }}</span> <button class="link-btn" type="button" @click="copy(credentials.key_id)">[copy]</button>
+        </dd>
+        <dt>secret</dt>
+        <dd>
+          <span class="hi">{{ credentials.secret }}</span> <button class="link-btn" type="button" @click="copy(credentials.secret)">[copy]</button>
+        </dd>
+      </dl>
+      <div class="field">
+        <div class="row">
+          <span class="field-label grow">example for a cron job</span>
+          <button class="link-btn" type="button" @click="copy(snippet)">[copy]</button>
         </div>
-        <v-checkbox v-model="saved" label="I have saved the secret" hide-details />
-      </v-card-text>
-      <v-card-actions>
-        <v-spacer />
-        <v-btn :disabled="!saved" color="primary" variant="flat" @click="close">Close</v-btn>
-      </v-card-actions>
-    </v-card>
-  </v-dialog>
+        <!-- eslint-disable-next-line vue/no-v-html -- escaped in highlightSnippet -->
+        <pre class="code" v-html="highlightSnippet(snippet)"></pre>
+      </div>
+      <div class="actions">
+        <button class="check" type="button" :aria-pressed="saved" @click="saved = !saved">
+          <span class="mark">[{{ saved ? 'x' : ' ' }}]</span> I have saved the secret
+        </button>
+        <span class="grow" />
+        <button class="btn" type="button" :disabled="!saved" @click="(saved = false), emit('close')">close</button>
+      </div>
+    </div>
+  </AsciiDialog>
 </template>
-
-<style scoped>
-.snippet {
-  font-size: 0.8rem;
-  overflow-x: auto;
-  padding: 12px;
-  border-radius: 4px;
-  background: rgba(var(--v-theme-on-surface), 0.06);
-}
-</style>

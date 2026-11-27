@@ -1,0 +1,432 @@
+/*
+ * One character grid: horizontal sizes in ch, vertical sizes in lines of --lh.
+ * Every block must be a whole number of lines tall, otherwise the side borders
+ * drawn by AsciiBox stop lining up with the text.
+ * Hierarchy comes only from color, uppercase and inverse video (one font size).
+ */
+:root {
+  --bg: #000000;
+  --fg: #a6b0b8; /* text: grey with a blue bias */
+  --dim: #5b666e; /* borders, comments, secondary data */
+  --faint: #1f272c; /* empty bar cells, overlay texture, dialog shadow */
+  --accent: #78c5ee; /* light blue: titles, actions, live state */
+  --hi: #c6edff; /* bright light blue: alarms and emphasis */
+  --field: #0b1317; /* input background */
+  --hover: #0f2530; /* row hover, focused input */
+  --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+  --fs: 14px;
+  --lh: 20px;
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  font: 400 var(--fs) / var(--lh) var(--mono);
+  font-variant-numeric: tabular-nums;
+  /* JetBrains Mono would turn "==", "---", "<-" into ligatures and break the ASCII drawings. */
+  font-variant-ligatures: none;
+  font-feature-settings:
+    'liga' 0,
+    'calt' 0;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 calc(var(--lh) * 3);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+p,
+pre,
+ol,
+ul,
+dl,
+dd,
+form {
+  margin: 0;
+  font: inherit;
+}
+
+ol,
+ul {
+  padding: 0;
+  list-style: none;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+  line-height: var(--lh);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+strong {
+  font-weight: inherit;
+  color: var(--hi);
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* ---------- utilities ---------- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.dim {
+  color: var(--dim);
+}
+.acc {
+  color: var(--accent);
+}
+.hi {
+  color: var(--hi);
+}
+.glow {
+  text-shadow: 0 0 8px rgb(120 197 238 / 45%);
+}
+.grow {
+  flex: 1 1 auto;
+}
+.pre {
+  white-space: pre;
+}
+.nowrap {
+  white-space: nowrap;
+}
+.blink {
+  animation: blink 1s steps(1) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+@media (max-width: 600px) {
+  .hide-sm {
+    display: none;
+  }
+}
+
+/* ---------- layout ---------- */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lh);
+}
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 2ch;
+}
+.page-head h1 {
+  color: var(--accent);
+  text-transform: uppercase;
+  margin-right: auto;
+  overflow-wrap: anywhere;
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 2ch;
+  align-items: baseline;
+  min-width: 0;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 2ch;
+  align-items: baseline;
+}
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lh);
+  min-width: 0;
+}
+.notice {
+  display: flex;
+  gap: 1ch;
+}
+.notice > :first-child {
+  flex: none;
+}
+.notice p {
+  min-width: 0;
+}
+.scroll-x {
+  overflow-x: auto;
+  min-width: 0;
+}
+
+/* Label/value pairs. */
+.kv {
+  display: grid;
+  grid-template-columns: 15ch minmax(0, 1fr);
+  gap: 0 1ch;
+}
+.kv dt {
+  color: var(--dim);
+}
+.kv dd {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 480px) {
+  .kv {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .kv dd {
+    padding-left: 2ch;
+  }
+}
+
+/* Character tables: one grid, columns separated by 2ch, a dashed rule under the header. */
+.tbl {
+  display: grid;
+  gap: 0 2ch;
+  white-space: pre;
+  min-width: max-content;
+}
+.tbl .th {
+  color: var(--dim);
+  text-transform: uppercase;
+}
+.tbl .num {
+  text-align: right;
+}
+.tbl .rule {
+  grid-column: 1 / -1;
+  color: var(--faint);
+  overflow: hidden;
+  width: 0;
+  min-width: 100%;
+}
+
+/* Shell snippet. */
+.code {
+  white-space: pre;
+  overflow-x: auto;
+  background: var(--field);
+  padding: var(--lh) 2ch;
+}
+
+.code .sh-comment {
+  color: var(--dim);
+}
+.code .sh-key {
+  color: var(--accent);
+}
+
+/* ---------- controls ---------- */
+.btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--accent);
+}
+.btn::before {
+  content: '[ ';
+  color: var(--dim);
+}
+.btn::after {
+  content: ' ]';
+  color: var(--dim);
+}
+.btn:hover,
+.btn:focus-visible {
+  background: var(--accent);
+  color: var(--bg);
+  outline: none;
+}
+.btn:hover::before,
+.btn:hover::after,
+.btn:focus-visible::before,
+.btn:focus-visible::after {
+  color: var(--bg);
+}
+.btn.plain {
+  color: var(--fg);
+}
+.btn.danger {
+  color: var(--hi);
+}
+.btn.danger:hover,
+.btn.danger:focus-visible {
+  background: var(--hi);
+  color: var(--bg);
+}
+.btn:disabled {
+  color: var(--faint);
+  background: none;
+  cursor: not-allowed;
+}
+.btn:disabled::before,
+.btn:disabled::after {
+  color: var(--faint);
+}
+/* Keyboard shortcut letter. */
+.btn kbd {
+  font: inherit;
+  color: var(--hi);
+}
+.btn:hover kbd,
+.btn:focus-visible kbd {
+  color: var(--bg);
+  text-decoration: underline;
+}
+
+/* Small textual action: [copy], [remove]. */
+.link-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.link-btn:hover,
+.link-btn:focus-visible {
+  color: var(--bg);
+  background: var(--accent);
+  outline: none;
+}
+.link-btn.danger:hover,
+.link-btn.danger:focus-visible {
+  background: var(--hi);
+}
+.link-btn:disabled {
+  color: var(--faint);
+  background: none;
+  cursor: not-allowed;
+}
+
+.input {
+  height: var(--lh);
+  border: 0;
+  border-radius: 0;
+  padding: 0 1ch;
+  background: var(--field);
+  color: var(--fg);
+  caret-color: var(--accent);
+  min-width: 0;
+}
+.input:focus {
+  outline: none;
+  background: var(--hover);
+  color: var(--hi);
+}
+.input::placeholder {
+  color: var(--dim);
+}
+input[type='number'].input {
+  appearance: textfield;
+}
+input[type='number'].input::-webkit-inner-spin-button,
+input[type='number'].input::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+.select {
+  position: relative;
+  display: inline-flex;
+}
+.select::after {
+  content: 'v';
+  position: absolute;
+  right: 1ch;
+  color: var(--accent);
+  pointer-events: none;
+}
+.select select {
+  height: var(--lh);
+  border: 0;
+  border-radius: 0;
+  padding: 0 3ch 0 1ch;
+  background: var(--field);
+  color: var(--fg);
+  appearance: none;
+  cursor: pointer;
+}
+.select select:focus {
+  outline: none;
+  background: var(--hover);
+  color: var(--hi);
+}
+.select select:disabled {
+  color: var(--dim);
+  cursor: not-allowed;
+}
+
+.check {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--fg);
+  text-align: left;
+}
+.check .mark {
+  color: var(--accent);
+}
+.check:hover,
+.check:focus-visible {
+  color: var(--hi);
+  outline: none;
+}
+
+/* Form fields: "> label", "# help", control. */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lh);
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.field-label::before {
+  content: '> ';
+  color: var(--accent);
+}
+.help {
+  color: var(--dim);
+}
+.help::before {
+  content: '# ';
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .blink {
+    animation: none;
+  }
+}

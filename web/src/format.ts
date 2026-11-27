@@ -1,17 +1,18 @@
 import type { AppState, Role } from './api'
 
 export const STATE_LABEL: Record<AppState, string> = {
-  new: 'Waiting',
-  up: 'Up',
-  down: 'Down',
-  paused: 'Paused',
+  new: 'waiting',
+  up: 'up',
+  down: 'not responding',
+  paused: 'paused',
 }
 
-export const STATE_COLOR: Record<AppState, string> = {
-  new: 'grey',
-  up: 'success',
-  down: 'error',
-  paused: 'warning',
+/** Glyph in front of the state: a heart while the app beats. */
+export const STATE_GLYPH: Record<AppState, string> = {
+  new: '..',
+  up: '<3',
+  down: '</3',
+  paused: '||',
 }
 
 export const UNITS = [
@@ -52,15 +53,38 @@ export function formatRelative(ms: number | null, now = Date.now()): string {
   return relative.format(Math.round(diff / 86400), 'day')
 }
 
-const dateTime = new Intl.DateTimeFormat('en', { dateStyle: 'short', timeStyle: 'short' })
+/** Elapsed time without direction: "23 minutes". */
+export function formatElapsed(ms: number, now = Date.now()): string {
+  const secs = Math.max(0, Math.round((now - ms) / 1000))
+  const [amount, one, many] =
+    secs < 60
+      ? [secs, 'second', 'seconds']
+      : secs < 3600
+        ? [Math.round(secs / 60), 'minute', 'minutes']
+        : secs < 86400
+          ? [Math.round(secs / 3600), 'hour', 'hours']
+          : [Math.round(secs / 86400), 'day', 'days']
+  return `${amount} ${amount === 1 ? one : many}`
+}
 
+const pad = (n: number) => String(n).padStart(2, '0')
+
+/** Local date and time, "2026-11-27 10:54". */
 export function formatDateTime(ms: number | null): string {
-  return ms === null ? '—' : dateTime.format(ms)
+  if (ms === null) return '-'
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+export function formatTime(ms: number | null): string {
+  if (ms === null) return '-'
+  const d = new Date(ms)
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 export const ROLE_OPTIONS: { title: string; value: Role }[] = [
-  { title: 'User', value: 'user' },
-  { title: 'Administrator', value: 'admin' },
+  { title: 'user', value: 'user' },
+  { title: 'admin', value: 'admin' },
 ]
 
-export const ROLE_LABEL: Record<Role, string> = { user: 'User', admin: 'Administrator' }
+export const ROLE_LABEL: Record<Role, string> = { user: 'user', admin: 'admin' }

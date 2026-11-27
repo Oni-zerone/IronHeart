@@ -1,6 +1,8 @@
 import { createApp } from 'vue'
+import '@fontsource/jetbrains-mono/latin-400.css'
+
 import App from './App.vue'
 import router from './router'
-import vuetify from './plugins/vuetify'
+import './styles.css'
 
-createApp(App).use(router).use(vuetify).mount('#app')
+createApp(App).use(router).mount('#app')

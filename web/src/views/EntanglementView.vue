@@ -1,13 +1,5 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { useDisplay } from 'vuetify'
-import {
-  mdiContentCopy,
-  mdiDeleteOutline,
-  mdiPencilOutline,
-  mdiPlus,
-  mdiSend,
-} from '@mdi/js'
 
 import {
   createEntanglement,
@@ -18,11 +10,16 @@ import {
   type Entanglement,
   type EntanglementInput,
 } from '@/api'
+import AsciiBox from '@/components/AsciiBox.vue'
+import AsciiDialog from '@/components/AsciiDialog.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import DurationField from '@/components/DurationField.vue'
+import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { formatDateTime, formatDuration, formatRelative } from '@/format'
-import { errorText, notify } from '@/session'
+import { useNow } from '@/grid'
+import { copy, errorText, notify } from '@/session'
 
-const { smAndDown } = useDisplay()
+const now = useNow()
 const items = ref<Entanglement[] | null>(null)
 const instanceUrl = ref('')
 
@@ -33,6 +30,12 @@ const saving = ref(false)
 const formError = ref('')
 const toDelete = ref<Entanglement | null>(null)
 const pinging = ref<string | null>(null)
+
+const diagram = [
+  '  this instance ---ping---> other instance',
+  '        ^                          |',
+  '        +----------ping------------+',
+].join('\n')
 
 function emptyForm() {
   return { name: '', base_url: 'https://', interval_secs: 60, enabled: true, key_id: '', secret: '' }
@@ -73,7 +76,7 @@ async function save() {
   try {
     if (editing.value === 'new') {
       await createEntanglement({ ...rest, key_id, secret })
-      notify('Link created: the first ping is sent right away.')
+      notify('Link created: the first ping goes out now.')
     } else if (editing.value) {
       replace(await updateEntanglement(editing.value.id, replaceKey.value ? { ...rest, key_id, secret } : rest))
       notify('Link updated.')
@@ -100,7 +103,8 @@ async function pingNow(item: Entanglement) {
   try {
     const updated = await pingEntanglement(item.id)
     replace(updated)
-    notify(updated.last_error ? `Not delivered: ${updated.last_error}` : 'Ping delivered.', updated.last_error ? 'error' : 'success')
+    if (updated.last_error) notify(`Not delivered: ${updated.last_error}`, 'error')
+    else notify('Ping delivered.')
   } catch (err) {
     notify(errorText(err), 'error')
   } finally {
@@ -119,165 +123,187 @@ async function confirmDelete() {
   }
 }
 
-async function copy(text: string) {
-  await navigator.clipboard.writeText(text)
-  notify('Copied to clipboard.')
-}
-
-function status(item: Entanglement): { color: string; text: string } {
-  if (!item.enabled) return { color: 'warning', text: 'Paused' }
-  if (item.last_attempt_at === null) return { color: 'grey', text: 'Waiting' }
-  if (item.last_error) return { color: 'error', text: 'Not delivered' }
-  return { color: 'success', text: 'Delivered' }
+function status(item: Entanglement): { text: string; bad: boolean } {
+  if (!item.enabled) return { text: 'paused', bad: false }
+  if (item.last_attempt_at === null) return { text: 'waiting', bad: false }
+  if (item.last_error) return { text: 'not delivered', bad: true }
+  return { text: 'delivered', bad: false }
 }
 
 onMounted(load)
 </script>
 
 <template>
-  <v-container class="py-6" max-width="960">
-    <div class="d-flex align-center flex-wrap ga-2 mb-4">
-      <h1 class="text-h5 me-auto">Entanglement</h1>
-      <v-btn :prepend-icon="mdiPlus" color="primary" variant="flat" @click="openNew">
-        New link
-      </v-btn>
+  <div class="page">
+    <div class="page-head">
+      <h1>entanglement</h1>
+      <button class="btn" type="button" @click="openNew">new link</button>
     </div>
 
-    <v-card variant="tonal" class="mb-6">
-      <v-card-text class="help">
-        <p class="mb-2">
-          This instance sends a heartbeat to other IronHeart instances, so they watch each other:
-          if this one stops, the other one sends the alert.
+    <AsciiBox title="how it works">
+      <div class="form">
+        <p>
+          This instance sends a heartbeat to other IronHeart instances, so they watch each other: if this one
+          stops, the other one sends the alert.
         </p>
-        <ol class="ms-5 mb-2">
-          <li>On the other instance, create an application that represents this one, and copy its key ID and secret.</li>
-          <li>Here, create a link with the other instance's address, the key and an interval shorter than the application's (for example half of it).</li>
-          <li>For mutual monitoring, repeat the other way round with this instance's address.</li>
+        <pre class="dim scroll-x" aria-hidden="true">{{ diagram }}</pre>
+        <ol class="steps">
+          <li>
+            <span class="acc">1.</span>
+            <span>On the other instance, create an application that stands for this one, and copy key ID and secret.</span>
+          </li>
+          <li>
+            <span class="acc">2.</span>
+            <span>
+              Here, create a link with the other instance's address, the key and an interval shorter than the
+              application's (half, for example).
+            </span>
+          </li>
+          <li>
+            <span class="acc">3.</span>
+            <span>For mutual monitoring, repeat the other way round with this instance's address.</span>
+          </li>
         </ol>
-        <div class="d-flex align-center flex-wrap ga-1">
-          <span>This instance's address:</span>
-          <code>{{ instanceUrl }}</code>
-          <v-btn :icon="mdiContentCopy" variant="text" size="small" aria-label="Copy the address" @click="copy(instanceUrl)" />
+        <div class="row">
+          <span class="dim">this instance:</span>
+          <span class="acc url">{{ instanceUrl }}</span>
+          <button class="link-btn" type="button" aria-label="Copy the address" @click="copy(instanceUrl)">[copy]</button>
         </div>
-        <p class="text-medium-emphasis mt-2 mb-0">
-          The other instance always answers the same way: here you only see whether the ping was
-          delivered. If the key is wrong, the other instance reports it as invalid attempts.
+        <p class="help">
+          The other instance always answers the same way: here you only see whether the ping was delivered. If
+          the key is wrong, the other instance reports it with the invalid attempts.
         </p>
-      </v-card-text>
-    </v-card>
+      </div>
+    </AsciiBox>
 
-    <v-progress-linear v-if="!items" indeterminate />
-    <v-card v-else-if="items.length === 0" class="pa-6 text-center">No links.</v-card>
-    <div v-else class="d-flex flex-column ga-4">
-      <v-card v-for="item in items" :key="item.id">
-        <v-card-item>
-          <v-card-title class="title">{{ item.name }}</v-card-title>
-          <v-card-subtitle class="subtitle">{{ item.base_url }} · key ID {{ item.key_id }}</v-card-subtitle>
-          <template #append>
-            <v-chip :color="status(item).color" variant="flat" size="small">{{ status(item).text }}</v-chip>
-          </template>
-        </v-card-item>
-        <v-card-text>
-          <div>Ping every {{ formatDuration(item.interval_secs) }}</div>
-          <div>
-            Last delivery: {{ formatRelative(item.last_success_at) }}
-            <span v-if="item.last_success_at">({{ formatDateTime(item.last_success_at) }})</span>
+    <p v-if="!items" class="dim"><LoadingSpinner />loading</p>
+    <AsciiBox v-else-if="items.length === 0" title="links"><p>No links.</p></AsciiBox>
+    <div v-else class="list">
+      <AsciiBox v-for="item in items" :key="item.id" :title="item.name" :right="status(item).text" :hot="status(item).bad">
+        <div class="form">
+          <dl class="kv">
+            <dt>address</dt>
+            <dd>{{ item.base_url }}</dd>
+            <dt>key id</dt>
+            <dd class="acc">{{ item.key_id }}</dd>
+            <dt>ping</dt>
+            <dd>every {{ formatDuration(item.interval_secs) }}</dd>
+            <dt>delivered</dt>
+            <dd>
+              {{ formatRelative(item.last_success_at, now) }}
+              <span v-if="item.last_success_at" class="dim nowrap">· {{ formatDateTime(item.last_success_at) }}</span>
+            </dd>
+            <template v-if="item.last_error">
+              <dt>error</dt>
+              <dd class="hi">{{ formatRelative(item.last_attempt_at, now) }}: {{ item.last_error }}</dd>
+            </template>
+          </dl>
+          <div class="actions">
+            <button class="btn" type="button" :disabled="pinging === item.id" @click="pingNow(item)">
+              <LoadingSpinner v-if="pinging === item.id" />send now
+            </button>
+            <button class="btn plain" type="button" @click="toggle(item)">{{ item.enabled ? 'pause' : 'resume' }}</button>
+            <span class="grow" />
+            <button class="link-btn" type="button" @click="openEdit(item)">[edit]</button>
+            <button class="link-btn danger" type="button" @click="toDelete = item">[delete]</button>
           </div>
-          <div v-if="item.last_error" class="text-error">
-            Last attempt {{ formatRelative(item.last_attempt_at) }}: {{ item.last_error }}
-          </div>
-        </v-card-text>
-        <v-card-actions class="flex-wrap">
-          <v-btn :prepend-icon="mdiSend" :loading="pinging === item.id" @click="pingNow(item)">Send now</v-btn>
-          <v-btn variant="tonal" @click="toggle(item)">{{ item.enabled ? 'Pause' : 'Resume' }}</v-btn>
-          <v-spacer />
-          <v-btn :icon="mdiPencilOutline" aria-label="Edit" @click="openEdit(item)" />
-          <v-btn :icon="mdiDeleteOutline" aria-label="Delete" color="error" @click="toDelete = item" />
-        </v-card-actions>
-      </v-card>
+        </div>
+      </AsciiBox>
     </div>
 
-    <v-dialog :model-value="editing !== null" max-width="640" :fullscreen="smAndDown" scrollable @update:model-value="editing = null">
-      <v-card :title="editing === 'new' ? 'New link' : 'Edit link'">
-        <v-card-text class="pt-2">
-          <v-alert v-if="formError" type="error" variant="tonal" class="mb-4">{{ formError }}</v-alert>
-          <form class="d-flex flex-column ga-6" @submit.prevent="save">
-            <section>
-              <label class="form-title" for="ent-name">Name</label>
-              <v-text-field id="ent-name" v-model="form.name" maxlength="80" hide-details autofocus />
-            </section>
-            <section>
-              <label class="form-title" for="ent-url">Address of the other instance</label>
-              <p class="form-help">Only the address, without a path. HTTPS is required, HTTP only for localhost.</p>
-              <v-text-field id="ent-url" v-model="form.base_url" type="url" hide-details />
-            </section>
-            <section>
-              <div class="form-title">Key</div>
-              <p class="form-help">Key ID and secret of the application created on the other instance.</p>
-              <v-checkbox v-if="editing !== 'new'" v-model="replaceKey" label="Replace the key" hide-details class="mb-2" />
-              <div v-if="replaceKey" class="d-flex flex-column ga-3">
-                <v-text-field v-model="form.key_id" label="Key ID" hide-details />
-                <v-text-field v-model="form.secret" label="Secret" type="password" autocomplete="off" hide-details />
-              </div>
-            </section>
-            <section>
-              <div class="form-title">Ping interval</div>
-              <p class="form-help">
-                From 10 seconds to 1 day. Keep it shorter than the application's interval on the other
-                instance, so a single lost ping is not enough to trigger an alert.
-              </p>
-              <DurationField v-model="form.interval_secs" label="Ping interval" />
-            </section>
-            <v-switch v-model="form.enabled" label="Active" color="primary" hide-details />
-          </form>
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn @click="editing = null">Cancel</v-btn>
-          <v-btn :loading="saving" color="primary" variant="flat" @click="save">Save</v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
+    <AsciiDialog
+      v-if="editing"
+      :title="editing === 'new' ? 'new link' : 'edit link'"
+      :width="72"
+      @close="editing = null"
+    >
+      <form class="form" @submit.prevent="save">
+        <div v-if="formError" class="notice">
+          <span class="hi">!!</span>
+          <p>{{ formError }}</p>
+        </div>
+        <div class="field">
+          <label class="field-label" for="ent-name">name</label>
+          <input id="ent-name" v-model="form.name" class="input" maxlength="80" spellcheck="false" />
+        </div>
+        <div class="field">
+          <label class="field-label" for="ent-url">other instance address</label>
+          <p class="help">Address only, no path. HTTPS required, HTTP only towards localhost.</p>
+          <input id="ent-url" v-model="form.base_url" class="input" type="url" spellcheck="false" />
+        </div>
+        <div class="field">
+          <span class="field-label">key</span>
+          <p class="help">Key ID and secret of the application created on the other instance.</p>
+          <button
+            v-if="editing !== 'new'"
+            class="check"
+            type="button"
+            :aria-pressed="replaceKey"
+            @click="replaceKey = !replaceKey"
+          >
+            <span class="mark">[{{ replaceKey ? 'x' : ' ' }}]</span> replace the key
+          </button>
+          <template v-if="replaceKey">
+            <div class="row">
+              <label class="key-label dim" for="ent-key">key id</label>
+              <input id="ent-key" v-model="form.key_id" class="input grow" spellcheck="false" autocomplete="off" />
+            </div>
+            <div class="row">
+              <label class="key-label dim" for="ent-secret">secret</label>
+              <input id="ent-secret" v-model="form.secret" class="input grow" type="password" autocomplete="off" />
+            </div>
+          </template>
+        </div>
+        <div class="field">
+          <label class="field-label" for="ent-interval">ping interval</label>
+          <p class="help">
+            From 10 seconds to 1 day. Keep it shorter than the application's interval on the other instance, so
+            a single lost ping is not enough to trigger the alert.
+          </p>
+          <DurationField id="ent-interval" v-model="form.interval_secs" label="Ping interval" />
+        </div>
+        <button class="check" type="button" :aria-pressed="form.enabled" @click="form.enabled = !form.enabled">
+          <span class="mark">[{{ form.enabled ? 'x' : ' ' }}]</span> active
+        </button>
+        <div class="actions">
+          <span class="grow" />
+          <button class="btn plain" type="button" @click="editing = null">cancel</button>
+          <button class="btn" type="submit" :disabled="saving"><LoadingSpinner v-if="saving" />save</button>
+        </div>
+      </form>
+    </AsciiDialog>
 
-    <v-dialog :model-value="toDelete !== null" max-width="480" @update:model-value="toDelete = null">
-      <v-card v-if="toDelete" :title="`Delete “${toDelete.name}”?`">
-        <v-card-text>
-          This instance stops sending pings: if the application on the other instance is up,
-          it will soon be reported as down.
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn @click="toDelete = null">Cancel</v-btn>
-          <v-btn color="error" variant="flat" @click="confirmDelete">Delete</v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
-  </v-container>
+    <ConfirmDialog
+      v-if="toDelete"
+      :title="`delete ${toDelete.name}?`"
+      action="delete"
+      danger
+      @confirm="confirmDelete"
+      @cancel="toDelete = null"
+    >
+      This instance stops sending pings: if the application on the other instance is active, it will soon be
+      reported as stopped.
+    </ConfirmDialog>
+  </div>
 </template>
 
 <style scoped>
-.title,
-.subtitle {
-  white-space: normal;
+.steps li {
+  display: flex;
+  gap: 1ch;
+}
+.steps li > :first-child {
+  flex: none;
+}
+.url {
   overflow-wrap: anywhere;
 }
-
-.help {
-  hyphens: manual;
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lh);
 }
-
-.form-title {
-  display: block;
-  font-size: 1rem;
-  font-weight: 500;
-  margin-bottom: 4px;
-}
-
-.form-help {
-  font-size: 0.875rem;
-  opacity: var(--v-medium-emphasis-opacity);
-  margin-bottom: 8px;
-  hyphens: manual;
-  overflow-wrap: break-word;
+.key-label {
+  width: 8ch;
 }
 </style>

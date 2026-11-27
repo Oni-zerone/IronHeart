@@ -11,7 +11,15 @@ Lightweight heartbeat service. Users sign in with Google and register their appl
 ## Stack
 
 - `server/`: Rust, Axum, sqlx with the `Any` driver: external Postgres if `DATABASE_URL` is `postgres://…`, otherwise local SQLite (WAL, `journal_size_limit` 16 MB). openidconnect, sessions in the database, email through Brevo (HTTP API) in production and SMTP to Mailpit locally. The dashboard (`web/dist`) is embedded with rust-embed (`server/src/web.rs`: in release it is compiled in, in debug it is read from disk; without a build the temporary page is served). Later: OpenAPI with utoipa.
-- `web/`: Vue 3, TypeScript, Vite, Vue Router, Vuetify 4 with `@mdi/js` icons (SVG). Node is only for development and builds: in production the dashboard is a set of static files served by the Rust binary. PrimeVue was rejected because since version 5 it is no longer MIT (commercial license with a key).
+- `web/`: Vue 3, TypeScript, Vite, Vue Router, no component library (Vuetify was removed in 0.2.0). Node is only for development and builds: in production the dashboard is a set of static files served by the Rust binary.
+
+## Interface (ASCII, English)
+
+- The interface is in English and drawn as text: black background, grey characters, light blue accents, one monospace font (JetBrains Mono, Latin subset, bundled with `@fontsource`) at a single size. Tokens and controls are in `web/src/styles.css`.
+- Everything sits on a character grid: widths in `ch`, heights in whole lines of `--lh`. A block that is not a whole number of lines tall breaks the side borders of `AsciiBox`.
+- Frames are `AsciiBox` (it computes its width in columns), dialogs are `AsciiDialog`/`ConfirmDialog`, app state is `StateTag` and `DeadlineBar`. Buttons are `.btn` (`[ label ]`), small actions `.link-btn` (`[copy]`), fields `.input`/`.select`, form labels `.field-label` and help `.help`.
+- Pure ASCII for drawings (`+ - | ^ >`), no Unicode box-drawing characters. Vue condenses whitespace in templates: where spaces matter (inside `white-space: pre`) keep the text on one line.
+- The version shown in the top bar comes from `web/package.json` (`__APP_VERSION__`); keep it equal to `server/Cargo.toml`.
 - Deployment: a single binary in a container on a DigitalOcean droplet with CapRover, a single instance, volume on `/data`. To avoid losing data at every deploy an external Postgres is used (`DATABASE_URL`, with `?sslmode=require` for managed databases). The image is built in GitHub Actions and published to GHCR, not on the droplet: `Dockerfile` (web → static musl binary built on Alpine → `scratch` image with only the binary, ~10 MB; non-root user 10001, `BIND_ADDR=0.0.0.0:8080`, SQLite in `/data`). No system libraries or CA files are needed: TLS is rustls with `webpki-roots`, so never add dependencies on OpenSSL or native certificates. On musl the allocator is mimalloc (`main.rs`; musl's own halves the heartbeat throughput), with `MIMALLOC_ARENA_EAGER_COMMIT=0` and `MIMALLOC_PURGE_DELAY=0` in the image to keep memory at ~3 MiB. The image has no shell: debug with the logs, not `docker exec` and `.github/workflows/docker.yml` (tests, then amd64 and arm64 on native runners, multi-arch manifest). Tag `vX.Y.Z` → `X.Y.Z`, `X.Y`, `latest`; push on `main` → `edge`.
 
 ## Commands

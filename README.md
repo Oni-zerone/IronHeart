@@ -2,7 +2,7 @@
 
 Lightweight heartbeat service. Every registered application sends a signed ping at regular intervals: if the ping does not arrive within the expected interval, IronHeart emails the application's recipients.
 
-- Rust backend (Axum; external Postgres or local SQLite), Vue 3 dashboard with Vuetify.
+- Rust backend (Axum; external Postgres or local SQLite), Vue 3 dashboard with an ASCII interface (no component library).
 - Google sign-in, invitation only; the master user is `ADMIN_EMAIL`.
 - Pings signed with HMAC-SHA256 and an ever-increasing timestamp: the secret never travels and an intercepted request cannot be reused.
 - The service always answers `204`, whatever the outcome: whoever tries to forge a ping cannot tell whether it worked. Invalid attempts are counted and summarized by email.

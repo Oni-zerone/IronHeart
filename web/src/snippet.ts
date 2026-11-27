@@ -12,3 +12,13 @@ curl -fsS -X POST ${origin}/api/v1/heartbeat \\
   -H "X-IronHeart-Timestamp: $TS" \\
   -H "X-IronHeart-Signature: v1=$SIG"`
 }
+
+const escapeHtml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+/** The same script as HTML, with variables and headers highlighted. The text is escaped first. */
+export function highlightSnippet(script: string): string {
+  return escapeHtml(script)
+    .replace(/^(#!.*)$/m, '<span class="sh-comment">$1</span>')
+    .replace(/\b(KEY_ID|SECRET|TS|BODY_HASH|SIG)=/g, '<span class="sh-key">$1</span>=')
+    .replace(/(X-IronHeart-[A-Za-z]+)/g, '<span class="sh-key">$1</span>')
+}

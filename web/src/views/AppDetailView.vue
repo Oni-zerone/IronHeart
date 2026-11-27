@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { mdiArrowLeft, mdiContentCopy, mdiDeleteOutline, mdiKeyChange } from '@mdi/js'
 
 import {
   deleteApp,
@@ -11,15 +10,25 @@ import {
   type AppDetail,
   type AppInput,
   type Credentials,
+  type FailureBucket,
 } from '@/api'
 import AppForm from '@/components/AppForm.vue'
+import AsciiBox from '@/components/AsciiBox.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import CredentialsDialog from '@/components/CredentialsDialog.vue'
-import { STATE_COLOR, STATE_LABEL, formatDateTime, formatDuration, formatRelative } from '@/format'
-import { currentUser, errorText, notify } from '@/session'
-import { shellSnippet } from '@/snippet'
+import DeadlineBar from '@/components/DeadlineBar.vue'
+import LoadingSpinner from '@/components/LoadingSpinner.vue'
+import StateTag from '@/components/StateTag.vue'
+import { formatDateTime, formatDuration, formatElapsed, formatRelative, formatTime } from '@/format'
+import { useNow, usePolling } from '@/grid'
+import { copy, currentUser, errorText, notify } from '@/session'
+import { highlightSnippet, shellSnippet } from '@/snippet'
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
+const now = useNow()
+
+const HOUR = 3_600_000
 
 const app = ref<AppDetail | null>(null)
 const form = ref<AppInput | null>(null)
@@ -34,13 +43,37 @@ const recipientsText = computed(() =>
   app.value?.recipients.length ? app.value.recipients.join(', ') : `${currentUser.value?.email} (account)`,
 )
 
-function setApp(detail: AppDetail) {
+/** Invalid attempts per hour over the last 24 hours, oldest first. */
+const hourly = computed(() => {
+  const hours = Array.from({ length: 24 }, () => 0)
+  for (const b of app.value?.failures ?? []) {
+    const index = 23 - Math.floor((now.value - b.period_start) / HOUR)
+    if (index >= 0 && index < 24) hours[index] = (hours[index] ?? 0) + b.bad_signature + b.replay + b.clock_skew
+  }
+  return hours
+})
+const hourlyMax = computed(() => Math.max(1, ...hourly.value))
+/** Two characters per hour, density from the ramp " .:-=+*#%@"; "_" is an hour without attempts. */
+const spark = computed(() => {
+  const ramp = ' .:-=+*#%@'
+  return hourly.value
+    .map((n) => {
+      const c = n ? ramp[Math.max(1, Math.round((n / hourlyMax.value) * (ramp.length - 1)))] : '_'
+      return `${c}${c}`
+    })
+    .join('')
+})
+const sparkAxis = `-24h${' '.repeat(18)}-12h${' '.repeat(19)}now`
+
+function setApp(detail: AppDetail, resetForm = true) {
   app.value = detail
-  form.value = {
-    name: detail.name,
-    interval_secs: detail.interval_secs,
-    grace_secs: detail.grace_secs,
-    recipients: [...detail.recipients],
+  if (resetForm) {
+    form.value = {
+      name: detail.name,
+      interval_secs: detail.interval_secs,
+      grace_secs: detail.grace_secs,
+      recipients: [...detail.recipients],
+    }
   }
 }
 
@@ -50,6 +83,16 @@ async function load() {
   } catch (err) {
     notify(errorText(err), 'error')
     router.replace({ name: 'apps' })
+  }
+}
+
+// Fresh state and attempts, without touching the settings being edited.
+async function refresh() {
+  if (!app.value) return
+  try {
+    setApp(await getApp(props.id), false)
+  } catch {
+    // the next round will try again
   }
 }
 
@@ -69,8 +112,10 @@ async function save() {
 
 async function togglePause() {
   if (!app.value) return
+  const pausing = app.value.state !== 'paused'
   try {
-    setApp(await updateApp(props.id, { paused: app.value.state !== 'paused' }))
+    setApp(await updateApp(props.id, { paused: pausing }), false)
+    notify(pausing ? 'Monitoring paused.' : 'Monitoring resumed: waiting for a full interval.')
   } catch (err) {
     notify(errorText(err), 'error')
   }
@@ -81,7 +126,7 @@ async function confirmAction() {
   try {
     if (confirm.value === 'rotate') {
       const result = await rotateKey(props.id)
-      setApp(result.app)
+      setApp(result.app, false)
       credentials.value = result.credentials
     } else if (confirm.value === 'delete') {
       await deleteApp(props.id)
@@ -96,150 +141,191 @@ async function confirmAction() {
   }
 }
 
-async function copy(text: string) {
-  await navigator.clipboard.writeText(text)
-  notify('Copied to clipboard.')
-}
-
-function ipsText(ips: Record<string, number>, others: number): string {
-  const list = Object.entries(ips)
+function ipsText(bucket: FailureBucket): string {
+  const list = Object.entries(bucket.ips)
     .sort((a, b) => b[1] - a[1])
     .map(([ip, n]) => `${ip} (${n})`)
-  if (others > 0) list.push(`${others} others`)
+  if (bucket.other_ips > 0) list.push(`${bucket.other_ips} more`)
   return list.join(', ')
 }
 
 onMounted(load)
+usePolling(refresh, 15_000)
 </script>
 
 <template>
-  <v-container class="py-6" max-width="960">
-    <v-btn :prepend-icon="mdiArrowLeft" :to="{ name: 'apps' }" variant="text" class="mb-2">
-      Applications
-    </v-btn>
-    <v-progress-linear v-if="!app || !form" indeterminate />
+  <div class="page">
+    <RouterLink class="back" :to="{ name: 'apps' }">&lt;- applications</RouterLink>
+    <p v-if="!app || !form" class="dim"><LoadingSpinner />loading</p>
     <template v-else>
-      <div class="d-flex align-center flex-wrap ga-2 mb-4">
-        <h1 class="text-h5 me-auto">{{ app.name }}</h1>
-        <v-chip :color="STATE_COLOR[app.state]" variant="flat">{{ STATE_LABEL[app.state] }}</v-chip>
+      <div class="page-head">
+        <h1>{{ app.name }}</h1>
+        <StateTag :state="app.state" />
       </div>
 
-      <v-row>
-        <v-col cols="12" md="5">
-          <v-card title="Status">
-            <v-list density="compact">
-              <v-list-item title="Last signal" :subtitle="`${formatRelative(app.last_seen_at)} · ${formatDateTime(app.last_seen_at)}`" />
-              <v-list-item
-                v-if="app.state === 'up'"
-                title="Deadline"
-                :subtitle="`${formatRelative(app.next_deadline_at)} · ${formatDateTime(app.next_deadline_at)}`"
-              />
-              <v-list-item
-                v-if="app.state === 'down'"
-                title="Down since"
-                :subtitle="formatDateTime(app.down_since)"
-              />
-              <v-list-item title="Check" :subtitle="`Every ${formatDuration(app.interval_secs)}, grace period ${formatDuration(app.grace_secs)}`" />
-              <v-list-item title="Alerts to" :subtitle="recipientsText" />
-              <v-list-item title="Key ID" :subtitle="app.key_id">
-                <template #append>
-                  <v-btn :icon="mdiContentCopy" variant="text" size="small" @click="copy(app.key_id)" />
-                </template>
-              </v-list-item>
-            </v-list>
-            <v-card-actions class="flex-wrap">
-              <v-btn variant="tonal" @click="togglePause">
-                {{ app.state === 'paused' ? 'Resume monitoring' : 'Pause' }}
-              </v-btn>
-              <v-btn :prepend-icon="mdiKeyChange" @click="confirm = 'rotate'">New key</v-btn>
-            </v-card-actions>
-          </v-card>
-        </v-col>
+      <div v-if="app.state === 'down'" class="notice">
+        <span class="hi blink">!!</span>
+        <p class="hi">
+          No valid heartbeat for
+          {{ app.last_seen_at === null ? 'a while' : formatElapsed(app.last_seen_at, now) }}. Alert sent to
+          {{ recipientsText }} at {{ formatTime(app.down_since) }}.
+        </p>
+      </div>
 
-        <v-col cols="12" md="7">
-          <v-card title="Settings">
-            <v-card-text>
-              <v-alert v-if="saveError" type="error" variant="tonal" class="mb-4">{{ saveError }}</v-alert>
-              <AppForm v-model="form" />
-            </v-card-text>
-            <v-card-actions>
-              <v-btn :prepend-icon="mdiDeleteOutline" color="error" @click="confirm = 'delete'">Delete</v-btn>
-              <v-spacer />
-              <v-btn :loading="saving" color="primary" variant="flat" @click="save">Save</v-btn>
-            </v-card-actions>
-          </v-card>
-        </v-col>
+      <div class="columns">
+        <AsciiBox title="status" :hot="app.state === 'down'">
+          <div class="form">
+            <dl class="kv">
+              <dt>last heartbeat</dt>
+              <dd>
+                {{ formatRelative(app.last_seen_at, now) }}
+                <span v-if="app.last_seen_at" class="dim nowrap">· {{ formatDateTime(app.last_seen_at) }}</span>
+              </dd>
+              <template v-if="app.state === 'up'">
+                <dt>deadline</dt>
+                <dd>
+                  {{ formatRelative(app.next_deadline_at, now) }}
+                  <span class="dim nowrap">· {{ formatDateTime(app.next_deadline_at) }}</span>
+                </dd>
+              </template>
+              <template v-if="app.state === 'down'">
+                <dt>down since</dt>
+                <dd class="hi nowrap">{{ formatDateTime(app.down_since) }}</dd>
+              </template>
+              <dt>check</dt>
+              <dd>every {{ formatDuration(app.interval_secs) }}, tolerance {{ formatDuration(app.grace_secs) }}</dd>
+              <dt>alerts to</dt>
+              <dd>{{ recipientsText }}</dd>
+              <dt>key id</dt>
+              <dd>
+                <span class="acc">{{ app.key_id }}</span> <button class="link-btn" type="button" @click="copy(app.key_id)">[copy]</button>
+              </dd>
+            </dl>
+            <div class="scroll-x"><DeadlineBar :app="app" :now="now" :width="30" /></div>
+            <div class="actions">
+              <button class="btn plain" type="button" @click="togglePause">
+                {{ app.state === 'paused' ? 'resume monitoring' : 'pause' }}
+              </button>
+              <button class="btn plain" type="button" @click="confirm = 'rotate'">new key</button>
+            </div>
+          </div>
+        </AsciiBox>
 
-        <v-col cols="12">
-          <v-card title="Invalid attempts" subtitle="Last 24 hours">
-            <v-card-text v-if="app.failures.length === 0">No invalid attempts.</v-card-text>
-            <v-table v-else density="compact">
-              <thead>
-                <tr>
-                  <th>Period</th>
-                  <th class="text-end">Bad signature</th>
-                  <th class="text-end">Replayed</th>
-                  <th class="text-end">Clock skew</th>
-                  <th>Source</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="bucket in app.failures" :key="bucket.flushed_at">
-                  <td>{{ formatDateTime(bucket.period_start) }}</td>
-                  <td class="text-end">{{ bucket.bad_signature }}</td>
-                  <td class="text-end">{{ bucket.replay }}</td>
-                  <td class="text-end">{{ bucket.clock_skew }}</td>
-                  <td>{{ ipsText(bucket.ips, bucket.other_ips) }}</td>
-                </tr>
-              </tbody>
-            </v-table>
-          </v-card>
-        </v-col>
+        <AsciiBox title="settings">
+          <form class="form" @submit.prevent="save">
+            <div v-if="saveError" class="notice">
+              <span class="hi">!!</span>
+              <p>{{ saveError }}</p>
+            </div>
+            <AppForm v-model="form" />
+            <div class="actions">
+              <button class="btn danger" type="button" @click="confirm = 'delete'">delete</button>
+              <span class="grow" />
+              <button class="btn" type="submit" :disabled="saving"><LoadingSpinner v-if="saving" />save</button>
+            </div>
+          </form>
+        </AsciiBox>
+      </div>
 
-        <v-col cols="12">
-          <v-card title="Integration">
-            <v-card-text>
-              <p class="mb-2">
-                Every request is signed with HMAC-SHA256 and an ever-increasing timestamp; the secret is
-                never sent. The service always answers 204: to check that it works, look at the last
-                signal and the invalid attempts here.
-              </p>
-              <pre class="snippet">{{ snippet }}</pre>
-            </v-card-text>
-          </v-card>
-        </v-col>
-      </v-row>
+      <AsciiBox title="invalid attempts" right="last 24 hours">
+        <p v-if="app.failures.length === 0">No invalid attempts.</p>
+        <div v-else class="form">
+          <div class="scroll-x" aria-hidden="true">
+            <div class="pre"><span class="dim">|</span><span class="acc">{{ spark }}</span><span class="dim">|  max {{ hourlyMax }}/h</span></div>
+            <div class="pre dim">{{ sparkAxis }}</div>
+          </div>
+          <div class="scroll-x">
+            <div class="tbl failures" role="table" aria-label="Invalid attempts">
+              <span class="th" role="columnheader">period</span>
+              <span class="th num" role="columnheader">bad signature</span>
+              <span class="th num" role="columnheader">replayed</span>
+              <span class="th num" role="columnheader">clock</span>
+              <span class="th" role="columnheader">source</span>
+              <span class="rule" aria-hidden="true">{{ '-'.repeat(300) }}</span>
+              <template v-for="bucket in app.failures" :key="bucket.flushed_at">
+                <span role="cell">{{ formatDateTime(bucket.period_start) }}</span>
+                <span class="num" :class="{ hi: bucket.bad_signature }" role="cell">{{ bucket.bad_signature }}</span>
+                <span class="num" :class="{ hi: bucket.replay }" role="cell">{{ bucket.replay }}</span>
+                <span class="num" :class="{ hi: bucket.clock_skew }" role="cell">{{ bucket.clock_skew }}</span>
+                <span role="cell">{{ ipsText(bucket) }}</span>
+              </template>
+            </div>
+          </div>
+        </div>
+      </AsciiBox>
+
+      <AsciiBox title="integration" right="hmac-sha256">
+        <div class="form">
+          <p>
+            Every request is signed with HMAC-SHA256 and an ever-increasing timestamp; the secret never
+            travels. The service always answers <span class="acc">204</span>: to check that it works, look
+            here at the last heartbeat and the invalid attempts.
+          </p>
+          <div class="field">
+            <div class="row">
+              <span class="field-label grow">example cron job</span>
+              <button class="link-btn" type="button" @click="copy(snippet)">[copy]</button>
+            </div>
+            <!-- eslint-disable-next-line vue/no-v-html -- escaped in highlightSnippet -->
+            <pre class="code" v-html="highlightSnippet(snippet)"></pre>
+          </div>
+        </div>
+      </AsciiBox>
     </template>
 
-    <v-dialog :model-value="confirm !== null" max-width="480" @update:model-value="confirm = null">
-      <v-card :title="confirm === 'rotate' ? 'Generate a new key?' : 'Delete the application?'">
-        <v-card-text>
-          {{
-            confirm === 'rotate'
-              ? 'The current key stops working immediately: you will have to update the application with the new one.'
-              : 'The application, its key and its attempt history are deleted.'
-          }}
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn @click="confirm = null">Cancel</v-btn>
-          <v-btn :loading="busy" :color="confirm === 'delete' ? 'error' : 'primary'" variant="flat" @click="confirmAction">
-            {{ confirm === 'rotate' ? 'Generate' : 'Delete' }}
-          </v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
+    <ConfirmDialog
+      v-if="confirm === 'rotate'"
+      title="generate a new key?"
+      action="generate"
+      :busy="busy"
+      @confirm="confirmAction"
+      @cancel="confirm = null"
+    >
+      The current key stops working immediately: you will have to update the application with the new one.
+    </ConfirmDialog>
+    <ConfirmDialog
+      v-if="confirm === 'delete'"
+      title="delete the application?"
+      action="delete"
+      danger
+      :busy="busy"
+      @confirm="confirmAction"
+      @cancel="confirm = null"
+    >
+      The application, its key and the history of attempts are deleted.
+    </ConfirmDialog>
 
-    <CredentialsDialog :credentials="credentials" :app-name="app?.name ?? ''" @close="credentials = null" />
-  </v-container>
+    <CredentialsDialog
+      v-if="credentials && app"
+      :credentials="credentials"
+      :app-name="app.name"
+      @close="credentials = null"
+    />
+  </div>
 </template>
 
 <style scoped>
-.snippet {
-  font-size: 0.8rem;
-  overflow-x: auto;
-  padding: 12px;
-  border-radius: 4px;
-  background: rgba(var(--v-theme-on-surface), 0.06);
+.back {
+  color: var(--dim);
+  align-self: flex-start;
+}
+.back:hover,
+.back:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: var(--lh) 2ch;
+  align-items: start;
+}
+@media (max-width: 880px) {
+  .columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.failures {
+  grid-template-columns: repeat(5, auto);
 }
 </style>
