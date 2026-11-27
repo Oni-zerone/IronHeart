@@ -201,26 +201,6 @@ pub fn failures(
     build(to, format!("IronHeart: invalid attempts for “{}”", app.name), lines, &app.url)
 }
 
-/// To the master: Brevo refused the API key. Sent through the same key, so it
-/// only arrives if Brevo still accepts sends; the dashboard and the logs show
-/// the problem in any case.
-pub fn mail_key_rejected(to: &str, detail: &str, dashboard_url: &str) -> Email {
-    let lines = [
-        "Brevo refused IronHeart's API key: alert emails can no longer be sent.".to_owned(),
-        format!("Answer: {detail}"),
-        "Brevo deactivates keys that go unused for 90 days. Create a new key in Brevo, \
-         set it in BREVO_API_KEY and restart the service."
-            .to_owned(),
-    ];
-    let text = format!("{}\n\nDashboard: {dashboard_url}\n", lines.join("\n"));
-    let html = format!(
-        "{}<p><a href=\"{}\">Open IronHeart</a></p>",
-        lines.iter().map(|l| format!("<p>{}</p>", escape(l))).collect::<String>(),
-        escape(dashboard_url)
-    );
-    Email { to: to.to_owned(), subject: "IronHeart: the Brevo API key was refused".into(), text, html }
-}
-
 fn build(to: &str, subject: String, lines: Vec<String>, url: &str) -> Email {
     let text = format!("{}\n\nDetails: {url}\n", lines.join("\n"));
     let html = format!(

@@ -87,6 +87,11 @@ impl Mailer {
         })
     }
 
+    /// Brevo has an API key to check; SMTP does not.
+    pub fn has_api_key(&self) -> bool {
+        matches!(self.transport, Transport::Brevo { .. })
+    }
+
     pub fn describe(&self) -> &'static str {
         match self.transport {
             Transport::Brevo { .. } => "Brevo",

@@ -83,13 +83,13 @@ async fn main() -> anyhow::Result<()> {
         db,
         auth,
         outbox: outbox::Outbox::start(mailer.clone()),
+        mail_key: Arc::new(mail_check::KeyMonitor::new(mailer.has_api_key())),
         mailer,
         heartbeat,
         public_base_url: config.public_base_url.as_str().into(),
         admin_email: config.admin_email.as_str().into(),
         entanglement: Arc::new(entanglement::Sender::new()?),
         database,
-        mail_key: Arc::default(),
     };
     monitor::spawn(state.clone());
     mail_check::spawn(state.clone());
@@ -147,7 +147,7 @@ pub fn test_state(db: db::Pool, heartbeat: Arc<heartbeat::Heartbeat>) -> AppStat
         admin_email: "master@example.com".into(),
         entanglement: Arc::new(entanglement::Sender::new().unwrap()),
         database: Arc::new(db::DatabaseInfo::from_url("sqlite::memory:")),
-        mail_key: Arc::default(),
+        mail_key: Arc::new(mail_check::KeyMonitor::new(false)),
     }
 }
 

@@ -33,7 +33,7 @@ const mailKey = computed(() => {
   return status.state === 'rejected'
     ? {
         label: 'mail key',
-        hint: `Brevo refused the API key (${when}): alert emails cannot be sent. Set a new BREVO_API_KEY and restart. ${status.error ?? ''}`,
+        hint: `Brevo refused the API key (${when}): alert emails cannot be sent and entanglement pings are held, so the other instances report this one as down. Set a new BREVO_API_KEY and restart. ${status.error ?? ''}`,
       }
     : {
         label: 'mail?',
