@@ -74,6 +74,66 @@ pub async fn insert_failure_bucket(
     }
 }
 
+/// Conteggi accumulati in memoria per un'app: `(app_id, inizio del periodo, conteggi)`.
+pub type PendingFailures = (String, i64, FailureCounts);
+
+/// Righe per istruzione: 9 parametri ciascuna.
+const BUCKETS_PER_STATEMENT: usize = 500;
+
+fn insert_failure_buckets_sql(rows: usize) -> String {
+    let values: Vec<String> = (0..rows)
+        .map(|i| {
+            let p: Vec<String> = (1..=9).map(|c| format!("${}", 9 * i + c)).collect();
+            format!("({})", p.join(", "))
+        })
+        .collect();
+    format!(
+        "INSERT INTO failure_buckets (id, app_id, period_start, flushed_at, bad_signature,
+                                      replay, clock_skew, ips, other_ips)
+         SELECT v.column1, v.column2, v.column3, v.column4, v.column5,
+                v.column6, v.column7, v.column8, v.column9
+         FROM (VALUES {}) AS v
+         WHERE EXISTS (SELECT 1 FROM apps WHERE apps.id = v.column2)",
+        values.join(", ")
+    )
+}
+
+/// Scrive i conteggi di un giro del controllo, 500 app per istruzione. Le app
+/// cancellate nel frattempo si saltano.
+pub async fn insert_failure_buckets(
+    pool: &Pool,
+    flushed_at: i64,
+    pending: &[PendingFailures],
+) -> sqlx::Result<()> {
+    for chunk in pending.chunks(BUCKETS_PER_STATEMENT) {
+        // Contiene solo segnaposto: i valori passano come parametri.
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(insert_failure_buckets_sql(chunk.len())));
+        for (app_id, period_start, counts) in chunk {
+            query = query
+                .bind(Uuid::now_v7().to_string())
+                .bind(app_id.as_str())
+                .bind(*period_start)
+                .bind(flushed_at)
+                .bind(counts.bad_signature)
+                .bind(counts.replay)
+                .bind(counts.clock_skew)
+                .bind(serde_json::to_string(&counts.ips).expect("mappa serializzabile"))
+                .bind(counts.other_ips);
+        }
+        match query.execute(pool).await {
+            Ok(_) => {}
+            // Un'app cancellata fra il controllo EXISTS e l'inserimento: riga per riga.
+            Err(sqlx::Error::Database(err)) if err.is_foreign_key_violation() => {
+                for (app_id, period_start, counts) in chunk {
+                    insert_failure_bucket(pool, app_id, *period_start, flushed_at, counts).await?;
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
 /// Periodi di un'app scritti dopo `flushed_after`, dal più recente.
 pub async fn failure_buckets_since(
     pool: &Pool,
@@ -126,7 +186,8 @@ pub async fn failure_totals_for_user(
     flushed_after: i64,
 ) -> sqlx::Result<Vec<(String, i64)>> {
     sqlx::query_as(
-        "SELECT b.app_id, SUM(b.bad_signature + b.replay + b.clock_skew)
+        // SUM di BIGINT in Postgres è NUMERIC: il cast lo riporta a i64.
+        "SELECT b.app_id, CAST(SUM(b.bad_signature + b.replay + b.clock_skew) AS BIGINT)
          FROM failure_buckets b JOIN apps a ON a.id = b.app_id
          WHERE a.user_id = $1 AND b.flushed_at > $2
          GROUP BY b.app_id",
@@ -171,5 +232,16 @@ mod tests {
 
         // Conteggi di un'app già cancellata: ignorati senza errore.
         insert_failure_bucket(&pool, "missing", 0, 40, &bucket(1, "x")).await.unwrap();
+
+        // In blocco: stessi conteggi, l'app mancante si salta.
+        let pending = vec![
+            ("a".to_owned(), 30, bucket(8, "3.3.3.3")),
+            ("missing".to_owned(), 30, bucket(1, "x")),
+        ];
+        insert_failure_buckets(&pool, 50, &pending).await.unwrap();
+        let summary = failure_summary_since(&pool, "a", 30).await.unwrap();
+        assert_eq!((summary.bad_signature, summary.ips.len()), (8, 1));
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM failure_buckets").fetch_one(&pool).await.unwrap();
+        assert_eq!(total, 4);
     }
 }

@@ -109,9 +109,7 @@ pub fn spawn(state: AppState) {
 pub async fn tick(state: &AppState, memory: &mut Memory, now: i64) -> anyhow::Result<()> {
     let pool = &state.db;
 
-    for (app_id, since, counts) in state.heartbeat.take_failures() {
-        db::insert_failure_bucket(pool, &app_id, since, now, &counts).await?;
-    }
+    db::insert_failure_buckets(pool, now, &state.heartbeat.take_failures()).await?;
     let unattributed = state.heartbeat.take_unattributed();
     if unattributed > 0 {
         tracing::warn!("heartbeat con chiave sconosciuta: {unattributed}");

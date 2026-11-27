@@ -11,7 +11,8 @@ pub struct Entanglement {
     pub base_url: String,
     pub key_id: String,
     pub interval_secs: i64,
-    pub enabled: bool,
+    #[sqlx(try_from = "i64")]
+    pub enabled: Flag,
     pub next_ping_at: Option<i64>,
     pub last_attempt_at: Option<i64>,
     pub last_success_at: Option<i64>,
@@ -24,6 +25,17 @@ macro_rules! entanglement_columns {
         "id, name, base_url, key_id, interval_secs, enabled, next_ping_at, \
          last_attempt_at, last_success_at, last_error, created_at"
     };
+}
+
+/// Booleano salvato come INTEGER 0/1 (vedi CLAUDE.md), in JSON come `true`/`false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct Flag(pub bool);
+
+impl From<i64> for Flag {
+    fn from(value: i64) -> Self {
+        Self(value != 0)
+    }
 }
 
 pub struct EntanglementInput<'a> {
@@ -69,7 +81,7 @@ pub async fn insert_entanglement(
     .bind(secret_enc)
     .bind(secret_key_version)
     .bind(input.interval_secs)
-    .bind(input.enabled)
+    .bind(i64::from(input.enabled))
     .bind(now)
     .execute(pool)
     .await
@@ -93,7 +105,7 @@ pub async fn update_entanglement(
     .bind(input.name)
     .bind(input.base_url)
     .bind(input.interval_secs)
-    .bind(input.enabled)
+    .bind(i64::from(input.enabled))
     .bind(now)
     .bind(id)
     .execute(&mut *tx)

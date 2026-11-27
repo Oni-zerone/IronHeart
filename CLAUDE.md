@@ -9,33 +9,37 @@ Lightweight heartbeat service. Users sign in with Google and register their appl
 
 ## Stack
 
-- `server/`: Rust, Axum, SQLite with sqlx (WAL, `journal_size_limit` 16 MB), openidconnect, sessions in the database, email through Brevo (HTTP API) in production and SMTP to Mailpit locally. Later: embedded dashboard with rust-embed, OpenAPI with utoipa.
+- `server/`: Rust, Axum, sqlx with the `Any` driver: external Postgres if `DATABASE_URL` is `postgres://…`, otherwise local SQLite (WAL, `journal_size_limit` 16 MB). openidconnect, sessions in the database, email through Brevo (HTTP API) in production and SMTP to Mailpit locally. Later: embedded dashboard with rust-embed, OpenAPI with utoipa.
 - `web/`: Vue 3, TypeScript, Vite, Vue Router, Vuetify 4 with `@mdi/js` icons (SVG). Node is only for development and builds: in production the dashboard is a set of static files served by the Rust binary. PrimeVue was rejected because since version 5 it is no longer MIT (commercial license with a key).
-- Deployment: a single binary in a container on a DigitalOcean droplet with CapRover, a single instance, volume on `/data`. The image is built in GitHub Actions and published to GHCR, not on the droplet.
+- Deployment: a single binary in a container on a DigitalOcean droplet with CapRover, a single instance, volume on `/data`. To avoid losing data at every deploy an external Postgres is used (`DATABASE_URL`, with `?sslmode=require` for managed databases). The image is built in GitHub Actions and published to GHCR, not on the droplet.
 
 ## Commands
 
 - `cd server && cargo run`: starts on `127.0.0.1:8080` with the database in `server/data/ironheart.db`. Reads `.env` (template in `.env.example`); environment variables take precedence.
 - Without Vite: `PUBLIC_BASE_URL=http://localhost:8080 cargo run` and open http://localhost:8080 (temporary page with the login).
-- `cd server && cargo test`: database tests use in-memory SQLite; includes the short load test (`load_tests.rs`, `IRONHEART_LOAD_SECS` to make it longer). Load generator for real instances: `server/examples/loadtest.rs`. Results in README.md.
+- `cd server && cargo test`: database tests use in-memory SQLite (with `IRONHEART_TEST_POSTGRES_URL=postgres://…/ironheart_test` they use Postgres, a new schema per test: use a throwaway database); includes the short load test (`load_tests.rs`, `IRONHEART_LOAD_SECS` to make it longer). Load generator for real instances: `server/examples/loadtest.rs`. Query benchmark: `cargo test --release db_bench -- --ignored --nocapture` (`IRONHEART_BENCH_DATABASE_URL` for Postgres, which gets wiped). Results in README.md.
 - Manual heartbeat test: the example script is on the app page (and in `web/src/snippet.ts`). With `MAIL_TRANSPORT=smtp cargo run` alerts end up in Mailpit even if `.env` says `brevo`.
 - `cd web && pnpm dev`: dashboard on http://localhost:5173; Vite proxies `/api`, `/auth` and `/health` to the backend on :8080. With Vite, `PUBLIC_BASE_URL=http://localhost:5173`.
 - `cd web && pnpm build` (type check + build) and `pnpm lint`.
 - Node and pnpm are pinned in `mise.toml`: `mise install`, then `mise exec -- pnpm …` if the shell does not activate them.
 - `docker compose up -d mailpit`: local SMTP on `:1025`, UI on http://localhost:8025.
+- `docker compose up -d postgres`: local Postgres, `DATABASE_URL=postgres://ironheart:ironheart@localhost:5432/ironheart`.
 
-## Database rules (portability to Postgres)
+## Database rules (SQLite and Postgres)
 
-We use SQLite for now, but moving to Postgres must remain a one- or two-day job. Therefore:
+The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) and on Postgres (external, in production), through sqlx's `Any` pool (`db::Pool`). Therefore:
 
-1. **All tables are `STRICT`**, so SQLite rejects wrong types instead of storing them.
-2. **Times as `INTEGER` Unix UTC milliseconds**, computed in Rust and passed as parameters. No `datetime('now')`, `CURRENT_TIMESTAMP` or date arithmetic in SQL. chrono's SQLite encoding is text with a variable number of decimals and does not sort correctly as a string. In Postgres they stay `BIGINT`, or become `timestamptz` in the data migration.
+1. **All SQLite tables are `STRICT`**, so SQLite rejects wrong types instead of storing them.
+2. **Times as `INTEGER` Unix UTC milliseconds**, computed in Rust and passed as parameters. No `datetime('now')`, `CURRENT_TIMESTAMP` or date arithmetic in SQL. chrono's SQLite encoding is text with a variable number of decimals and does not sort correctly as a string. In Postgres they are `BIGINT`.
 3. **IDs as UUID v7 generated in Rust**, stored as `TEXT`. No `AUTOINCREMENT`.
-4. **Only SQL common to both databases**: `INSERT … ON CONFLICT` (never `INSERT OR REPLACE`), `RETURNING`, partial indexes. No `GLOB`, SQLite-specific functions or `PRAGMA` outside `db::connect`.
+4. **Only SQL common to both databases**: `INSERT … ON CONFLICT` (never `INSERT OR REPLACE`), `RETURNING`, partial indexes, `UPDATE … FROM (VALUES …)` (columns `column1…`). No `GLOB`, SQLite-specific functions or `PRAGMA` outside `db::connect`.
 5. **`$1, $2…` placeholders** on SQLite too (sqlx accepts them), so queries stay valid in Postgres.
 6. **All queries live in `server/src/db.rs`** (or in a `db/` module if it grows). Handlers do not write SQL.
 7. **Booleans as `INTEGER` 0/1** with `CHECK`, and enumerations as `TEXT` with `CHECK (… IN (…))`.
-8. We do not write an abstraction layer to support both databases.
+8. **Migrations in two folders**, `migrations/sqlite` and `migrations/postgres`: every schema change goes into both, with the same number. In Postgres all integers are `BIGINT` (booleans and numeric enumerations too) and blobs are `BYTEA`.
+9. **Types the `Any` driver reads the same way**: only `i64`, `String`, `Vec<u8>` and their `Option`. No `bool`, neither when reading nor as a parameter (`EXISTS` → `COUNT(*)`, booleans as `i64`, see `Flag`); `SUM` always with `CAST(… AS BIGINT)` (in Postgres it would be `NUMERIC`).
+10. **Few statements per round**: with a remote Postgres every statement is a network round trip. Bulk writes (`record_pings`, `insert_failure_buckets`) use a single statement per 500 rows.
+11. Tests run on SQLite; before changing SQL, also run them with `IRONHEART_TEST_POSTGRES_URL`. We do not write abstraction layers beyond the `Any` pool.
 
 ## Login and sessions
 
@@ -52,6 +56,7 @@ We use SQLite for now, but moving to Postgres must remain a one- or two-day job.
 - Roles: `admin` (invites, changes roles, removes users; API `/api/admin/*`, `AdminUser` extractor) and `user` (only their own apps). Apps stay personal for admins too.
 - An admin cannot demote or remove themselves. Removing a user cascades to their apps and sessions, and their apps must be removed from the in-memory registry.
 - Emails (accounts, invites, `ADMIN_EMAIL`) are compared in lowercase.
+- For the master only, `/api/me` includes `database` (`db::DatabaseInfo`: `postgres` or `sqlite` and where it lives, without credentials); the top bar shows it as a chip, yellow for local SQLite.
 
 ## Entanglement (master only)
 
@@ -79,7 +84,7 @@ Rules that must not be broken:
 
 - **The response is always 204**, for every outcome (even an oversized body or an unknown key), so an attacker cannot tell whether they cloned the heartbeat. No 4xx, no 429.
 - **Same work for every request**: with an unknown `key_id` an HMAC is still computed with a dummy key; the comparison is constant time; a valid ping stays in memory and does not touch the database during the request.
-- **No database during the request**: secrets are decrypted in memory (`heartbeat::Heartbeat`), the increasing timestamp is checked in memory (`fetch_max`); valid pings (the latest per app) are written in bulk once per second (`spawn_writer`, `db::record_pings` with `WHERE last_signed_ts < $ts`) and at shutdown; failed attempts are summed in memory and the monitor writes them every 30 seconds (`failure_buckets`). No logging per request.
+- **No database during the request**: secrets are decrypted in memory (`heartbeat::Heartbeat`), the increasing timestamp is checked in memory (`fetch_max`); valid pings (the latest per app) are written in bulk once per second (`spawn_writer`, `db::record_pings`, an `UPDATE … FROM (VALUES …)` with `last_signed_ts < $ts`) and at shutdown; failed attempts are summed in memory and the monitor writes them every 30 seconds (`failure_buckets`). No logging per request.
 - Secrets are encrypted with AES-256-GCM (`SECRETS_KEY`, version in `secret_key_version`), with the app id as associated data.
 - When an app changes (creation, rotation, interval, deletion) the in-memory registry must be updated too (`refresh_app`, `set_timing`, `remove_app`).
 - Client IP: `CLIENT_IP_HEADER` (`x-forwarded-for` → last value, written by nginx; `cf-connecting-ip` with Cloudflare), otherwise the connection address. Used only for the summaries.

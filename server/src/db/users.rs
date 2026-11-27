@@ -65,14 +65,15 @@ pub async fn create_invite(
     now: i64,
 ) -> sqlx::Result<InviteOutcome> {
     let mut tx = pool.begin().await?;
-    let is_user: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE email = $1)")
+    // COUNT invece di EXISTS: EXISTS è un booleano in Postgres e un intero in SQLite.
+    let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE email = $1")
         .bind(email)
         .fetch_one(&mut *tx)
         .await?;
-    if is_user {
+    if users > 0 {
         return Ok(InviteOutcome::AlreadyUser);
     }
-    let existed: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM user_invites WHERE email = $1)")
+    let invites: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_invites WHERE email = $1")
         .bind(email)
         .fetch_one(&mut *tx)
         .await?;
@@ -87,7 +88,7 @@ pub async fn create_invite(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(if existed { InviteOutcome::Updated } else { InviteOutcome::Created })
+    Ok(if invites > 0 { InviteOutcome::Updated } else { InviteOutcome::Created })
 }
 
 pub async fn delete_invite(pool: &Pool, email: &str) -> sqlx::Result<bool> {

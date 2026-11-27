@@ -144,7 +144,7 @@ pub async fn update_app(
 }
 
 async fn replace_recipients(
-    tx: &mut sqlx::SqliteConnection,
+    tx: &mut super::Connection,
     app_id: &str,
     recipients: &[String],
     now: i64,
@@ -234,17 +234,6 @@ pub async fn app_key(pool: &Pool, app_id: &str) -> sqlx::Result<Option<KeyRow>> 
 
 // ---- Heartbeat e controllo delle scadenze -----------------------------------
 
-// Nelle espressioni di SET, `state` è il valore prima dell'aggiornamento
-// (vale sia in SQLite sia in Postgres).
-const RECORD_PING_SQL: &str = "UPDATE apps SET
-         last_signed_ts = $1,
-         last_seen_at = $2,
-         recovery_pending = CASE WHEN state = 'down' THEN 1 ELSE recovery_pending END,
-         next_deadline_at = CASE WHEN state = 'paused' THEN NULL ELSE $3 END,
-         state = CASE WHEN state = 'paused' THEN 'paused' ELSE 'up' END,
-         updated_at = $2
-     WHERE id = $4 AND (last_signed_ts IS NULL OR last_signed_ts < $1)";
-
 /// Un ping valido da registrare.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PingRecord {
@@ -268,24 +257,55 @@ pub async fn record_ping(
     Ok(record_pings(pool, &[record]).await?[0])
 }
 
-/// Registra più ping in una sola transazione. Per ciascuno: `false` se il
-/// timestamp non era nuovo (o l'app non esiste più).
+/// Ping per istruzione: 4 parametri ciascuno, ben sotto i limiti di SQLite
+/// (32.766) e di Postgres (65.535).
+const PINGS_PER_STATEMENT: usize = 500;
+
+/// `UPDATE … FROM (VALUES …)` per `rows` ping. Le colonne di VALUES si chiamano
+/// `column1…` sia in SQLite sia in Postgres. Nelle espressioni di SET, `apps.state`
+/// è il valore prima dell'aggiornamento (in entrambi).
+fn record_pings_sql(rows: usize) -> String {
+    let values: Vec<String> = (0..rows)
+        .map(|i| format!("(${}, ${}, ${}, ${})", 4 * i + 1, 4 * i + 2, 4 * i + 3, 4 * i + 4))
+        .collect();
+    format!(
+        "UPDATE apps SET
+             last_signed_ts = v.column2,
+             last_seen_at = v.column3,
+             recovery_pending = CASE WHEN apps.state = 'down' THEN 1 ELSE apps.recovery_pending END,
+             next_deadline_at = CASE WHEN apps.state = 'paused' THEN NULL ELSE v.column4 END,
+             state = CASE WHEN apps.state = 'paused' THEN 'paused' ELSE 'up' END,
+             updated_at = v.column3
+         FROM (VALUES {}) AS v
+         WHERE apps.id = v.column1
+           AND (apps.last_signed_ts IS NULL OR apps.last_signed_ts < v.column2)
+         RETURNING apps.id",
+        values.join(", ")
+    )
+}
+
+/// Registra più ping (al massimo uno per app) in una transazione, con una sola
+/// istruzione ogni 500 ping: con un database remoto ogni istruzione è un viaggio
+/// di rete. Per ciascuno: `false` se il timestamp non era nuovo (o l'app non
+/// esiste più).
 pub async fn record_pings(pool: &Pool, pings: &[PingRecord]) -> sqlx::Result<Vec<bool>> {
     let mut tx = pool.begin().await?;
-    let mut accepted = Vec::with_capacity(pings.len());
-    for ping in pings {
-        let rows = sqlx::query(RECORD_PING_SQL)
-            .bind(ping.signed_ts)
-            .bind(ping.seen_at)
-            .bind(ping.next_deadline_at)
-            .bind(&ping.app_id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        accepted.push(rows == 1);
+    let mut updated = std::collections::HashSet::new();
+    for chunk in pings.chunks(PINGS_PER_STATEMENT) {
+        // Contiene solo segnaposto: i valori passano come parametri.
+        let sql = record_pings_sql(chunk.len());
+        let mut query = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql));
+        for ping in chunk {
+            query = query
+                .bind(ping.app_id.as_str())
+                .bind(ping.signed_ts)
+                .bind(ping.seen_at)
+                .bind(ping.next_deadline_at);
+        }
+        updated.extend(query.fetch_all(&mut *tx).await?);
     }
     tx.commit().await?;
-    Ok(accepted)
+    Ok(pings.iter().map(|ping| updated.contains(&ping.app_id)).collect())
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -441,5 +461,28 @@ mod tests {
         sqlx::query("UPDATE apps SET state = 'paused'").execute(&pool).await.unwrap();
         assert!(record_ping(&pool, "a", 1, 1_000, 61_000).await.unwrap());
         assert_eq!(state(&pool, "a").await, ("paused".into(), None, 0));
+    }
+
+    #[tokio::test]
+    async fn record_pings_in_blocks() {
+        let pool = setup().await;
+        let user = upsert_google_user(&pool, "sub2", "p@example.com", None, 1).await.unwrap();
+        let ids: Vec<String> = (0..1_201).map(|i| format!("b{i}")).collect();
+        for id in &ids {
+            insert_test_app(&pool, id, &user.id).await;
+        }
+        let pings = |ts: i64| -> Vec<PingRecord> {
+            ids.iter()
+                .map(|id| PingRecord { app_id: id.clone(), signed_ts: ts, seen_at: ts * 1000, next_deadline_at: ts * 1000 + 60_000 })
+                .chain([PingRecord { app_id: "missing".into(), signed_ts: ts, seen_at: 0, next_deadline_at: 0 }])
+                .collect()
+        };
+        let accepted = record_pings(&pool, &pings(5)).await.unwrap();
+        assert_eq!(accepted.iter().filter(|ok| **ok).count(), ids.len());
+        assert!(!accepted[ids.len()], "app inesistente");
+        assert_eq!(state(&pool, "b1200").await, ("up".into(), Some(65_000), 0));
+
+        // Stesso timestamp: nessuno accettato.
+        assert!(record_pings(&pool, &pings(5)).await.unwrap().iter().all(|ok| !ok));
     }
 }

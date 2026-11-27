@@ -2,7 +2,7 @@
 
 Lightweight heartbeat service. Every registered application sends a signed ping at regular intervals: if the ping does not arrive within the expected interval, IronHeart emails the application's recipients.
 
-- Rust backend (Axum, SQLite), Vue 3 dashboard with Vuetify.
+- Rust backend (Axum; external Postgres or local SQLite), Vue 3 dashboard with Vuetify.
 - Google sign-in, invitation only; the master user is `ADMIN_EMAIL`.
 - Pings signed with HMAC-SHA256 and an ever-increasing timestamp: the secret never travels and an intercepted request cannot be reused.
 - The service always answers `204`, whatever the outcome: whoever tries to forge a ping cannot tell whether it worked. Invalid attempts are counted and summarized by email.
@@ -22,10 +22,21 @@ cd server && cargo run             # backend on :8080
 cd web && pnpm install && pnpm dev # dashboard on http://localhost:5173
 ```
 
+## Database
+
+The database is chosen with `DATABASE_URL`:
+
+- `postgres://user:password@host:5432/ironheart?sslmode=require`: external Postgres. This is the choice for production, because the data survives container deploys. Tables are created automatically at first startup (`server/migrations/postgres`).
+- not set: local SQLite file in `data/ironheart.db` (`server/migrations/sqlite`). Handy in development; in a container it is lost at every deploy, unless `data/` is on a volume.
+
+At startup the log says which database is in use (without credentials). To try Postgres locally: `docker compose up -d postgres` and `DATABASE_URL=postgres://ironheart:ironheart@localhost:5432/ironheart`.
+
 ## Tests
 
 ```sh
 cd server && cargo test            # unit tests, in-memory database, short load test
+IRONHEART_TEST_POSTGRES_URL=postgres://ironheart:ironheart@localhost:5432/ironheart_test \
+    cargo test                     # same suite on Postgres (one schema per test: throwaway database)
 cd web && pnpm build && pnpm lint  # dashboard type check, build and lint
 ```
 
@@ -80,6 +91,30 @@ The fixes:
 2. **One summary per recipient**: on each round every recipient gets at most one email per type, listing all the apps involved. Invalid-attempt summaries arrive at most every 5 minutes per recipient, even when the windows of their apps close at different times; meanwhile the counts add up.
 3. **`journal_size_limit`**: after every checkpoint the WAL file goes back to at most 16 MB.
 4. **Valid pings written in bulk**: a valid ping stays in memory (the latest per app) and once per second they are all written in one transaction; at shutdown the remaining ones are written.
+
+## SQLite and Postgres
+
+Measured on 2026-11-27 on the same Mac (Apple M1 Pro, release build), with Postgres 17 in Docker on the same machine: this is the most favorable case for Postgres, because a network round trip costs about 0.5 ms. A managed database in another datacenter will cost more for every statement.
+
+**HTTP load test** (`load_tests`, 20 s, 200 apps, 32 workers with forged signatures): no difference. The heartbeat endpoint does not touch the database, and with all three databases the service handles about 69,000 forged requests per second, recording all the real pings (200/200). In 1 run out of 10 the generator had client-side connection errors (29 requests out of 1.4 million, with the machine under load); the next 6 runs, alternating databases, all passed.
+
+**Database operations** (`db_bench`, 2,000 apps across 20 users, median of 3 runs):
+
+| Operation | SQLite, before | SQLite, now (`Any` driver) | Postgres |
+|---|---:|---:|---:|
+| Bulk ping write (2,000 pings, every second) | 19 ms | 28 ms | 44 ms |
+| Failed attempts of 2,000 apps (one monitor round) | 172 ms | 190 ms | 80 ms |
+| Monitor round at rest | 0.5 ms | 0.5 ms | 6.5 ms |
+| 2,000 apps going down together (`mark_overdue_down`) | 5 ms | 6 ms | 31 ms |
+| Key registry at startup (2,000 apps) | 3.8 ms | 4.4 ms | 4.3 ms |
+| Session (every dashboard request) | 0.05 ms | 0.05 ms | 0.85 ms |
+| List of 100 apps with attempt totals | 0.5 ms | 0.5 ms | 2.6 ms |
+| Alert recipients (per app) | 0.05 ms | 0.05 ms | 0.9 ms |
+
+- **The `Any` driver costs little**: with the same queries, SQLite stayed within 10–15% of before.
+- **On Postgres the cost is the number of statements**: the first version wrote pings with one `UPDATE` per app and took **1,007 ms** for 2,000 pings, i.e. the writer's whole second (and more with a remote database). Now it is a single `UPDATE … FROM (VALUES …)` per 500 pings: 44 ms. Same for failed attempts (from 1,694 to 80 ms). On SQLite the bulk version is a bit slower (28 ms versus 19), but it stays at 3% of the second.
+- Dashboard requests cost about 1 ms per query instead of 0.05: not noticeable.
+- **To keep an eye on**: when many apps change state together, the monitor still runs a few queries per app (recipients, attempt summaries). With 2,000 apps going down together, reading the recipients alone takes about 2 seconds on a local Postgres; with a remote database at 3 ms it could exceed 5 seconds and show up in the log as a slow periodic check. If that happens, they should be batched like the pings.
 
 ## License
 

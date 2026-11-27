@@ -59,7 +59,12 @@ impl Config {
             .context("BIND_ADDR non valido")?;
         Ok(Self {
             bind_addr,
-            database_url: env_or("DATABASE_URL", "sqlite://data/ironheart.db"),
+            // Postgres esterno (`postgres://…`) oppure, se manca, il file SQLite locale.
+            database_url: std::env::var("DATABASE_URL")
+                .ok()
+                .map(|url| url.trim().to_owned())
+                .filter(|url| !url.is_empty())
+                .unwrap_or_else(|| "sqlite://data/ironheart.db".into()),
             public_base_url: env_or("PUBLIC_BASE_URL", "http://localhost:8080")
                 .trim_end_matches('/')
                 .to_owned(),
