@@ -79,6 +79,7 @@ The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) 
 - `MAIL_TRANSPORT=brevo` (production, requires `BREVO_API_KEY`) or `smtp` (default, `SMTP_HOST`/`SMTP_PORT`, to Mailpit). Sender: `MAIL_FROM_EMAIL` and `MAIL_FROM_NAME`; on Brevo the sender or the domain must be verified.
 - One email per recipient, so nobody sees the other addresses.
 - `POST /api/me/test-email` sends a test email to the signed-in user.
+- Every email (alerts, invite, test) is drawn with `mail_layout::Letter` in the dashboard's ASCII style: a 56-column grid with the top bar, the ECG line (flat when an app is down), an `AsciiBox`-style frame and a `[ button ]`. The HTML part is one `<pre>` with inline styles on black; the text part is the same drawing with the URL below the frame. Text is wrapped in Rust, so body copy stays ASCII (`-`, `"`, `...`) to keep the borders aligned.
 
 ## Heartbeat
 

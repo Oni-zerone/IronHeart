@@ -17,7 +17,7 @@ use crate::{
     auth::AdminUser,
     clock::now_ms,
     db::{self, InviteOutcome},
-    mail::Email,
+    mail_layout::{Block, Letter, Pulse, fg, hi},
 };
 
 pub fn routes() -> Router<AppState> {
@@ -88,16 +88,17 @@ async fn invite(
 async fn send_invite_email(state: &AppState, admin: &db::User, to: &str) {
     let who = admin.name.clone().unwrap_or_else(|| admin.email.clone());
     let url = format!("{}/", state.public_base_url);
-    let text = format!(
-        "{who} invited you to IronHeart, the service that monitors application heartbeats.\n\n\
-         Sign in with the Google account for this address: {url}\n"
-    );
-    let html = format!(
-        "<p>{} invited you to IronHeart, the service that monitors application heartbeats.</p>\
-         <p><a href=\"{url}\">Sign in</a> with the Google account for this address.</p>",
-        who.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-    );
-    let email = Email { to: to.to_owned(), subject: "Invitation to IronHeart".into(), text, html };
+    let email = Letter {
+        title: "Invitation".into(),
+        hot: false,
+        pulse: Pulse::Beat,
+        blocks: vec![
+            Block::Para(vec![hi(who), fg(" invited you to IronHeart, the service that monitors application heartbeats.")]),
+            Block::text("Sign in with the Google account for this address."),
+        ],
+        action: Some(("sign in".into(), url)),
+    }
+    .into_email(to, "Invitation to IronHeart".into());
     if let Err(err) = state.mailer.send(&email).await {
         tracing::error!(err = ?err, "invite email not sent");
     }
