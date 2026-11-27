@@ -10,7 +10,7 @@ Lightweight heartbeat service. Users sign in with Google and register their appl
 
 ## Stack
 
-- `server/`: Rust, Axum, sqlx with the `Any` driver: external Postgres if `DATABASE_URL` is `postgres://…`, otherwise local SQLite (WAL, `journal_size_limit` 16 MB). openidconnect, sessions in the database, email through Brevo (HTTP API) in production and SMTP to Mailpit locally. The dashboard (`web/dist`) is embedded with rust-embed (`server/src/web.rs`: in release it is compiled in, in debug it is read from disk; without a build the temporary page is served). Later: OpenAPI with utoipa.
+- `server/`: Rust, Axum, sqlx with the `Any` driver: external Postgres if `DATABASE_URL` is `postgres://…`, otherwise local SQLite (WAL, `journal_size_limit` 16 MB). openidconnect, sessions in the database, email through a provider of choice (Brevo, Resend, Postmark, Mailgun, Scaleway over HTTP APIs, or standard SMTP; Mailpit locally). The dashboard (`web/dist`) is embedded with rust-embed (`server/src/web.rs`: in release it is compiled in, in debug it is read from disk; without a build the temporary page is served). Later: OpenAPI with utoipa.
 - `web/`: Vue 3, TypeScript, Vite, Vue Router, no component library (Vuetify was removed in 0.2.0). Node is only for development and builds: in production the dashboard is a set of static files served by the Rust binary.
 
 ## Interface (ASCII, English)
@@ -27,7 +27,7 @@ Lightweight heartbeat service. Users sign in with Google and register their appl
 - `cd server && cargo run`: starts on `127.0.0.1:8080` with the database in `server/data/ironheart.db`. Reads `.env` (template in `.env.example`); environment variables take precedence.
 - Without Vite: `PUBLIC_BASE_URL=http://localhost:8080 cargo run` and open http://localhost:8080 (the dashboard if `web/dist` is built with `pnpm build`, otherwise a temporary page with the login).
 - `cd server && cargo test`: database tests use in-memory SQLite (with `IRONHEART_TEST_POSTGRES_URL=postgres://…/ironheart_test` they use Postgres, a new schema per test: use a throwaway database); includes the short load test (`load_tests.rs`, `IRONHEART_LOAD_SECS` to make it longer). Load generator for real instances: `server/examples/loadtest.rs`. Query benchmark: `cargo test --release db_bench -- --ignored --nocapture` (`IRONHEART_BENCH_DATABASE_URL` for Postgres, which gets wiped). Results in README.md.
-- Manual heartbeat test: the example script is on the app page (and in `web/src/snippet.ts`). With `MAIL_TRANSPORT=smtp cargo run` alerts end up in Mailpit even if `.env` says `brevo`.
+- Manual heartbeat test: the example script is on the app page (and in `web/src/snippet.ts`). With `MAIL_TRANSPORT=smtp cargo run` alerts end up in Mailpit even if `.env` names another provider.
 - `cd web && pnpm dev`: dashboard on http://localhost:5173; Vite proxies `/api`, `/auth` and `/health` to the backend on :8080. With Vite, `PUBLIC_BASE_URL=http://localhost:5173`.
 - `cd web && pnpm build` (type check + build) and `pnpm lint`.
 - Node and pnpm are pinned in `mise.toml`: `mise install`, then `mise exec -- pnpm …` if the shell does not activate them.
@@ -76,8 +76,11 @@ The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) 
 
 ## Email
 
-- `MAIL_TRANSPORT=brevo` (production, requires `BREVO_API_KEY`) or `smtp` (default, `SMTP_HOST`/`SMTP_PORT`, to Mailpit). Sender: `MAIL_FROM_EMAIL` and `MAIL_FROM_NAME`; on Brevo the sender or the domain must be verified.
-- One email per recipient, so nobody sees the other addresses.
+- `MAIL_TRANSPORT` picks the provider: `brevo`, `resend`, `postmark`, `mailgun`, `scaleway` (HTTP APIs through `reqwest`) or `smtp` (default, `lettre`). No SDKs. Sender: `MAIL_FROM_EMAIL` and `MAIL_FROM_NAME`, to be verified with the provider. The variables of each provider are in `.env.example`.
+- Code in `server/src/mail/`: `mod.rs` (`Mailer`, `Email`, the `Transport` enum, `check` for HTTP responses: 2xx or an error with status and truncated body), one file per provider. No trait, a `match`. Configuration in `config::MailConfig::from_vars` (pure function, with tests): a missing variable or an unknown transport stops the startup with the variable's name. The log names only the provider, never the credentials.
+- `smtp` is the fallback for every other provider: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`/`SMTP_PASSWORD` (both or neither), `SMTP_TLS` = `none` | `starttls` | `tls` (rustls, like `reqwest`; no OpenSSL). Without `SMTP_TLS`: `none` towards `localhost`/`127.0.0.1`/`mailpit`, otherwise `starttls`; default port 1025, 587 or 465. Credentials without TLS towards a non-local host: the startup fails. Mailpit works with no configuration.
+- The HTTP APIs also work where outgoing SMTP is blocked (some DigitalOcean accounts). One HTTP client with a 15-second timeout; in tests the base URL points to an axum server on `127.0.0.1`.
+- One email per recipient, so nobody sees the other addresses. No retries and no failover between providers.
 - `POST /api/me/test-email` sends a test email to the signed-in user.
 
 ## Heartbeat
