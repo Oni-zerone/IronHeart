@@ -207,17 +207,7 @@ async fn update(
 
     let now = now_ms();
     let window_ms = (interval_secs + grace_secs) * 1000;
-    let (app_state, next_deadline_at) = match (input.paused, app.state.as_str()) {
-        (Some(true), _) => ("paused", None),
-        // Resume: wait a full interval from now.
-        (Some(false), "paused") => match app.last_seen_at {
-            Some(_) => ("up", Some(now + window_ms)),
-            None => ("new", None),
-        },
-        // Interval changed on an active app: the deadline starts from the last signal.
-        (_, "up") => ("up", app.last_seen_at.map(|seen| seen + window_ms).or(app.next_deadline_at)),
-        (_, other) => (other, app.next_deadline_at),
-    };
+    let (app_state, next_deadline_at) = next_state(&app, input.paused, window_ms, now);
 
     db::update_app(
         &state.db,
@@ -236,6 +226,44 @@ async fn update(
     .await?;
     state.heartbeat.set_timing(&id, interval_secs, grace_secs);
     Ok(Json(load_view(&state, &user.id, &id).await?))
+}
+
+/// State and deadline after a change. `window_ms` is interval + grace, already updated.
+fn next_state(app: &db::App, paused: Option<bool>, window_ms: i64, now: i64) -> (&str, Option<i64>) {
+    match (paused, app.state.as_str()) {
+        (Some(true), _) => ("paused", None),
+        // Resume: wait a full interval from now.
+        (Some(false), "paused") => match app.last_seen_at {
+            Some(_) => ("up", Some(now + window_ms)),
+            None => ("new", None),
+        },
+        // Interval changed on an active app: the deadline starts from the last signal.
+        (_, "up") => ("up", app.last_seen_at.map(|seen| seen + window_ms).or(app.next_deadline_at)),
+        (_, other) => (other, app.next_deadline_at),
+    }
+}
+
+/// Pauses or resumes an app of `user_id` (dashboard and Telegram bot).
+pub async fn set_paused(state: &AppState, user_id: &str, app: &db::App, paused: bool, now: i64) -> anyhow::Result<()> {
+    let window_ms = (app.interval_secs + app.grace_secs) * 1000;
+    let (app_state, next_deadline_at) = next_state(app, Some(paused), window_ms, now);
+    db::update_app(
+        &state.db,
+        user_id,
+        &app.id,
+        &db::AppUpdate {
+            name: &app.name,
+            interval_secs: app.interval_secs,
+            grace_secs: app.grace_secs,
+            state: app_state,
+            next_deadline_at,
+            recipients: None,
+            now,
+        },
+    )
+    .await?;
+    state.heartbeat.set_timing(&app.id, app.interval_secs, app.grace_secs);
+    Ok(())
 }
 
 async fn rotate_key(

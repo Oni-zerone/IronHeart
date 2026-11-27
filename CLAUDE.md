@@ -75,6 +75,16 @@ The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) 
 - While this instance's email key is refused (`mail_check`, any provider), pings are not sent and the link records `HELD_ERROR` as its error: the other instances see this one go down and alert with their own email. At startup the first ping waits for the first key check.
 - The other instance always answers 204: here we only record whether the ping was delivered (`last_success_at`, `last_error`). A wrong key is reported by the other instance as invalid attempts.
 
+## Telegram
+
+- One bot per instance (`TELEGRAM_BOT_TOKEN`), module `telegram/`. At startup `getMe` (retried with backoff on network errors); only if Telegram accepts the token is the bot active: `deleteWebhook`, `setMyCommands` (`bot::COMMANDS`), then long polling with `getUpdates`. A missing or refused token (401/404, also later during polling) turns the feature off for the process.
+- **Visible only while active**: `/api/me` includes `telegram: { bot_username }` only then; the dashboard shows `/telegram` and the nav link only with that field; `/api/me/telegram*` answers 404 otherwise.
+- The token is in the Bot API URL: log request errors with `without_url()`, never the URL.
+- Linking: `POST /api/me/telegram/link` creates a token (single use, 10 minutes, SHA-256 in `telegram_link_tokens`) and the deep link `t.me/<bot>?start=<token>`; `/start <token>` consumes it and stores the chat in `telegram_links`. A chat belongs to one account (`chat_id` unique), an account can have several chats. Only private chats.
+- Alerts follow the email recipients: the monitor maps each recipient email to the linked chats of the account with that email (`db::telegram_routes`, one query per round, only when there is something to send) and queues a Telegram message next to the email (`outbox::Message`). 403 or "chat not found" disables the link (`disabled_at`); the next message from the chat enables it again.
+- Commands (`telegram::bot`) are scoped to the account's `user_id` in the queries; a chat that is not linked learns nothing. `/pause` and `/resume` ask for confirmation with an inline button and go through `apps::set_paused` (database and in-memory registry). At most 20 commands per chat per minute.
+- Texts are plain text (no parse mode), in English, built in `telegram::text` (alerts) and `telegram::bot` (commands).
+
 ## Email
 
 - `MAIL_TRANSPORT` picks the provider: `brevo`, `resend`, `postmark`, `mailgun`, `scaleway` (HTTP APIs through `reqwest`) or `smtp` (default, `lettre`). No SDKs. Sender: `MAIL_FROM_EMAIL` and `MAIL_FROM_NAME`, to be verified with the provider. The variables of each provider are in `.env.example`.
@@ -117,7 +127,7 @@ Rules that must not be broken:
 2. Moves `up` apps past their deadline to `down` (atomically) and alerts; the email mentions the invalid attempts since the last signal.
 3. Sends the recovery emails (`recovery_pending`, set by the ping that brings the app back `up`).
 4. Failed-attempt summaries per app: at rest the first one goes out immediately, then windows of 5, 10, 20, 40, 80, 120 minutes; a window with attempts produces a summary and moves up a level, one without attempts moves down a level (never straight back to rest, to prevent bursts of emails). Logic in `monitor::escalate`, with tests.
-5. Cleans up attempts older than 7 days, expired sessions and abandoned logins.
+5. Cleans up attempts older than 7 days, expired sessions, abandoned logins and expired Telegram link tokens.
 
 At startup, deadlines that have already passed restart from now (`reschedule_overdue`). The state is saved before sending the email: a failed send is not retried.
 

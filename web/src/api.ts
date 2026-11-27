@@ -13,6 +13,8 @@ export interface User {
   database?: DatabaseInfo
   /** Master only, when the email transport has a key: last check (startup, then daily). */
   mail_key?: MailKeyStatus
+  /** Present only while the instance's Telegram bot is active (valid token). */
+  telegram?: { bot_username: string }
 }
 
 export interface MailKeyStatus {
@@ -193,6 +195,27 @@ export const deleteEntanglement = (id: string) =>
   request<void>(`/api/entanglements/${id}`, { method: 'DELETE' })
 export const pingEntanglement = (id: string) =>
   request<Entanglement>(`/api/entanglements/${id}/ping`, { method: 'POST' })
+
+export interface TelegramLink {
+  id: string
+  /** "@username" or first name. */
+  label: string
+  created_at: number
+  /** Telegram refused delivery (bot blocked): no alerts until the chat writes again. */
+  disabled_at: number | null
+}
+
+export interface TelegramOverview {
+  bot_username: string
+  bot_url: string
+  links: TelegramLink[]
+}
+
+export const getTelegram = () => request<TelegramOverview>('/api/me/telegram')
+export const createTelegramLink = () =>
+  request<{ url: string; expires_at: number }>('/api/me/telegram/link', { method: 'POST' })
+export const sendTelegramTest = () => request<void>('/api/me/telegram/test', { method: 'POST' })
+export const deleteTelegramLink = (id: string) => request<void>(`/api/me/telegram/${id}`, { method: 'DELETE' })
 
 /** Login is a full navigation: it goes through Google and comes back with the cookie. */
 export const LOGIN_URL = '/auth/google/login'

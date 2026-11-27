@@ -17,8 +17,10 @@ pub struct Config {
     pub secrets_key: [u8; 32],
     pub secrets_key_version: i64,
     /// Header to read the client IP from behind a proxy:
-    /// `x-forwarded-for` (CapRover) o `cf-connecting-ip` (Cloudflare).
+    /// `x-forwarded-for` (CapRover) or `cf-connecting-ip` (Cloudflare).
     pub client_ip_header: Option<String>,
+    /// Bot token from BotFather (`TELEGRAM_BOT_TOKEN`): without it Telegram is off.
+    pub telegram_bot_token: Option<String>,
 }
 
 pub struct MailConfig {
@@ -195,6 +197,10 @@ impl Config {
                 .ok()
                 .map(|h| h.trim().to_lowercase())
                 .filter(|h| !h.is_empty()),
+            telegram_bot_token: std::env::var("TELEGRAM_BOT_TOKEN")
+                .ok()
+                .map(|t| t.trim().to_owned())
+                .filter(|t| !t.is_empty()),
         })
     }
 

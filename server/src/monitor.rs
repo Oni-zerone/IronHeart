@@ -2,7 +2,9 @@
 //! to `down`, prepares alerts and cleans up old data.
 //!
 //! Alerts are grouped by recipient (one email per type each round) and go to
-//! the email queue (`outbox`): the check does not wait for sends.
+//! the alert queue (`outbox`): the check does not wait for sends. A recipient
+//! email that belongs to an account with linked Telegram chats gets the same
+//! alert in those chats.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -13,7 +15,7 @@ use crate::{
     AppState,
     alerts::{self, DownItem, FailureItem, RecoveredItem},
     clock::{DAY_MS, MINUTE_MS, now_ms},
-    db,
+    db, telegram,
 };
 
 pub const TICK: Duration = Duration::from_secs(30);
@@ -170,20 +172,45 @@ pub async fn tick(state: &AppState, memory: &mut Memory, now: i64) -> anyhow::Re
     }
 
     let apps_url = format!("{}/apps", state.public_base_url);
+    let failure_digests = due_failure_digests(memory, now);
+    let chats = telegram_chats(state, !downs.is_empty() || !recoveries.is_empty() || !failure_digests.is_empty()).await?;
+    let chats_of = |to: &str| chats.get(to).map(Vec::as_slice).unwrap_or_default();
     for (to, items) in &downs {
         state.outbox.urgent(alerts::down_digest(to, items, now, &apps_url)).await;
+        for &chat_id in chats_of(to) {
+            state.outbox.urgent(telegram::Message::text(chat_id, telegram::text::down(items, now, &apps_url))).await;
+        }
     }
     for (to, items) in &recoveries {
         state.outbox.urgent(alerts::recovered_digest(to, items, &apps_url)).await;
+        for &chat_id in chats_of(to) {
+            state.outbox.urgent(telegram::Message::text(chat_id, telegram::text::recovered(items, &apps_url))).await;
+        }
     }
-    for (to, items) in due_failure_digests(memory, now) {
+    for (to, items) in failure_digests {
         state.outbox.report(alerts::failures_digest(&to, &items, FAILURE_DIGEST_MIN_MS, &apps_url));
+        for &chat_id in chats_of(&to) {
+            state.outbox.report(telegram::Message::text(chat_id, telegram::text::failures(&items, &apps_url)));
+        }
     }
 
     db::delete_failure_buckets_before(pool, now - FAILURE_RETENTION_MS).await?;
     db::delete_expired_sessions(pool, now).await?;
     db::delete_oauth_flows_before(pool, now - LOGIN_TTL_MS).await?;
+    db::delete_telegram_tokens_before(pool, now).await?;
     Ok(())
+}
+
+/// Linked chats per account email: read only when there is something to send
+/// and the bot is active (one query per round).
+async fn telegram_chats(state: &AppState, needed: bool) -> anyhow::Result<HashMap<String, Vec<i64>>> {
+    let mut chats: HashMap<String, Vec<i64>> = HashMap::new();
+    if needed && state.telegram.is_active() {
+        for (email, chat_id) in db::telegram_routes(&state.db).await? {
+            chats.entry(email).or_default().push(chat_id);
+        }
+    }
+    Ok(chats)
 }
 
 fn queue_failure(memory: &mut Memory, to: String, item: FailureItem) {

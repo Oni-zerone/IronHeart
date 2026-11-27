@@ -71,6 +71,7 @@ All variables are listed in [.env.example](.env.example).
 | `MAIL_FROM_EMAIL`, `MAIL_FROM_NAME` | with a provider | Sender of the alerts. The address or its domain must be verified with the provider. |
 | `DATABASE_URL` | no | `postgres://…` for an external Postgres (`?sslmode=require` for managed databases). Without it: SQLite in `/data`, which needs a volume. See [Database](#database). |
 | `CLIENT_IP_HEADER` | behind a proxy | Header with the client IP: `x-forwarded-for` (last value) or `cf-connecting-ip` with Cloudflare. Used only in the invalid-attempt summaries. |
+| `TELEGRAM_BOT_TOKEN` | no | Token of the instance's Telegram bot (BotFather). Without it, or if Telegram refuses it, Telegram does not appear anywhere. See [Telegram](#telegram). |
 | `BIND_ADDR` | no | Listening address; `0.0.0.0:8080` in the image. |
 
 ### Keys and secrets
@@ -149,6 +150,19 @@ With every app up IronHeart sends no email for months, so a broken key would onl
 Sends are used instead of reads because keys that may only send (Resend "Sending access", Mailgun domain sending keys, a Scaleway key with only `TransactionalEmailEmailApiCreate`) are refused on reads.
 
 If the provider refuses the key (401/403; 404 to the empty send, i.e. a wrong Mailgun domain or region; a 5xx, missing login mechanism or TLS failure on SMTP), the error is logged, the master sees `!! mail key` in the top bar, and the outgoing [entanglement](CLAUDE.md#entanglement-master-only) pings stop, so the other instances report this one as down with their own email. While refused, the key is checked again every hour and the pings resume as soon as the provider accepts it. To fix it, create a new key, set it and restart. A network error or an outage at the provider does not stop the pings.
+
+## Telegram
+
+Each instance can have its own Telegram bot: alerts also arrive in the linked chats, and the bot answers a few fixed commands about the user's applications. It is optional.
+
+1. Create the bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and set its token in `TELEGRAM_BOT_TOKEN`.
+2. Restart. At startup the service calls `getMe`: if Telegram accepts the token, the log says `telegram: bot @<name> active`, the commands are registered with `setMyCommands`, and every user sees `/telegram` in the dashboard. Without a token, or with a token Telegram refuses, Telegram does not appear anywhere (the API answers 404).
+3. Each user opens `/telegram`, presses "link telegram" and opens the link (valid 10 minutes, single use) on the device with Telegram.
+
+- One bot per instance, read with long polling (`getUpdates`): no public endpoint is needed, but the same token must not be used by two instances (Telegram gives the updates to only one reader).
+- Telegram follows the email recipients: a chat receives an app's alerts when the address of its account receives them.
+- Commands: `/apps`, `/down`, `/status`, `/attempts`, `/pause`, `/resume` (with a confirmation button), `/test`, `/stop`, `/help`. They answer only in private chats linked to an account, and only about that account's applications.
+- If a user blocks the bot, the chat is disabled until it writes to the bot again.
 
 ## Database
 

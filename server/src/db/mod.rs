@@ -8,6 +8,7 @@ mod apps;
 mod auth;
 mod entanglements;
 mod failures;
+mod telegram;
 mod users;
 
 use std::time::Duration;
@@ -21,6 +22,7 @@ pub use apps::*;
 pub use auth::*;
 pub use entanglements::*;
 pub use failures::*;
+pub use telegram::*;
 pub use users::*;
 
 pub type Pool = AnyPool;

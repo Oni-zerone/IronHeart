@@ -263,7 +263,7 @@ pub fn failures(
     .into_email(to, format!("IronHeart: invalid attempts for “{}”", app.name))
 }
 
-fn datetime(ms: i64) -> String {
+pub fn datetime(ms: i64) -> String {
     OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000)
         .ok()
         .and_then(|dt| dt.format(format_description!("[year]-[month]-[day] [hour]:[minute] UTC")).ok())
