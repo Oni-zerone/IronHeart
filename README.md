@@ -232,7 +232,7 @@ Results:
 - **Every forged attempt is counted**: 3,013,390 sent, 3,013,390 written to the summaries.
 - **Email under control**: the attack on all 2,000 apps produced 20 emails, one per recipient.
 - **No slow round** of the periodic check and no errors in the log. The SQLite database ended at 7 MB.
-- The Telegram channel (PR #9, with a fake Bot API and one linked chat per user) gave the same numbers, within 3%, and 20 messages, one per chat.
+- With Telegram enabled (a fake Bot API, one linked chat per user) the numbers were the same, within 3%, and the attack produced 20 Telegram messages, one per chat.
 
 **Bug found by this test**: the `scratch` image has no `/tmp`, so SQLite could not create the temporary file it needs for the bulk ping write (`UPDATE … FROM (VALUES …)` with 500 rows) and failed with `disk I/O error` (`SQLITE_IOERR_GETTEMPPATH`): valid pings got a `204` but were never written, and all 2,000 apps stayed `new`. The earlier test had been run before the switch to `scratch`. Now every connection sets `PRAGMA temp_store = MEMORY`: only that scratch data of a single statement stays in memory, while the database and its WAL stay on the volume as before.
 
