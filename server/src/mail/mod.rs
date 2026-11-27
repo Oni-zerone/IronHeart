@@ -15,8 +15,51 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use lettre::{AsyncSmtpTransport, Tokio1Executor};
+use reqwest::StatusCode;
 
 use crate::config::{MailConfig, MailTransport, MailgunRegion};
+
+/// Outcome of a check of the provider's key (or of the SMTP login).
+#[derive(Debug, PartialEq, Eq)]
+pub enum KeyCheck {
+    Valid,
+    /// The provider refused the key (401/403): expired, revoked or wrong.
+    Rejected(String),
+    /// Provider unreachable or answering with another error: retry later.
+    Unreachable(String),
+}
+
+/// What a provider's check request answers when the key works.
+#[derive(Clone, Copy, Debug)]
+enum Probe {
+    /// An authenticated read: 2xx.
+    Read,
+    /// A send with no recipient or content: the provider accepts the key and
+    /// refuses the body (400 or 422), so nothing is sent. Works with keys that
+    /// may only send, which a read would refuse.
+    EmptySend,
+}
+
+impl KeyCheck {
+    fn from_response(provider: &str, probe: Probe, status: StatusCode, body: &str) -> Self {
+        let accepted = match probe {
+            Probe::Read => status.is_success(),
+            Probe::EmptySend => {
+                status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY
+            }
+        };
+        if accepted {
+            return Self::Valid;
+        }
+        let body: String = body.chars().take(200).collect();
+        let detail = format!("{provider} answered {status}: {body}");
+        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+            Self::Rejected(detail)
+        } else {
+            Self::Unreachable(detail)
+        }
+    }
+}
 
 /// An email to a single recipient: with several recipients one email is sent
 /// to each, so nobody sees the other addresses.
@@ -44,7 +87,11 @@ enum Transport {
     Postmark { server_token: String, message_stream: String },
     Mailgun { api_key: String, domain: String },
     Scaleway { secret_key: String, project_id: String, region: String },
-    Smtp(AsyncSmtpTransport<Tokio1Executor>),
+    Smtp {
+        transport: AsyncSmtpTransport<Tokio1Executor>,
+        /// With credentials the login is checked like an API key.
+        authenticated: bool,
+    },
 }
 
 impl Mailer {
@@ -78,7 +125,13 @@ impl Mailer {
                     region: region.clone(),
                 },
             ),
-            MailTransport::Smtp(smtp) => ("", Transport::Smtp(smtp::transport(smtp)?)),
+            MailTransport::Smtp(smtp) => (
+                "",
+                Transport::Smtp {
+                    transport: smtp::transport(smtp)?,
+                    authenticated: smtp.credentials.is_some(),
+                },
+            ),
         };
         Ok(Self {
             from_email: config.from_email.clone(),
@@ -97,8 +150,52 @@ impl Mailer {
             Transport::Postmark { .. } => "Postmark",
             Transport::Mailgun { .. } => "Mailgun",
             Transport::Scaleway { .. } => "Scaleway",
-            Transport::Smtp(_) => "SMTP",
+            Transport::Smtp { .. } => "SMTP",
         }
+    }
+
+    /// Every HTTP provider has a key to check; SMTP only with credentials
+    /// (Mailpit has none).
+    pub fn has_key(&self) -> bool {
+        match self.transport {
+            Transport::Smtp { authenticated, .. } => authenticated,
+            _ => true,
+        }
+    }
+
+    /// Checks the configured provider's key, and only that one: the other
+    /// providers are off. `None` when there is no key (SMTP without login).
+    /// For Brevo, which deactivates keys unused for 90 days, the check also
+    /// keeps the key in use when no alert has been sent for a while.
+    pub async fn check_key(&self) -> Option<KeyCheck> {
+        let provider = self.describe();
+        let (probe, request) = match &self.transport {
+            Transport::Brevo { api_key } => (Probe::Read, brevo::check(self, api_key)),
+            Transport::Postmark { server_token, .. } => {
+                (Probe::Read, postmark::check(self, server_token))
+            }
+            Transport::Resend { api_key } => (Probe::EmptySend, resend::check(self, api_key)),
+            Transport::Mailgun { api_key, domain } => {
+                (Probe::EmptySend, mailgun::check(self, api_key, domain))
+            }
+            Transport::Scaleway { secret_key, project_id, region } => {
+                (Probe::EmptySend, scaleway::check(self, secret_key, project_id, region))
+            }
+            Transport::Smtp { transport, authenticated } => {
+                return match authenticated {
+                    true => Some(smtp::check(transport).await),
+                    false => None,
+                };
+            }
+        };
+        Some(match request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                KeyCheck::from_response(provider, probe, status, &body)
+            }
+            Err(err) => KeyCheck::Unreachable(format!("{provider} unreachable: {err}")),
+        })
     }
 
     pub async fn send(&self, email: &Email) -> anyhow::Result<()> {
@@ -114,7 +211,7 @@ impl Mailer {
             Transport::Scaleway { secret_key, project_id, region } => {
                 scaleway::request(self, secret_key, project_id, region, email)
             }
-            Transport::Smtp(transport) => return smtp::send(self, transport, email).await,
+            Transport::Smtp { transport, .. } => return smtp::send(self, transport, email).await,
         };
         check(self.describe(), request.send().await).await
     }
@@ -234,6 +331,64 @@ mod tests {
             text: "Hello".into(),
             html: "<p>Hello</p>".into(),
         }
+    }
+
+    #[test]
+    fn key_check_classifies_responses() {
+        use Probe::*;
+        let check = |probe, status: u16, body| {
+            KeyCheck::from_response("P", probe, StatusCode::from_u16(status).unwrap(), body)
+        };
+        assert_eq!(check(Read, 200, ""), KeyCheck::Valid);
+        assert!(matches!(
+            check(Read, 401, r#"{"code":"unauthorized"}"#),
+            KeyCheck::Rejected(detail) if detail.contains("401") && detail.contains("unauthorized")
+        ));
+        assert!(matches!(check(Read, 403, ""), KeyCheck::Rejected(_)));
+        assert!(matches!(check(Read, 502, ""), KeyCheck::Unreachable(_)));
+        assert!(matches!(check(Read, 429, ""), KeyCheck::Unreachable(_)));
+        assert!(matches!(check(Read, 422, ""), KeyCheck::Unreachable(_)));
+
+        // The empty send is refused for its body: the key was accepted.
+        assert_eq!(check(EmptySend, 400, ""), KeyCheck::Valid);
+        assert_eq!(check(EmptySend, 422, ""), KeyCheck::Valid);
+        assert!(matches!(check(EmptySend, 401, ""), KeyCheck::Rejected(_)));
+        assert!(matches!(check(EmptySend, 403, ""), KeyCheck::Rejected(_)));
+        assert!(matches!(check(EmptySend, 404, ""), KeyCheck::Unreachable(_)));
+        assert!(matches!(check(EmptySend, 500, ""), KeyCheck::Unreachable(_)));
+        assert!(matches!(check(EmptySend, 429, ""), KeyCheck::Unreachable(_)));
+    }
+
+    #[tokio::test]
+    async fn only_smtp_without_login_has_no_key() {
+        use crate::config::{SmtpConfig, SmtpTls};
+        let smtp = |credentials| {
+            MailTransport::Smtp(SmtpConfig {
+                host: "localhost".into(),
+                port: 9,
+                tls: SmtpTls::None,
+                credentials,
+            })
+        };
+        let mailpit = mailer(smtp(None), "");
+        assert!(!mailpit.has_key());
+        assert_eq!(mailpit.check_key().await, None);
+
+        let login = mailer(smtp(Some(("u".into(), "p".into()))), "");
+        assert!(login.has_key());
+        // Nobody listens on port 9: not a refusal.
+        assert!(matches!(login.check_key().await, Some(KeyCheck::Unreachable(_))));
+
+        assert!(mailer(MailTransport::Resend { api_key: "k".into() }, "").has_key());
+    }
+
+    #[tokio::test]
+    async fn unreachable_provider_is_not_a_refusal() {
+        let mailer = mailer(MailTransport::Resend { api_key: "k".into() }, "http://127.0.0.1:9");
+        assert!(matches!(
+            mailer.check_key().await,
+            Some(KeyCheck::Unreachable(detail)) if detail.starts_with("Resend unreachable")
+        ));
     }
 
     #[test]

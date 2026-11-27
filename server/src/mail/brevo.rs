@@ -42,6 +42,15 @@ struct Address<'a> {
     name: Option<&'a str>,
 }
 
+/// Cheapest authenticated read: checks the key and keeps it in use.
+pub fn check(mailer: &Mailer, api_key: &str) -> reqwest::RequestBuilder {
+    mailer
+        .http
+        .get(format!("{}/v3/account", mailer.base_url))
+        .header("api-key", api_key)
+        .header("accept", "application/json")
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
@@ -73,5 +82,15 @@ mod tests {
         assert_eq!((received.method.as_str(), received.path.as_str()), ("POST", "/v3/smtp/email"));
         assert_eq!(received.header("api-key"), Some("xkeysib-1"));
         assert_eq!(received.header("content-type"), Some("application/json"));
+    }
+
+    #[tokio::test]
+    async fn key_check_reads_the_account() {
+        let (url, received) = server(StatusCode::OK, "{}").await;
+        let mailer = mailer(MailTransport::Brevo { api_key: "xkeysib-1".into() }, &url);
+        assert_eq!(mailer.check_key().await, Some(crate::mail::KeyCheck::Valid));
+        let received = received.lock().unwrap();
+        assert_eq!((received.method.as_str(), received.path.as_str()), ("GET", "/v3/account"));
+        assert_eq!(received.header("api-key"), Some("xkeysib-1"));
     }
 }

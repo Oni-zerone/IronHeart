@@ -48,6 +48,22 @@ struct Address<'a> {
     name: Option<&'a str>,
 }
 
+/// A send with only the project: 400 when the key is valid and may send in the
+/// project, 401/403 otherwise. A key with only the permission to send
+/// (`TransactionalEmailEmailApiCreate`) cannot read, so a read cannot be used.
+pub fn check(
+    mailer: &Mailer,
+    secret_key: &str,
+    project_id: &str,
+    region: &str,
+) -> reqwest::RequestBuilder {
+    mailer
+        .http
+        .post(format!("{}/transactional-email/v1alpha1/regions/{region}/emails", mailer.base_url))
+        .header("x-auth-token", secret_key)
+        .json(&serde_json::json!({ "project_id": project_id }))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
@@ -90,5 +106,24 @@ mod tests {
         );
         assert_eq!(received.header("x-auth-token"), Some("scw-1"));
         assert_eq!(received.header("content-type"), Some("application/json"));
+    }
+
+    #[tokio::test]
+    async fn key_check_sends_nothing() {
+        let (url, received) = server(StatusCode::FORBIDDEN, r#"{"type":"permissions_denied"}"#).await;
+        let transport = MailTransport::Scaleway {
+            secret_key: "scw-1".into(),
+            project_id: "p-1".into(),
+            region: "fr-par".into(),
+        };
+        let mailer = mailer(transport, &url);
+        assert!(matches!(mailer.check_key().await, Some(crate::mail::KeyCheck::Rejected(_))));
+        let received = received.lock().unwrap();
+        assert_eq!(
+            (received.method.as_str(), received.path.as_str()),
+            ("POST", "/transactional-email/v1alpha1/regions/fr-par/emails")
+        );
+        assert_eq!(received.header("x-auth-token"), Some("scw-1"));
+        assert_eq!(received.body, r#"{"project_id":"p-1"}"#);
     }
 }

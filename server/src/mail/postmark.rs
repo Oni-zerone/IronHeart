@@ -43,6 +43,16 @@ struct Payload<'a> {
     message_stream: &'a str,
 }
 
+/// Reads the server the token belongs to: 200 with a valid Server token, 401
+/// otherwise (<https://postmarkapp.com/developer/api/server-api>).
+pub fn check(mailer: &Mailer, server_token: &str) -> reqwest::RequestBuilder {
+    mailer
+        .http
+        .get(format!("{}/server", mailer.base_url))
+        .header("x-postmark-server-token", server_token)
+        .header("accept", "application/json")
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
@@ -78,5 +88,19 @@ mod tests {
         assert_eq!((received.method.as_str(), received.path.as_str()), ("POST", "/email"));
         assert_eq!(received.header("x-postmark-server-token"), Some("pm-1"));
         assert_eq!(received.header("content-type"), Some("application/json"));
+    }
+
+    #[tokio::test]
+    async fn key_check_reads_the_server() {
+        let (url, received) = server(StatusCode::UNAUTHORIZED, r#"{"ErrorCode":10}"#).await;
+        let transport = MailTransport::Postmark {
+            server_token: "pm-1".into(),
+            message_stream: "outbound".into(),
+        };
+        let mailer = mailer(transport, &url);
+        assert!(matches!(mailer.check_key().await, Some(crate::mail::KeyCheck::Rejected(_))));
+        let received = received.lock().unwrap();
+        assert_eq!((received.method.as_str(), received.path.as_str()), ("GET", "/server"));
+        assert_eq!(received.header("x-postmark-server-token"), Some("pm-1"));
     }
 }

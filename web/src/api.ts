@@ -11,6 +11,17 @@ export interface User {
   is_master: boolean
   /** Master only: the database the instance runs on. */
   database?: DatabaseInfo
+  /** Master only, when the email transport has a key: last check (startup, then daily). */
+  mail_key?: MailKeyStatus
+}
+
+export interface MailKeyStatus {
+  /** Provider checked: Brevo, Resend, Postmark, Mailgun, Scaleway or SMTP. */
+  provider: string
+  state: 'ok' | 'rejected' | 'unreachable'
+  /** Unix milliseconds. */
+  checked_at: number
+  error?: string
 }
 
 export interface DatabaseInfo {

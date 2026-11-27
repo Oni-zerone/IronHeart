@@ -72,6 +72,7 @@ The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) 
 - This instance sends heartbeats to other IronHeart instances (`entanglements`), so they monitor each other. Only the master configures it (`MasterUser`, API `/api/entanglements`, page `/entanglement`); it is an instance setting, not a user setting.
 - Each link: origin of the other instance (HTTPS, HTTP only to localhost, no path), key ID and secret of an app created there, interval from 10 seconds to 1 day, active or paused. The secret is encrypted with `SECRETS_KEY` (associated data `entanglement:<id>`) and is never returned to the client.
 - `entanglement::spawn`: every 5 seconds sends the pings that are due (`take_due_pings` moves the deadline forward immediately); at startup every active link sends a ping. The timestamp always increases per link, even with "Send now" in the same second. Redirects are not followed, 10-second timeout.
+- While this instance's email key is refused (`mail_check`, any provider), pings are not sent and the link records `HELD_ERROR` as its error: the other instances see this one go down and alert with their own email. At startup the first ping waits for the first key check.
 - The other instance always answers 204: here we only record whether the ping was delivered (`last_success_at`, `last_error`). A wrong key is reported by the other instance as invalid attempts.
 
 ## Email
@@ -82,6 +83,14 @@ The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) 
 - The HTTP APIs also work where outgoing SMTP is blocked (some DigitalOcean accounts). One HTTP client with a 15-second timeout; in tests the base URL points to an axum server on `127.0.0.1`.
 - One email per recipient, so nobody sees the other addresses. No retries and no failover between providers.
 - `POST /api/me/test-email` sends a test email to the signed-in user.
+- Only the transport named in `MAIL_TRANSPORT` is on: the other providers' variables are ignored, and only its key is checked.
+- `mail_check` checks the key at startup and then every day (every hour after a network error, 5xx/429, an unexpected answer or a refusal, so a refusal by mistake does not hold the pings for long). A refusal is logged as an error, shown to the master in `/api/me` (`mail_key`, with `provider`; the `!! mail key` chip in the top bar) and holds the entanglement pings (see Entanglement): no email is attempted, since it would go through the refused key. A network error does not hold the pings. The check, per provider (`Mailer::check_key`):
+  - Brevo: `GET /v3/account`, 2xx valid, 401/403 refused. Brevo deactivates keys unused for 90 days (with every app up no email goes out), and this read keeps the key in use.
+  - Postmark: `GET /server` with the server token, 2xx valid, 401 refused.
+  - Resend, Mailgun, Scaleway: a send with an empty body (Scaleway: only `project_id`), so nothing goes out. 400/422 means the key was accepted and the body refused (valid); 401/403 refused; anything else is an unexpected answer. A read cannot be used: keys that may only send (Resend "Sending access", Mailgun domain sending keys, Scaleway `TransactionalEmailEmailApiCreate`) are refused on reads.
+  - SMTP with credentials: connects and logs in (`test_connection`); a permanent (5xx) answer is a refusal. SMTP without credentials (Mailpit): no check.
+  - Per the providers' documentation, only Brevo expires keys for inactivity. Resend, Postmark, Mailgun and Scaleway keys stay valid until deleted, but Mailgun (`expiration`) and Scaleway (expiration date, or an organization maximum) keys can be created with a fixed lifetime: the daily check notices within a day.
+- Every email (alerts, invite, test) is drawn with `mail_layout::Letter` in the dashboard's ASCII style: a 56-column grid with the top bar, the ECG line (flat when an app is down), an `AsciiBox`-style frame and a `[ button ]`. The HTML part is one `<pre>` with inline styles on black; the text part is the same drawing with the URL below the frame. Text is wrapped in Rust, so body copy stays ASCII (`-`, `"`, `...`) to keep the borders aligned.
 
 ## Heartbeat
 

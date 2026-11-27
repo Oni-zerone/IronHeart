@@ -13,7 +13,7 @@ use lettre::{
     },
 };
 
-use super::{Email, Mailer};
+use super::{Email, KeyCheck, Mailer};
 use crate::config::{SmtpConfig, SmtpTls};
 
 /// TLS with rustls and the webpki roots, the same stack as `reqwest`.
@@ -33,6 +33,17 @@ pub fn transport(config: &SmtpConfig) -> anyhow::Result<AsyncSmtpTransport<Tokio
         builder = builder.credentials(Credentials::new(user.clone(), password.clone()));
     }
     Ok(builder.build())
+}
+
+/// Connects and logs in, then quits. A permanent (5xx) answer, such as a
+/// refused login, cannot be fixed by retrying: alerts would not go out.
+pub async fn check(transport: &AsyncSmtpTransport<Tokio1Executor>) -> KeyCheck {
+    match transport.test_connection().await {
+        Ok(true) => KeyCheck::Valid,
+        Ok(false) => KeyCheck::Unreachable("SMTP server did not answer".into()),
+        Err(err) if err.is_permanent() => KeyCheck::Rejected(format!("SMTP server refused: {err}")),
+        Err(err) => KeyCheck::Unreachable(format!("SMTP unreachable: {err}")),
+    }
 }
 
 pub async fn send(

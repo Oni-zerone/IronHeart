@@ -1,3 +1,29 @@
+<div align="center">
+<pre>
+                  .-=====-.       .-=====-.                 
+                :*#########*-   -*#########*:               
+               =##########  #+.+#############=              
+              :##########    #*###############:             
+              :#########  #  #################:             
+                         ###  ###############+              
+ . - --- ----==.=###########   #############=.==---- --- - .
+                 .=##########  ##                           
+                   .=########      #####=.                  
+                     .-*######    ###*-.                    
+                        .=####   ##=.                       
+                          .=#####=.                         
+                            .+#+.                           
+                              -                             
+</pre>
+<pre>
+ ___                 _   _                 _   
+|_ _|_ __ ___  _ __ | | | | ___  __ _ _ __| |_ 
+ | || '__/ _ \| '_ \| |_| |/ _ \/ _` | '__| __|
+ | || | | (_) | | | |  _  |  __/ (_| | |  | |_ 
+|___|_|  \___/|_| |_|_| |_|\___|\__,_|_|   \__|
+</pre>
+</div>
+
 # IronHeart
 
 Lightweight heartbeat service. Every registered application sends a signed ping at regular intervals: if the ping does not arrive within the expected interval, IronHeart emails the application's recipients.
@@ -27,12 +53,46 @@ docker run -d --name ironheart -p 8080:8080 \
   ghcr.io/oni-zerone/ironheart:latest
 ```
 
-- The variables are the ones in [.env.example](.env.example). Keep `SECRETS_KEY` somewhere safe: without it the app secrets cannot be decrypted.
-- Register `PUBLIC_BASE_URL` + `/auth/google/callback` as redirect URI on Google.
-- Without `DATABASE_URL` the data stays in SQLite on the `/data` volume; with `DATABASE_URL=postgres://…` it goes to Postgres.
-- Behind a proxy set `CLIENT_IP_HEADER` (`x-forwarded-for`, or `cf-connecting-ip` with Cloudflare). Health check: `GET /health`.
+Any container platform works: the service needs one port (`8080`), the environment variables below and, only with SQLite, a volume on `/data`. Run a single instance: deadlines, the key registry and the alert queue live in the process. Put it behind a reverse proxy that terminates HTTPS. Health check: `GET /health`.
 
 Tags: `latest` and `X.Y.Z` / `X.Y` for releases, `edge` for the latest commit on `main`.
+
+### Configuration
+
+All variables are listed in [.env.example](.env.example).
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `PUBLIC_BASE_URL` | yes | Address users open in the browser, e.g. `https://ironheart.example.com`, without a trailing `/`. It builds the Google redirect URI and the links in the emails; with `https://` the cookies are `Secure`. |
+| `ADMIN_EMAIL` | yes | Master user: can always sign in, is always admin, invites the others. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | yes | OAuth client, see [Google sign-in](#google-sign-in). |
+| `SECRETS_KEY` | yes | Master key for the app secrets, see [Keys and secrets](#keys-and-secrets). |
+| `MAIL_TRANSPORT` | in production | `brevo`, `resend`, `postmark`, `mailgun`, `scaleway` or `smtp` (default: Mailpit in development). Each needs its own variables, see [Email](#email). |
+| `MAIL_FROM_EMAIL`, `MAIL_FROM_NAME` | with a provider | Sender of the alerts. The address or its domain must be verified with the provider. |
+| `DATABASE_URL` | no | `postgres://…` for an external Postgres (`?sslmode=require` for managed databases). Without it: SQLite in `/data`, which needs a volume. See [Database](#database). |
+| `CLIENT_IP_HEADER` | behind a proxy | Header with the client IP: `x-forwarded-for` (last value) or `cf-connecting-ip` with Cloudflare. Used only in the invalid-attempt summaries. |
+| `BIND_ADDR` | no | Listening address; `0.0.0.0:8080` in the image. |
+
+### Keys and secrets
+
+- **`SECRETS_KEY`** encrypts (AES-256-GCM) the secrets of the registered apps and of the entanglement links: generate it once with `openssl rand -base64 32` and keep a copy outside the server, next to the database backups. It never changes: with a different key the existing secrets cannot be decrypted, and every app would need a new key (rotated from the dashboard) and every client updated. A database backup is useless without this key.
+- **App keys** are created in the dashboard: a public key ID (12 characters) and a secret `ihs_…`, shown only once. The database holds only the encrypted secret. If a secret is lost or leaked, rotate it from the app page: the old one stops working immediately.
+- **`GOOGLE_CLIENT_SECRET`** belongs to the OAuth client (see below). If it leaks, add a new secret to the client on Google, deploy it, then delete the old one.
+- **The email key** (`BREVO_API_KEY`, `RESEND_API_KEY`, …) is checked at startup and then every day, see [Email](#email). Give every instance its own key (better, its own account with the provider): instances that share one go down together, and none of them is left to send the alert.
+- Configuration goes in the platform's environment variables or secret store, never in the image or in the repository (`.env` is ignored by git).
+
+### Google sign-in
+
+IronHeart signs users in with Google OpenID Connect (server side, with PKCE) and only asks for `openid`, `email` and `profile`. In the [Google Cloud Console](https://console.cloud.google.com/):
+
+1. Create a project (or pick an existing one) and open **Google Auth Platform**.
+2. **Branding**: app name, support email and developer contact. Under *Authorized domains* add the domain of `PUBLIC_BASE_URL` (e.g. `example.com`).
+3. **Audience**: choose *External* to allow any Google account (access is still invite-only inside IronHeart), or *Internal* to limit it to your Google Workspace organization. An External app in *Testing* only accepts the test users listed on this page: add yourself, or click *Publish app*. With only these basic scopes no Google verification is required.
+4. **Data access**: add the scopes `openid`, `.../auth/userinfo.email` and `.../auth/userinfo.profile`.
+5. **Clients → Create client**, type *Web application*. Under *Authorized redirect URIs* add `PUBLIC_BASE_URL` + `/auth/google/callback`, e.g. `https://ironheart.example.com/auth/google/callback`. For development also add `http://localhost:8080/auth/google/callback` and, with Vite, `http://localhost:5173/auth/google/callback` (or use a separate client). *Authorized JavaScript origins* are not needed.
+6. Copy the client ID and the client secret into `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. Copy the secret right away: the console may not show it again.
+
+The redirect URI must match `PUBLIC_BASE_URL` exactly (scheme, host, port): a mismatch shows up as `redirect_uri_mismatch` on Google's page. Only addresses verified by Google are accepted. On a new instance only `ADMIN_EMAIL` can sign in: everyone else needs an invite from an admin (page `/users`), otherwise the login ends on `/?login=denied` and no account is created.
 
 ### Releasing
 
@@ -71,6 +131,24 @@ The provider is chosen with `MAIL_TRANSPORT`; the sender is `MAIL_FROM_EMAIL` / 
 - The HTTP APIs also work where outgoing SMTP ports are blocked (some DigitalOcean accounts).
 - A wrong configuration stops the startup with the name of the missing variable; the log names only the provider, never the credentials. `POST /api/me/test-email` sends a test email to the signed-in user.
 - A failed send is not retried and there is no failover between providers.
+- Only the provider named in `MAIL_TRANSPORT` is on: the variables of the others are ignored.
+
+### Key check
+
+With every app up IronHeart sends no email for months, so a broken key would only show at the first alert. The service therefore checks the key of the configured provider at startup and then every day:
+
+| Provider | Check | Expiry, per the provider's documentation |
+|---|---|---|
+| Brevo | `GET /v3/account` | Keys unused for 90 days are deactivated: the daily read keeps the key in use. |
+| Resend | a send with an empty body, refused for the missing fields: nothing goes out | None: keys stay valid until deleted (unused ones are only flagged after 30 days). |
+| Postmark | `GET /server` | None documented. |
+| Mailgun | a send with no fields, refused for the missing fields | None for inactivity; a key can be created with a fixed lifetime (`expiration`). |
+| Scaleway | a send with only the project, refused for the missing fields | None for inactivity; a key can have an expiration date, or the organization a maximum duration. |
+| SMTP | connection and login (only with `SMTP_USERNAME`) | Depends on the server. |
+
+Sends are used instead of reads because keys that may only send (Resend "Sending access", Mailgun domain sending keys, a Scaleway key with only `TransactionalEmailEmailApiCreate`) are refused on reads.
+
+If the provider refuses the key (401/403, or a 5xx to the SMTP login), the error is logged, the master sees `!! mail key` in the top bar, and the outgoing [entanglement](CLAUDE.md#entanglement-master-only) pings stop, so the other instances report this one as down with their own email. While refused, the key is checked again every hour and the pings resume as soon as the provider accepts it. To fix it, create a new key, set it and restart. A network error or an outage at the provider does not stop the pings.
 
 ## Database
 

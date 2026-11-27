@@ -29,6 +29,16 @@ fn form<'a>(mailer: &Mailer, email: &'a Email) -> [(&'static str, std::borrow::C
     ]
 }
 
+/// A send with no fields: 400 when the key is valid, 401 when it is not. Domain
+/// sending keys may only send, so a read cannot be used.
+pub fn check(mailer: &Mailer, api_key: &str, domain: &str) -> reqwest::RequestBuilder {
+    mailer
+        .http
+        .post(format!("{}/v3/{domain}/messages", mailer.base_url))
+        .basic_auth("api", Some(api_key))
+        .form(&[] as &[(&str, &str)])
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
@@ -84,5 +94,19 @@ mod tests {
         assert_eq!(received.header("content-type"), Some("application/x-www-form-urlencoded"));
         assert!(received.body.contains("to=a%40example.com"), "{}", received.body);
         assert!(received.body.contains("html=%3Cp%3EHello%3C%2Fp%3E"), "{}", received.body);
+    }
+
+    #[tokio::test]
+    async fn key_check_sends_nothing() {
+        let (url, received) = server(StatusCode::BAD_REQUEST, "{}").await;
+        let mailer = mailer(transport(MailgunRegion::Eu), &url);
+        assert_eq!(mailer.check_key().await, Some(crate::mail::KeyCheck::Valid));
+        let received = received.lock().unwrap();
+        assert_eq!(
+            (received.method.as_str(), received.path.as_str()),
+            ("POST", "/v3/mg.example.com/messages")
+        );
+        assert!(received.header("authorization").unwrap().starts_with("Basic "));
+        assert_eq!(received.body, "");
     }
 }

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- "<3", the symbol of the top bar, drawn on the character grid with square strokes. -->
+  <rect width="32" height="32" rx="4" fill="#000000"/>
+  <g fill="none" stroke="#78c5ee" stroke-width="3" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M13 9 6 16l7 7"/>
+    <path d="M18 9h8v14h-8M20 16h6"/>
+  </g>
+</svg>

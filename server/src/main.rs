@@ -13,6 +13,8 @@ mod load_tests;
 #[cfg(test)]
 mod db_bench;
 mod mail;
+mod mail_check;
+mod mail_layout;
 mod monitor;
 mod outbox;
 mod users;
@@ -49,6 +51,8 @@ pub struct AppState {
     entanglement: Arc<entanglement::Sender>,
     /// Database in use, shown to the master.
     database: Arc<db::DatabaseInfo>,
+    /// Outcome of the daily check of the email key, shown to the master.
+    mail_key: Arc<mail_check::KeyMonitor>,
 }
 
 #[tokio::main]
@@ -80,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         auth,
         outbox: outbox::Outbox::start(mailer.clone()),
+        mail_key: Arc::new(mail_check::KeyMonitor::new(mailer.has_key())),
         mailer,
         heartbeat,
         public_base_url: config.public_base_url.as_str().into(),
@@ -88,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
         database,
     };
     monitor::spawn(state.clone());
+    mail_check::spawn(state.clone());
     heartbeat::spawn_writer(state.clone());
     entanglement::spawn(state.clone());
     let shutdown_state = state.clone();
@@ -147,6 +153,7 @@ pub fn test_state(db: db::Pool, heartbeat: Arc<heartbeat::Heartbeat>) -> AppStat
         admin_email: "master@example.com".into(),
         entanglement: Arc::new(entanglement::Sender::new().unwrap()),
         database: Arc::new(db::DatabaseInfo::from_url("sqlite::memory:")),
+        mail_key: Arc::new(mail_check::KeyMonitor::new(false)),
     }
 }
 
@@ -168,12 +175,16 @@ struct Me {
     /// Master only: which database the instance runs on.
     #[serde(skip_serializing_if = "Option::is_none")]
     database: Option<db::DatabaseInfo>,
+    /// Master only: last check of the email key (absent without a key).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mail_key: Option<mail_check::KeyStatus>,
 }
 
 async fn me(State(state): State<AppState>, auth::CurrentUser(user): auth::CurrentUser) -> Json<Me> {
     let is_master = user.email == state.admin_email.as_ref();
     let database = is_master.then(|| (*state.database).clone());
-    Json(Me { user, is_master, database })
+    let mail_key = if is_master { state.mail_key.get() } else { None };
+    Json(Me { user, is_master, database, mail_key })
 }
 
 /// Sends a test email to the account's address, to check the configuration.
@@ -181,12 +192,14 @@ async fn send_test_email(
     State(state): State<AppState>,
     auth::CurrentUser(user): auth::CurrentUser,
 ) -> StatusCode {
-    let email = mail::Email {
-        to: user.email,
-        subject: "IronHeart: test email".into(),
-        text: "If you are reading this message, IronHeart can send you alerts.".into(),
-        html: "<p>If you are reading this message, IronHeart can send you alerts.</p>".into(),
-    };
+    let email = mail_layout::Letter {
+        title: "Test email".into(),
+        hot: false,
+        pulse: mail_layout::Pulse::Beat,
+        blocks: vec![mail_layout::Block::text("If you are reading this message, IronHeart can send you alerts.")],
+        action: Some(("open IronHeart".into(), format!("{}/", state.public_base_url))),
+    }
+    .into_email(&user.email, "IronHeart: test email".into());
     match state.mailer.send(&email).await {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(err) => {
@@ -241,18 +254,25 @@ mod tests {
 
     /// The database in use appears in `/api/me` only for the master.
     #[tokio::test]
-    async fn me_shows_database_only_to_master() {
+    async fn me_shows_database_and_mail_key_only_to_master() {
         let pool = db::test_pool().await;
         let secret_box = crypto::SecretBox::new(&[1; 32], 1);
         let hb = Arc::new(heartbeat::Heartbeat::load(&pool, secret_box, None).await.unwrap());
         let state = test_state(pool, hb);
         let user = |email: &str| db::User { id: "u".into(), email: email.into(), name: None, role: "admin".into() };
+        let json = |me: &Me| serde_json::to_value(me).unwrap();
+
+        // Before the first check (or without a key) there is no key status.
+        let Json(master) = me(State(state.clone()), auth::CurrentUser(user("master@example.com"))).await;
+        assert!(json(&master).get("mail_key").is_none());
+        state.mail_key.set(mail_check::KeyStatus { provider: "Brevo", state: "rejected", checked_at: 1, error: Some("401".into()) });
 
         let Json(master) = me(State(state.clone()), auth::CurrentUser(user("master@example.com"))).await;
-        let json = serde_json::to_value(&master).unwrap();
-        assert_eq!(json["database"]["backend"], "sqlite");
+        assert_eq!(json(&master)["database"]["backend"], "sqlite");
+        assert_eq!(json(&master)["mail_key"]["state"], "rejected");
 
         let Json(admin) = me(State(state), auth::CurrentUser(user("admin@example.com"))).await;
-        assert!(serde_json::to_value(&admin).unwrap().get("database").is_none());
+        assert!(json(&admin).get("database").is_none());
+        assert!(json(&admin).get("mail_key").is_none());
     }
 }
