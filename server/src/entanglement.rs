@@ -1,0 +1,354 @@
+//! Entanglement: heartbeat in uscita verso altre istanze di IronHeart, così più
+//! istanze si controllano a vicenda. Solo l'utente master lo configura.
+//!
+//! L'altra istanza risponde sempre 204: da qui si sa solo se il ping è stato
+//! consegnato. Se la chiave è sbagliata lo segnala l'altra istanza, con i
+//! riepiloghi dei tentativi non validi.
+
+use std::{collections::HashMap, sync::Mutex, time::Duration};
+
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    http::StatusCode,
+    routing::{get, post},
+};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::{
+    AppState,
+    apps::ApiError,
+    auth::MasterUser,
+    clock::now_ms,
+    crypto::{self, HEARTBEAT_PATH},
+    db::{self, DuePing, EntanglementInput},
+    heartbeat::{KEY_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER},
+};
+
+const TICK: Duration = Duration::from_secs(5);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const INTERVAL_RANGE: std::ops::RangeInclusive<i64> = 10..=86_400;
+
+pub struct Sender {
+    http: reqwest::Client,
+    /// Ultimo timestamp firmato per collegamento: deve crescere a ogni ping.
+    last_ts: Mutex<HashMap<String, i64>>,
+}
+
+impl Sender {
+    pub fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            http: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                // Il percorso firmato è fisso: un redirect non va seguito.
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?,
+            last_ts: Mutex::default(),
+        })
+    }
+
+    /// Timestamp in secondi, sempre maggiore del precedente per lo stesso
+    /// collegamento (al più 1 secondo avanti: dentro la tolleranza di ±5 minuti).
+    fn next_timestamp(&self, id: &str, now_secs: i64) -> i64 {
+        let mut last = self.last_ts.lock().expect("lock dei timestamp");
+        let ts = last.get(id).map_or(now_secs, |prev| now_secs.max(prev + 1));
+        last.insert(id.to_owned(), ts);
+        ts
+    }
+}
+
+fn secret_aad(id: &str) -> String {
+    format!("entanglement:{id}")
+}
+
+/// Manda un ping firmato. `None` se è stato consegnato (204), altrimenti l'errore.
+async fn send(state: &AppState, target: &DuePing) -> Option<String> {
+    let secret = match state.heartbeat.secret_box().open(
+        &target.secret_enc,
+        target.secret_key_version,
+        &secret_aad(&target.id),
+    ) {
+        Ok(secret) => secret,
+        Err(err) => {
+            tracing::error!(id = %target.id, err = ?err, "segreto dell'entanglement non decifrabile");
+            return Some("Segreto non decifrabile su questa istanza".into());
+        }
+    };
+    let ts = state.entanglement.next_timestamp(&target.id, now_ms() / 1000).to_string();
+    let canonical = crypto::canonical_string(&target.key_id, &ts, &crypto::sha256_hex(b""));
+    let signature = format!("v1={}", hex::encode(crypto::sign(&secret, &canonical)));
+
+    let result = state
+        .entanglement
+        .http
+        .post(format!("{}{HEARTBEAT_PATH}", target.base_url))
+        .header(KEY_HEADER, &target.key_id)
+        .header(TIMESTAMP_HEADER, ts)
+        .header(SIGNATURE_HEADER, signature)
+        .send()
+        .await;
+    match result {
+        Ok(response) if response.status() == StatusCode::NO_CONTENT => None,
+        Ok(response) => Some(format!("Risposta HTTP {}", response.status().as_u16())),
+        Err(err) if err.is_timeout() => Some("Tempo scaduto".into()),
+        Err(err) if err.is_connect() => Some("Connessione non riuscita".into()),
+        Err(err) => Some(format!("Richiesta non riuscita: {}", err.without_url()).chars().take(200).collect()),
+    }
+}
+
+async fn send_and_record(state: &AppState, target: &DuePing) -> anyhow::Result<()> {
+    let error = send(state, target).await;
+    if let Some(error) = &error {
+        tracing::warn!(id = %target.id, %error, "entanglement: ping non consegnato");
+    }
+    db::record_ping_result(&state.db, &target.id, now_ms(), error.as_deref()).await?;
+    Ok(())
+}
+
+pub fn spawn(state: AppState) {
+    tokio::spawn(async move {
+        if let Err(err) = db::ping_all_now(&state.db, now_ms()).await {
+            tracing::error!(err = ?err, "entanglement: avvio non riuscito");
+        }
+        let mut interval = tokio::time::interval(TICK);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let due = match db::take_due_pings(&state.db, now_ms()).await {
+                Ok(due) => due,
+                Err(err) => {
+                    tracing::error!(err = ?err, "entanglement: lettura non riuscita");
+                    continue;
+                }
+            };
+            for target in due {
+                let state = state.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = send_and_record(&state, &target).await {
+                        tracing::error!(id = %target.id, err = ?err, "entanglement: esito non salvato");
+                    }
+                });
+            }
+        }
+    });
+}
+
+// ---- API (solo master) ------------------------------------------------------
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/entanglements", get(list).post(create))
+        .route("/api/entanglements/{id}", axum::routing::patch(update).delete(remove))
+        .route("/api/entanglements/{id}/ping", post(ping_now))
+}
+
+type ApiResult<T> = Result<T, ApiError>;
+
+fn invalid<T>(message: impl Into<String>) -> ApiResult<T> {
+    Err(ApiError::Invalid(message.into()))
+}
+
+#[derive(Serialize)]
+struct Overview {
+    /// Indirizzo di questa istanza, da usare sull'altra per il collegamento inverso.
+    instance_url: String,
+    items: Vec<db::Entanglement>,
+}
+
+async fn list(State(state): State<AppState>, _: MasterUser) -> ApiResult<Json<Overview>> {
+    Ok(Json(Overview {
+        instance_url: state.public_base_url.to_string(),
+        items: db::list_entanglements(&state.db).await?,
+    }))
+}
+
+#[derive(Deserialize)]
+struct CreateInput {
+    name: String,
+    base_url: String,
+    key_id: String,
+    secret: String,
+    interval_secs: i64,
+    #[serde(default = "enabled_default")]
+    enabled: bool,
+}
+
+fn enabled_default() -> bool {
+    true
+}
+
+async fn create(
+    State(state): State<AppState>,
+    _: MasterUser,
+    Json(input): Json<CreateInput>,
+) -> ApiResult<(StatusCode, Json<db::Entanglement>)> {
+    let name = validate_name(&input.name)?;
+    let base_url = normalize_base_url(&input.base_url)?;
+    validate_interval(input.interval_secs)?;
+    let (key_id, secret) = validate_credentials(&input.key_id, &input.secret)?;
+
+    let id = Uuid::now_v7().to_string();
+    let secret_box = state.heartbeat.secret_box();
+    db::insert_entanglement(
+        &state.db,
+        &id,
+        &EntanglementInput { name: &name, base_url: &base_url, interval_secs: input.interval_secs, enabled: input.enabled },
+        &key_id,
+        &secret_box.seal(secret.as_bytes(), &secret_aad(&id)),
+        secret_box.version,
+        now_ms(),
+    )
+    .await?;
+    let created = db::get_entanglement(&state.db, &id).await?.ok_or(ApiError::NotFound)?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+#[derive(Deserialize)]
+struct UpdateInput {
+    name: Option<String>,
+    base_url: Option<String>,
+    interval_secs: Option<i64>,
+    enabled: Option<bool>,
+    /// Da fornire insieme, per sostituire la chiave.
+    key_id: Option<String>,
+    secret: Option<String>,
+}
+
+async fn update(
+    State(state): State<AppState>,
+    _: MasterUser,
+    Path(id): Path<String>,
+    Json(input): Json<UpdateInput>,
+) -> ApiResult<Json<db::Entanglement>> {
+    let current = db::get_entanglement(&state.db, &id).await?.ok_or(ApiError::NotFound)?;
+    let name = match &input.name {
+        Some(name) => validate_name(name)?,
+        None => current.name,
+    };
+    let base_url = match &input.base_url {
+        Some(url) => normalize_base_url(url)?,
+        None => current.base_url,
+    };
+    let interval_secs = input.interval_secs.unwrap_or(current.interval_secs);
+    validate_interval(interval_secs)?;
+    let credentials = match (&input.key_id, &input.secret) {
+        (None, None) => None,
+        (Some(key_id), Some(secret)) => Some(validate_credentials(key_id, secret)?),
+        _ => return invalid("Per cambiare la chiave servono sia il key ID sia il segreto."),
+    };
+
+    let secret_box = state.heartbeat.secret_box();
+    let sealed = credentials
+        .as_ref()
+        .map(|(key_id, secret)| (key_id.as_str(), secret_box.seal(secret.as_bytes(), &secret_aad(&id))));
+    db::update_entanglement(
+        &state.db,
+        &id,
+        &EntanglementInput {
+            name: &name,
+            base_url: &base_url,
+            interval_secs,
+            enabled: input.enabled.unwrap_or(current.enabled),
+        },
+        sealed.as_ref().map(|(key_id, enc)| (*key_id, enc.as_slice(), secret_box.version)),
+        now_ms(),
+    )
+    .await?;
+    Ok(Json(db::get_entanglement(&state.db, &id).await?.ok_or(ApiError::NotFound)?))
+}
+
+async fn remove(
+    State(state): State<AppState>,
+    _: MasterUser,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    if !db::delete_entanglement(&state.db, &id).await? {
+        return Err(ApiError::NotFound);
+    }
+    state.entanglement.last_ts.lock().expect("lock dei timestamp").remove(&id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Manda subito un ping e restituisce l'esito.
+async fn ping_now(
+    State(state): State<AppState>,
+    _: MasterUser,
+    Path(id): Path<String>,
+) -> ApiResult<Json<db::Entanglement>> {
+    let target = db::ping_target(&state.db, &id).await?.ok_or(ApiError::NotFound)?;
+    send_and_record(&state, &target).await?;
+    Ok(Json(db::get_entanglement(&state.db, &id).await?.ok_or(ApiError::NotFound)?))
+}
+
+fn validate_name(name: &str) -> ApiResult<String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return invalid("Il nome deve avere da 1 a 80 caratteri.");
+    }
+    Ok(name.to_owned())
+}
+
+fn validate_interval(interval_secs: i64) -> ApiResult<()> {
+    if !INTERVAL_RANGE.contains(&interval_secs) {
+        return invalid("L'intervallo deve essere tra 10 secondi e 1 giorno.");
+    }
+    Ok(())
+}
+
+fn validate_credentials(key_id: &str, secret: &str) -> ApiResult<(String, String)> {
+    let (key_id, secret) = (key_id.trim(), secret.trim());
+    if key_id.is_empty() || key_id.len() > 64 || !key_id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return invalid("Key ID non valido.");
+    }
+    if secret.is_empty() || secret.len() > 200 || !secret.is_ascii() {
+        return invalid("Segreto non valido.");
+    }
+    Ok((key_id.to_owned(), secret.to_owned()))
+}
+
+/// Solo l'origine (schema, host, porta). HTTPS, oppure HTTP verso localhost per lo sviluppo.
+fn normalize_base_url(raw: &str) -> ApiResult<String> {
+    let Ok(url) = reqwest::Url::parse(raw.trim()) else {
+        return invalid("Indirizzo non valido: usa per esempio https://heartbeat.esempio.it");
+    };
+    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    match url.scheme() {
+        "https" => {}
+        "http" if local => {}
+        _ => return invalid("L'indirizzo deve usare HTTPS (HTTP solo verso localhost)."),
+    }
+    if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
+        return invalid("L'indirizzo non può contenere credenziali, query o frammenti.");
+    }
+    if !matches!(url.path(), "" | "/") {
+        return invalid("Indica solo l'indirizzo dell'istanza, senza percorso.");
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_url_is_reduced_to_origin() {
+        let ok = |raw| normalize_base_url(raw).ok().unwrap();
+        assert_eq!(ok("https://hb.example.com/"), "https://hb.example.com");
+        assert_eq!(ok(" https://hb.example.com:8443 "), "https://hb.example.com:8443");
+        assert_eq!(ok("http://localhost:8081"), "http://localhost:8081");
+        for bad in ["http://hb.example.com", "ftp://x", "https://u:p@hb.example.com", "https://hb.example.com/api", "https://hb.example.com/?a=1", "nope"] {
+            assert!(normalize_base_url(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn timestamps_always_increase_per_link() {
+        let sender = Sender::new().unwrap();
+        assert_eq!(sender.next_timestamp("a", 100), 100);
+        assert_eq!(sender.next_timestamp("a", 100), 101);
+        assert_eq!(sender.next_timestamp("a", 100), 102);
+        assert_eq!(sender.next_timestamp("a", 200), 200);
+        assert_eq!(sender.next_timestamp("b", 100), 100);
+    }
+}

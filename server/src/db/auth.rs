@@ -12,9 +12,68 @@ pub struct User {
     pub id: String,
     pub email: String,
     pub name: Option<String>,
+    /// `admin` o `user`.
+    pub role: String,
 }
 
-/// Crea l'utente al primo accesso, oppure aggiorna email e nome da Google.
+impl User {
+    pub fn is_admin(&self) -> bool {
+        self.role == "admin"
+    }
+}
+
+/// Accesso con Google. Entra chi è già registrato, l'utente master o chi ha un
+/// invito per questa email (l'invito si consuma). Gli altri: `None`, e non si
+/// crea nulla.
+///
+/// `email` va passata in minuscolo.
+pub async fn login_google_user(
+    pool: &Pool,
+    google_sub: &str,
+    email: &str,
+    name: Option<&str>,
+    is_master: bool,
+    now: i64,
+) -> sqlx::Result<Option<User>> {
+    let mut tx = pool.begin().await?;
+    let existing: Option<String> = sqlx::query_scalar("SELECT id FROM users WHERE google_sub = $1")
+        .bind(google_sub)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let role: Option<String> = if is_master {
+        Some("admin".into())
+    } else if existing.is_some() {
+        None
+    } else {
+        sqlx::query_scalar("DELETE FROM user_invites WHERE email = $1 RETURNING role")
+            .bind(email)
+            .fetch_optional(&mut *tx)
+            .await?
+    };
+    if existing.is_none() && role.is_none() {
+        return Ok(None);
+    }
+    let user = sqlx::query_as(
+        "INSERT INTO users (id, google_sub, email, name, role, created_at)
+         VALUES ($1, $2, $3, $4, COALESCE($5, 'user'), $6)
+         ON CONFLICT (google_sub) DO UPDATE SET
+             email = excluded.email, name = excluded.name, role = COALESCE($5, users.role)
+         RETURNING id, email, name, role",
+    )
+    .bind(Uuid::now_v7().to_string())
+    .bind(google_sub)
+    .bind(email)
+    .bind(name)
+    .bind(role)
+    .bind(now)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Some(user))
+}
+
+/// Utente di prova con ruolo `user`.
+#[cfg(test)]
 pub async fn upsert_google_user(
     pool: &Pool,
     google_sub: &str,
@@ -26,7 +85,7 @@ pub async fn upsert_google_user(
         "INSERT INTO users (id, google_sub, email, name, created_at)
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (google_sub) DO UPDATE SET email = excluded.email, name = excluded.name
-         RETURNING id, email, name",
+         RETURNING id, email, name, role",
     )
     .bind(Uuid::now_v7().to_string())
     .bind(google_sub)
@@ -126,7 +185,7 @@ pub async fn insert_session(
 
 pub async fn session_user(pool: &Pool, token_hash: &str, now: i64) -> sqlx::Result<Option<User>> {
     sqlx::query_as(
-        "SELECT u.id, u.email, u.name
+        "SELECT u.id, u.email, u.name, u.role
          FROM sessions s JOIN users u ON u.id = s.user_id
          WHERE s.token_hash = $1 AND s.expires_at > $2",
     )
@@ -187,6 +246,34 @@ mod tests {
         recipients.sort();
         assert_eq!(recipients, ["dev@example.com", "ops@example.com"]);
         assert!(alert_recipients(&pool, "missing").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn login_requires_master_invite_or_existing_user() {
+        let pool = memory_pool().await;
+        let login = |sub: &'static str, email: &'static str, master: bool| {
+            let pool = pool.clone();
+            async move { login_google_user(&pool, sub, email, None, master, 1).await.unwrap() }
+        };
+
+        assert!(login("sub-x", "x@example.com", false).await.is_none(), "senza invito");
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users").fetch_one(&pool).await.unwrap(), 0);
+
+        let master = login("sub-m", "m@example.com", true).await.unwrap();
+        assert_eq!(master.role, "admin");
+
+        crate::db::create_invite(&pool, "x@example.com", "user", Some(&master.id), 2).await.unwrap();
+        let invited = login("sub-x", "x@example.com", false).await.unwrap();
+        assert_eq!(invited.role, "user");
+        assert!(crate::db::list_invites(&pool).await.unwrap().is_empty(), "invito consumato");
+
+        // Già registrato: entra senza invito e mantiene il ruolo.
+        crate::db::set_user_role(&pool, &invited.id, "admin").await.unwrap();
+        assert_eq!(login("sub-x", "x2@example.com", false).await.unwrap().role, "admin");
+
+        // Il master torna admin anche se il ruolo nel database è cambiato.
+        crate::db::set_user_role(&pool, &master.id, "user").await.unwrap();
+        assert_eq!(login("sub-m", "m@example.com", true).await.unwrap().role, "admin");
     }
 
     #[tokio::test]

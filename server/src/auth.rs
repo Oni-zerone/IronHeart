@@ -151,10 +151,11 @@ async fn callback(
     // Va letto prima di toglierlo: dopo `remove` il jar non lo restituisce più.
     let cookie_state = jar_value(&jar, STATE_COOKIE);
     let jar = jar.remove(state.auth.cookie(STATE_COOKIE, String::new(), "/auth"));
-    let failed = || {
-        let url = format!("{}?login=failed", state.auth.home());
+    let redirect_with = |outcome: &str| {
+        let url = format!("{}?login={outcome}", state.auth.home());
         (jar.clone(), Redirect::to(&url)).into_response()
     };
+    let failed = || redirect_with("failed");
 
     if let Some(error) = &query.error {
         tracing::info!(%error, "login annullato da Google");
@@ -182,14 +183,21 @@ async fn callback(
         }
     };
 
-    let user = db::upsert_google_user(
+    let email = identity.email.to_lowercase();
+    let is_master = email == state.admin_email.as_ref();
+    let Some(user) = db::login_google_user(
         &state.db,
         &identity.sub,
-        &identity.email,
+        &email,
         identity.name.as_deref(),
+        is_master,
         now,
     )
-    .await?;
+    .await?
+    else {
+        tracing::info!("login rifiutato: account senza invito");
+        return Ok(redirect_with("denied"));
+    };
 
     let token = hex::encode(rand::random::<[u8; 32]>());
     db::insert_session(&state.db, &hash_token(&token), &user.id, now, now + SESSION_TTL_MS).await?;
@@ -243,6 +251,43 @@ fn jar_value(jar: &CookieJar, name: &str) -> Option<String> {
 
 fn hash_token(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
+}
+
+/// Utente master (`ADMIN_EMAIL`) della sessione corrente: 401 senza sessione, 403 altrimenti.
+pub struct MasterUser(#[allow(dead_code)] pub db::User);
+
+impl<S> FromRequestParts<S> for MasterUser
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let CurrentUser(user) = <CurrentUser as FromRequestParts<S>>::from_request_parts(parts, state).await?;
+        let state = AppState::from_ref(state);
+        if user.email == state.admin_email.as_ref() {
+            Ok(Self(user))
+        } else {
+            Err(StatusCode::FORBIDDEN.into_response())
+        }
+    }
+}
+
+/// Utente admin della sessione corrente: 401 senza sessione, 403 se non è admin.
+pub struct AdminUser(pub db::User);
+
+impl<S> FromRequestParts<S> for AdminUser
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let CurrentUser(user) = <CurrentUser as FromRequestParts<S>>::from_request_parts(parts, state).await?;
+        if user.is_admin() { Ok(Self(user)) } else { Err(StatusCode::FORBIDDEN.into_response()) }
+    }
 }
 
 /// Utente della sessione corrente. Negli handler risponde 401 se manca;

@@ -2,7 +2,9 @@
 
 mod apps;
 mod auth;
+mod entanglements;
 mod failures;
+mod users;
 
 use std::{str::FromStr, time::Duration};
 
@@ -12,7 +14,9 @@ use sqlx::sqlite::{
 
 pub use apps::*;
 pub use auth::*;
+pub use entanglements::*;
 pub use failures::*;
+pub use users::*;
 
 pub type Pool = SqlitePool;
 

@@ -5,10 +5,12 @@ mod clock;
 mod config;
 mod crypto;
 mod db;
+mod entanglement;
 mod error;
 mod heartbeat;
 mod mail;
 mod monitor;
+mod users;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -29,6 +31,8 @@ pub struct AppState {
     mailer: mail::Mailer,
     heartbeat: Arc<heartbeat::Heartbeat>,
     public_base_url: Arc<str>,
+    admin_email: Arc<str>,
+    entanglement: Arc<entanglement::Sender>,
 }
 
 #[tokio::main]
@@ -60,8 +64,11 @@ async fn main() -> anyhow::Result<()> {
         mailer,
         heartbeat,
         public_base_url: config.public_base_url.as_str().into(),
+        admin_email: config.admin_email.as_str().into(),
+        entanglement: Arc::new(entanglement::Sender::new()?),
     };
     monitor::spawn(state.clone());
+    entanglement::spawn(state.clone());
 
     let app = Router::new()
         .route("/", get(home))
@@ -71,6 +78,8 @@ async fn main() -> anyhow::Result<()> {
         .route(crypto::HEARTBEAT_PATH, post(heartbeat::handler))
         .merge(auth::routes())
         .merge(apps::routes())
+        .merge(users::routes())
+        .merge(entanglement::routes())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -93,8 +102,16 @@ async fn health(State(state): State<AppState>) -> StatusCode {
     }
 }
 
-async fn me(auth::CurrentUser(user): auth::CurrentUser) -> Json<db::User> {
-    Json(user)
+#[derive(serde::Serialize)]
+struct Me {
+    #[serde(flatten)]
+    user: db::User,
+    is_master: bool,
+}
+
+async fn me(State(state): State<AppState>, auth::CurrentUser(user): auth::CurrentUser) -> Json<Me> {
+    let is_master = user.email == state.admin_email.as_ref();
+    Json(Me { user, is_master })
 }
 
 /// Manda una mail di prova all'email dell'account, per verificare la configurazione.

@@ -40,6 +40,21 @@ Per ora usiamo SQLite, ma il passaggio a Postgres deve restare un lavoro da uno 
 - Negli handler: `CurrentUser` risponde 401 senza sessione, `Option<CurrentUser>` no.
 - Si accettano solo email verificate da Google.
 
+## Utenti e ruoli
+
+- Si entra solo su invito. `ADMIN_EMAIL` è l'utente master: entra sempre, è sempre admin (il ruolo si reimposta a ogni accesso), non si può declassare né rimuovere.
+- Gli altri entrano se hanno già un account (riconosciuto dal `sub` di Google) o se c'è un invito per la loro email (`user_invites`, consumato al primo accesso in `db::login_google_user`). Senza invito il login rimanda a `/?login=denied` e non crea nulla.
+- Ruoli: `admin` (invita, cambia ruolo, rimuove utenti; API `/api/admin/*`, estrattore `AdminUser`) e `user` (solo le proprie app). Le app restano personali anche per gli admin.
+- Un admin non può declassare né rimuovere se stesso. Rimuovere un utente cancella a cascata app e sessioni, e le sue app vanno tolte dal registro in memoria.
+- Le email (account, inviti, `ADMIN_EMAIL`) si confrontano in minuscolo.
+
+## Entanglement (solo master)
+
+- Questa istanza manda heartbeat ad altre istanze di IronHeart (`entanglements`), così si controllano a vicenda. Lo configura solo il master (`MasterUser`, API `/api/entanglements`, pagina `/entanglement`); è una configurazione dell'istanza, non di un utente.
+- Ogni collegamento: origine dell'altra istanza (HTTPS, HTTP solo verso localhost, niente percorso), key ID e segreto di un'app creata lì, intervallo da 10 secondi a 1 giorno, attivo o in pausa. Il segreto è cifrato con `SECRETS_KEY` (dato associato `entanglement:<id>`) e non torna mai al client.
+- `entanglement::spawn`: ogni 5 secondi manda i ping scaduti (`take_due_pings` sposta subito la scadenza); all'avvio tutti i collegamenti attivi mandano un ping. Timestamp sempre crescente per collegamento, anche con «Invia ora» nello stesso secondo. Redirect non seguiti, timeout 10 secondi.
+- L'altra istanza risponde sempre 204: qui si registra solo se il ping è stato consegnato (`last_success_at`, `last_error`). Una chiave sbagliata la segnala l'altra istanza con i tentativi non validi.
+
 ## Email
 
 - `MAIL_TRANSPORT=brevo` (produzione, richiede `BREVO_API_KEY`) oppure `smtp` (predefinito, `SMTP_HOST`/`SMTP_PORT`, verso Mailpit). Mittente: `MAIL_FROM_EMAIL` e `MAIL_FROM_NAME`; su Brevo il mittente o il dominio devono essere verificati.

@@ -2,6 +2,9 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 import AppDetailView from '@/views/AppDetailView.vue'
 import AppsView from '@/views/AppsView.vue'
+import EntanglementView from '@/views/EntanglementView.vue'
+import UsersView from '@/views/UsersView.vue'
+import { currentUser } from '@/session'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -9,7 +12,18 @@ const router = createRouter({
     { path: '/', redirect: { name: 'apps' } },
     { path: '/apps', name: 'apps', component: AppsView },
     { path: '/apps/:id', name: 'app', component: AppDetailView, props: true },
+    { path: '/users', name: 'users', component: UsersView, meta: { admin: true } },
+    { path: '/entanglement', name: 'entanglement', component: EntanglementView, meta: { master: true } },
   ],
+})
+
+// Pagine riservate: il backend risponde comunque 403.
+router.beforeEach((to) => {
+  const user = currentUser.value
+  if (!user) return
+  if ((to.meta.admin && user.role !== 'admin') || (to.meta.master && !user.is_master)) {
+    return { name: 'apps' }
+  }
 })
 
 export default router

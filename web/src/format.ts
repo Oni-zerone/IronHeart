@@ -1,4 +1,4 @@
-import type { AppState } from './api'
+import type { AppState, Role } from './api'
 
 export const STATE_LABEL: Record<AppState, string> = {
   new: 'In attesa',
@@ -57,3 +57,10 @@ const dateTime = new Intl.DateTimeFormat('it', { dateStyle: 'short', timeStyle: 
 export function formatDateTime(ms: number | null): string {
   return ms === null ? '—' : dateTime.format(ms)
 }
+
+export const ROLE_OPTIONS: { title: string; value: Role }[] = [
+  { title: 'Utente', value: 'user' },
+  { title: 'Amministratore', value: 'admin' },
+]
+
+export const ROLE_LABEL: Record<Role, string> = { user: 'Utente', admin: 'Amministratore' }

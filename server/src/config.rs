@@ -10,6 +10,8 @@ pub struct Config {
     pub public_base_url: String,
     pub google_client_id: String,
     pub google_client_secret: String,
+    /// Utente master: sempre admin, non si può declassare né rimuovere. In minuscolo.
+    pub admin_email: String,
     pub mail: MailConfig,
     /// Chiave master AES-256 per i segreti delle app (`SECRETS_KEY`, base64 di 32 byte).
     pub secrets_key: [u8; 32],
@@ -63,6 +65,7 @@ impl Config {
                 .to_owned(),
             google_client_id: required("GOOGLE_CLIENT_ID")?,
             google_client_secret: required("GOOGLE_CLIENT_SECRET")?,
+            admin_email: required("ADMIN_EMAIL")?.trim().to_lowercase(),
             mail: MailConfig::from_env()?,
             secrets_key: secrets_key()?,
             secrets_key_version: env_or("SECRETS_KEY_VERSION", "1")

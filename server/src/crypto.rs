@@ -77,8 +77,7 @@ pub fn canonical_string(key_id: &str, timestamp: &str, body_sha256_hex: &str) ->
     format!("v1\nPOST\n{HEARTBEAT_PATH}\n{key_id}\n{timestamp}\n{body_sha256_hex}")
 }
 
-/// Firma come farebbe un client: serve ai test.
-#[cfg(test)]
+/// Firma di una richiesta, come la calcola un client (anche l'entanglement).
 pub fn sign(secret: &[u8], canonical: &str) -> [u8; 32] {
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accetta chiavi di ogni lunghezza");
     mac.update(canonical.as_bytes());

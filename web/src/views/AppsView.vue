@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useDisplay } from 'vuetify'
 import { mdiEmailFastOutline, mdiPlus, mdiShieldAlertOutline } from '@mdi/js'
 
 import { createApp, listApps, sendTestEmail, type App, type AppInput, type Credentials } from '@/api'
@@ -10,6 +11,7 @@ import { STATE_COLOR, STATE_LABEL, formatDuration, formatRelative } from '@/form
 import { errorText, notify } from '@/session'
 
 const router = useRouter()
+const { smAndDown } = useDisplay()
 const apps = ref<App[]>([])
 const loading = ref(true)
 
@@ -121,9 +123,9 @@ onMounted(load)
       </v-list>
     </v-card>
 
-    <v-dialog v-model="creating" max-width="560">
+    <v-dialog v-model="creating" max-width="640" :fullscreen="smAndDown" scrollable>
       <v-card title="Nuova applicazione">
-        <v-card-text>
+        <v-card-text class="pt-2">
           <v-alert v-if="createError" type="error" variant="tonal" class="mb-4">{{ createError }}</v-alert>
           <AppForm v-model="form" />
         </v-card-text>

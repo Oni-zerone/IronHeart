@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { mdiHeartPulse, mdiLogout } from '@mdi/js'
+import { mdiAccountMultipleOutline, mdiAtom, mdiHeartPulse, mdiLogout } from '@mdi/js'
 
 import LoginView from '@/views/LoginView.vue'
 import { currentUser, loadSession, logout, toast } from '@/session'
@@ -18,6 +18,24 @@ onMounted(loadSession)
         <router-link :to="{ name: 'apps' }" class="text-decoration-none text-high-emphasis">IronHeart</router-link>
       </v-app-bar-title>
       <template v-if="currentUser" #append>
+        <v-btn
+          v-if="currentUser.is_master"
+          :prepend-icon="mdiAtom"
+          :to="{ name: 'entanglement' }"
+          variant="text"
+          class="me-1"
+        >
+          <span class="d-none d-md-inline">Entanglement</span>
+        </v-btn>
+        <v-btn
+          v-if="currentUser.role === 'admin'"
+          :prepend-icon="mdiAccountMultipleOutline"
+          :to="{ name: 'users' }"
+          variant="text"
+          class="me-2"
+        >
+          <span class="d-none d-md-inline">Utenti</span>
+        </v-btn>
         <span class="text-body-2 me-2 d-none d-sm-inline">{{ currentUser.email }}</span>
         <v-btn :icon="mdiLogout" title="Esci" @click="logout" />
       </template>

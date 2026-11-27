@@ -1,9 +1,35 @@
 // Chiamate al backend. Il cookie di sessione viaggia da solo (stessa origine).
 
+export type Role = 'admin' | 'user'
+
 export interface User {
   id: string
   email: string
   name: string | null
+  role: Role
+  /** Utente master (ADMIN_EMAIL): sempre admin. */
+  is_master: boolean
+}
+
+export interface UserSummary {
+  id: string
+  email: string
+  name: string | null
+  role: Role
+  created_at: number
+  app_count: number
+  is_master: boolean
+}
+
+export interface Invite {
+  email: string
+  role: Role
+  created_at: number
+}
+
+export interface UsersOverview {
+  users: UserSummary[]
+  invites: Invite[]
 }
 
 export type AppState = 'new' | 'up' | 'down' | 'paused'
@@ -103,6 +129,51 @@ export const updateApp = (id: string, input: Partial<AppInput> & { paused?: bool
 export const rotateKey = (id: string) =>
   request<{ app: AppDetail; credentials: Credentials }>(`/api/apps/${id}/rotate-key`, { method: 'POST' })
 export const deleteApp = (id: string) => request<void>(`/api/apps/${id}`, { method: 'DELETE' })
+
+export const listUsers = () => request<UsersOverview>('/api/admin/users')
+export const inviteUser = (email: string, role: Role) =>
+  request<UsersOverview>('/api/admin/users', json('POST', { email, role }))
+export const setUserRole = (id: string, role: Role) =>
+  request<UsersOverview>(`/api/admin/users/${id}`, json('PATCH', { role }))
+export const removeUser = (id: string) =>
+  request<UsersOverview>(`/api/admin/users/${id}`, { method: 'DELETE' })
+export const revokeInvite = (email: string) =>
+  request<UsersOverview>(`/api/admin/invites/${encodeURIComponent(email)}`, { method: 'DELETE' })
+
+export interface Entanglement {
+  id: string
+  name: string
+  base_url: string
+  key_id: string
+  interval_secs: number
+  enabled: boolean
+  next_ping_at: number | null
+  last_attempt_at: number | null
+  /** Ultimo ping consegnato (204): la validità la vede solo l'altra istanza. */
+  last_success_at: number | null
+  last_error: string | null
+  created_at: number
+}
+
+export interface EntanglementInput {
+  name: string
+  base_url: string
+  interval_secs: number
+  enabled: boolean
+  key_id?: string
+  secret?: string
+}
+
+export const listEntanglements = () =>
+  request<{ instance_url: string; items: Entanglement[] }>('/api/entanglements')
+export const createEntanglement = (input: EntanglementInput) =>
+  request<Entanglement>('/api/entanglements', json('POST', input))
+export const updateEntanglement = (id: string, input: Partial<EntanglementInput>) =>
+  request<Entanglement>(`/api/entanglements/${id}`, json('PATCH', input))
+export const deleteEntanglement = (id: string) =>
+  request<void>(`/api/entanglements/${id}`, { method: 'DELETE' })
+export const pingEntanglement = (id: string) =>
+  request<Entanglement>(`/api/entanglements/${id}/ping`, { method: 'POST' })
 
 /** Il login è una navigazione completa: passa da Google e torna con il cookie. */
 export const LOGIN_URL = '/auth/google/login'
