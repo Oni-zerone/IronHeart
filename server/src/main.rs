@@ -30,6 +30,12 @@ use axum::{
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
+/// The Docker image is a static musl binary: musl's allocator halves the heartbeat
+/// throughput under concurrency, mimalloc restores it.
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Clone)]
 pub struct AppState {
     db: db::Pool,
