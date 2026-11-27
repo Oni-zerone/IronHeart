@@ -59,7 +59,10 @@ pub async fn send(
         .from(from)
         .to(email.to.parse().context("invalid recipient")?)
         .subject(&email.subject)
-        .multipart(MultiPart::alternative_plain_html(email.text.clone(), email.html.clone()))?;
+        .multipart(MultiPart::alternative_plain_html(
+            email.text.clone(),
+            email.html.clone(),
+        ))?;
     transport.send(message).await.context("SMTP send failed")?;
     Ok(())
 }

@@ -27,7 +27,10 @@ pub struct SecretBox {
 
 impl SecretBox {
     pub fn new(key: &[u8; 32], version: i64) -> Self {
-        Self { cipher: Aes256Gcm::new_from_slice(key).expect("32-byte key"), version }
+        Self {
+            cipher: Aes256Gcm::new_from_slice(key).expect("32-byte key"),
+            version,
+        }
     }
 
     /// Returns nonce + ciphertext. `app_id` is bound to the ciphertext,
@@ -36,14 +39,23 @@ impl SecretBox {
         let nonce: [u8; NONCE_LEN] = rand::random();
         let ciphertext = self
             .cipher
-            .encrypt(&nonce.into(), Payload { msg: plaintext, aad: app_id.as_bytes() })
+            .encrypt(
+                &nonce.into(),
+                Payload {
+                    msg: plaintext,
+                    aad: app_id.as_bytes(),
+                },
+            )
             .expect("AES-GCM encryption");
         [nonce.as_slice(), &ciphertext].concat()
     }
 
     pub fn open(&self, sealed: &[u8], version: i64, app_id: &str) -> anyhow::Result<Vec<u8>> {
         if version != self.version {
-            bail!("secret encrypted with version {version}, current master key {}", self.version);
+            bail!(
+                "secret encrypted with version {version}, current master key {}",
+                self.version
+            );
         }
         if sealed.len() <= NONCE_LEN {
             bail!("encrypted secret too short");
@@ -51,7 +63,13 @@ impl SecretBox {
         let (nonce, ciphertext) = sealed.split_at(NONCE_LEN);
         let nonce: [u8; NONCE_LEN] = nonce.try_into().expect("length checked");
         self.cipher
-            .decrypt(&nonce.into(), Payload { msg: ciphertext, aad: app_id.as_bytes() })
+            .decrypt(
+                &nonce.into(),
+                Payload {
+                    msg: ciphertext,
+                    aad: app_id.as_bytes(),
+                },
+            )
             .map_err(|_| anyhow!("secret cannot be decrypted (wrong master key?)"))
     }
 }
@@ -102,7 +120,11 @@ mod tests {
         assert_eq!(secret_box.open(&sealed, 1, "app-1").unwrap(), b"secret");
         assert!(secret_box.open(&sealed, 1, "app-2").is_err());
         assert!(secret_box.open(&sealed, 2, "app-1").is_err());
-        assert!(SecretBox::new(&[8; 32], 1).open(&sealed, 1, "app-1").is_err());
+        assert!(
+            SecretBox::new(&[8; 32], 1)
+                .open(&sealed, 1, "app-1")
+                .is_err()
+        );
     }
 
     #[test]
@@ -125,8 +147,15 @@ mod tests {
         );
         let signature = sign(b"ihs_test", &canonical);
         // Same values as docs/heartbeat-client.md: if they change, update the document.
-        assert_eq!(hex::encode(signature), "395ebdbcd9e58a46090ac3c6ca626a0e00b94301076532b944841b3338cd5f01");
-        let with_body = canonical_string("abcdefghijkm", "1764000000", &sha256_hex(br#"{"status":"ok"}"#));
+        assert_eq!(
+            hex::encode(signature),
+            "395ebdbcd9e58a46090ac3c6ca626a0e00b94301076532b944841b3338cd5f01"
+        );
+        let with_body = canonical_string(
+            "abcdefghijkm",
+            "1764000000",
+            &sha256_hex(br#"{"status":"ok"}"#),
+        );
         assert_eq!(
             hex::encode(sign(b"ihs_test", &with_body)),
             "f9cefe637f8e3e4b9688b79f948bf544702d7b76e983f927d6293749d20fe9b3"

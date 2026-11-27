@@ -50,14 +50,20 @@ mod tests {
     };
 
     fn transport(region: MailgunRegion) -> MailTransport {
-        MailTransport::Mailgun { api_key: "key-1".into(), domain: "mg.example.com".into(), region }
+        MailTransport::Mailgun {
+            api_key: "key-1".into(),
+            domain: "mg.example.com".into(),
+            region,
+        }
     }
 
     #[test]
     fn form_matches_api() {
         let mailer = mailer(transport(MailgunRegion::Us), "");
-        let fields: Vec<(&str, String)> =
-            form(&mailer, &email()).into_iter().map(|(k, v)| (k, v.into_owned())).collect();
+        let fields: Vec<(&str, String)> = form(&mailer, &email())
+            .into_iter()
+            .map(|(k, v)| (k, v.into_owned()))
+            .collect();
         assert_eq!(
             fields,
             [
@@ -83,7 +89,10 @@ mod tests {
     #[tokio::test]
     async fn request_reaches_api() {
         let (url, received) = server(StatusCode::OK, r#"{"id":"1"}"#).await;
-        mailer(transport(MailgunRegion::Us), &url).send(&email()).await.unwrap();
+        mailer(transport(MailgunRegion::Us), &url)
+            .send(&email())
+            .await
+            .unwrap();
         let received = received.lock().unwrap();
         assert_eq!(
             (received.method.as_str(), received.path.as_str()),
@@ -91,9 +100,20 @@ mod tests {
         );
         // Basic base64("api:key-1").
         assert_eq!(received.header("authorization"), Some("Basic YXBpOmtleS0x"));
-        assert_eq!(received.header("content-type"), Some("application/x-www-form-urlencoded"));
-        assert!(received.body.contains("to=a%40example.com"), "{}", received.body);
-        assert!(received.body.contains("html=%3Cp%3EHello%3C%2Fp%3E"), "{}", received.body);
+        assert_eq!(
+            received.header("content-type"),
+            Some("application/x-www-form-urlencoded")
+        );
+        assert!(
+            received.body.contains("to=a%40example.com"),
+            "{}",
+            received.body
+        );
+        assert!(
+            received.body.contains("html=%3Cp%3EHello%3C%2Fp%3E"),
+            "{}",
+            received.body
+        );
     }
 
     #[tokio::test]
@@ -106,7 +126,12 @@ mod tests {
             (received.method.as_str(), received.path.as_str()),
             ("POST", "/v3/mg.example.com/messages")
         );
-        assert!(received.header("authorization").unwrap().starts_with("Basic "));
+        assert!(
+            received
+                .header("authorization")
+                .unwrap()
+                .starts_with("Basic ")
+        );
         assert_eq!(received.body, "");
     }
 }

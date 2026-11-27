@@ -13,10 +13,7 @@ mod users;
 
 use std::time::Duration;
 
-use sqlx::{
-    Executor,
-    AnyConnection, AnyPool, any::AnyPoolOptions,
-};
+use sqlx::{AnyConnection, AnyPool, Executor, any::AnyPoolOptions};
 
 pub use apps::*;
 pub use auth::*;
@@ -97,13 +94,22 @@ impl DatabaseInfo {
                 backend: "postgres",
                 location: reqwest::Url::parse(database_url)
                     .map(|url| {
-                        format!("{}:{}{}", url.host_str().unwrap_or("?"), url.port().unwrap_or(5432), url.path())
+                        format!(
+                            "{}:{}{}",
+                            url.host_str().unwrap_or("?"),
+                            url.port().unwrap_or(5432),
+                            url.path()
+                        )
                     })
                     .unwrap_or_default(),
             },
             _ => Self {
                 backend: "sqlite",
-                location: database_url.split('?').next().unwrap_or_default().to_owned(),
+                location: database_url
+                    .split('?')
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned(),
             },
         }
     }
@@ -141,16 +147,24 @@ pub async fn test_pool() -> Pool {
     match std::env::var("IRONHEART_TEST_POSTGRES_URL") {
         Ok(url) => {
             sqlx::any::install_default_drivers();
-            let admin = AnyPoolOptions::new().max_connections(1).connect(&url).await.unwrap();
+            let admin = AnyPoolOptions::new()
+                .max_connections(1)
+                .connect(&url)
+                .await
+                .unwrap();
             sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {name}")))
                 .execute(&admin)
                 .await
                 .unwrap();
             admin.close().await;
             let sep = if url.contains('?') { '&' } else { '?' };
-            connect(&format!("{url}{sep}options[search_path]={name}")).await.unwrap()
+            connect(&format!("{url}{sep}options[search_path]={name}"))
+                .await
+                .unwrap()
         }
-        Err(_) => connect(&format!("sqlite:file:{name}?mode=memory&cache=shared")).await.unwrap(),
+        Err(_) => connect(&format!("sqlite:file:{name}?mode=memory&cache=shared"))
+            .await
+            .unwrap(),
     }
 }
 
@@ -182,15 +196,36 @@ mod tests {
 
     #[test]
     fn backend_from_url() {
-        assert_eq!(Backend::from_url("sqlite://data/ironheart.db").unwrap(), Backend::Sqlite);
-        assert_eq!(Backend::from_url("postgres://u:p@h/db").unwrap(), Backend::Postgres);
-        assert_eq!(Backend::from_url("postgresql://u:p@h/db").unwrap(), Backend::Postgres);
+        assert_eq!(
+            Backend::from_url("sqlite://data/ironheart.db").unwrap(),
+            Backend::Sqlite
+        );
+        assert_eq!(
+            Backend::from_url("postgres://u:p@h/db").unwrap(),
+            Backend::Postgres
+        );
+        assert_eq!(
+            Backend::from_url("postgresql://u:p@h/db").unwrap(),
+            Backend::Postgres
+        );
         assert!(Backend::from_url("mysql://h/db").is_err());
         let info = DatabaseInfo::from_url("postgres://u:secret@db.example.com/ih?sslmode=require");
-        assert_eq!(info, DatabaseInfo { backend: "postgres", location: "db.example.com:5432/ih".into() });
+        assert_eq!(
+            info,
+            DatabaseInfo {
+                backend: "postgres",
+                location: "db.example.com:5432/ih".into()
+            }
+        );
         assert_eq!(info.to_string(), "Postgres on db.example.com:5432/ih");
-        assert_eq!(DatabaseInfo::from_url("sqlite://data/x.db?mode=rwc").location, "sqlite://data/x.db");
-        assert_eq!(sqlite_create_if_missing("sqlite://data/x.db"), "sqlite://data/x.db?mode=rwc");
+        assert_eq!(
+            DatabaseInfo::from_url("sqlite://data/x.db?mode=rwc").location,
+            "sqlite://data/x.db"
+        );
+        assert_eq!(
+            sqlite_create_if_missing("sqlite://data/x.db"),
+            "sqlite://data/x.db?mode=rwc"
+        );
     }
 
     /// The test pool's connections see the same database.

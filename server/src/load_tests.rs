@@ -34,7 +34,10 @@ const APPS: usize = 200;
 const FLOOD_WORKERS: usize = 32;
 
 fn load_duration() -> Duration {
-    let secs = std::env::var("IRONHEART_LOAD_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+    let secs = std::env::var("IRONHEART_LOAD_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
     Duration::from_secs(secs)
 }
 
@@ -60,7 +63,8 @@ impl Counters {
                 if response.status().as_u16() != 204 {
                     self.non_204.fetch_add(1, Ordering::Relaxed);
                 }
-                self.max_latency_us.fetch_max(start.elapsed().as_micros() as u64, Ordering::Relaxed);
+                self.max_latency_us
+                    .fetch_max(start.elapsed().as_micros() as u64, Ordering::Relaxed);
             }
             Err(_) => {
                 self.errors.fetch_add(1, Ordering::Relaxed);
@@ -69,7 +73,13 @@ impl Counters {
     }
 }
 
-fn request(client: &reqwest::Client, url: &str, key_id: &str, ts: i64, signature: &str) -> reqwest::RequestBuilder {
+fn request(
+    client: &reqwest::Client,
+    url: &str,
+    key_id: &str,
+    ts: i64,
+    signature: &str,
+) -> reqwest::RequestBuilder {
     client
         .post(url)
         .header(heartbeat::KEY_HEADER, key_id)
@@ -81,11 +91,17 @@ fn request(client: &reqwest::Client, url: &str, key_id: &str, ts: i64, signature
 async fn heartbeat_survives_a_flood_of_forged_requests() {
     // ---- Data: APPS apps with known keys ----
     let pool = db::test_pool().await;
-    let user = db::upsert_google_user(&pool, "sub", "load@example.com", None, 1).await.unwrap();
+    let user = db::upsert_google_user(&pool, "sub", "load@example.com", None, 1)
+        .await
+        .unwrap();
     let secret_box = SecretBox::new(&[9; 32], 1);
     let mut keys = Vec::new();
     for i in 0..APPS {
-        let (id, key_id, secret) = (format!("app-{i}"), format!("key{i:05}"), format!("ihs_secret_{i}"));
+        let (id, key_id, secret) = (
+            format!("app-{i}"),
+            format!("key{i:05}"),
+            format!("ihs_secret_{i}"),
+        );
         db::insert_app(
             &pool,
             &db::NewApp {
@@ -106,19 +122,33 @@ async fn heartbeat_survives_a_flood_of_forged_requests() {
         keys.push(Key { key_id, secret });
     }
     let keys = Arc::new(keys);
-    let hb = Arc::new(Heartbeat::load(&pool, secret_box, Some("x-forwarded-for".into())).await.unwrap());
+    let hb = Arc::new(
+        Heartbeat::load(&pool, secret_box, Some("x-forwarded-for".into()))
+            .await
+            .unwrap(),
+    );
 
     // ---- Server on a local port ----
     let state = test_state(pool.clone(), hb.clone());
     heartbeat::spawn_writer(state.clone());
-    let app = Router::new().route(HEARTBEAT_PATH, post(heartbeat::handler)).with_state(state);
+    let app = Router::new()
+        .route(HEARTBEAT_PATH, post(heartbeat::handler))
+        .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}{HEARTBEAT_PATH}", listener.local_addr().unwrap());
     tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
 
-    let client = reqwest::Client::builder().pool_max_idle_per_host(256).build().unwrap();
+    let client = reqwest::Client::builder()
+        .pool_max_idle_per_host(256)
+        .build()
+        .unwrap();
     let duration = load_duration();
     let deadline = Instant::now() + duration;
     let started = Instant::now();
@@ -128,16 +158,29 @@ async fn heartbeat_survives_a_flood_of_forged_requests() {
     // ---- Attack: forged signatures on existing keys, from many IPs ----
     let mut tasks = Vec::new();
     for worker in 0..FLOOD_WORKERS {
-        let (client, url, keys, forged) = (client.clone(), url.clone(), keys.clone(), forged.clone());
+        let (client, url, keys, forged) =
+            (client.clone(), url.clone(), keys.clone(), forged.clone());
         tasks.push(tokio::spawn(async move {
             let mut i = worker as u64;
             while Instant::now() < deadline {
-                i = i.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                i = i
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 let key = &keys[(i >> 33) as usize % APPS];
-                let ip = format!("10.{}.{}.{}", (i >> 16) % 256, (i >> 24) % 256, (i >> 40) % 256);
+                let ip = format!(
+                    "10.{}.{}.{}",
+                    (i >> 16) % 256,
+                    (i >> 24) % 256,
+                    (i >> 40) % 256
+                );
                 let signature = format!("v1={i:064x}");
                 let ts = now_ms() / 1000;
-                forged.send(request(&client, &url, &key.key_id, ts, &signature).header("x-forwarded-for", ip)).await;
+                forged
+                    .send(
+                        request(&client, &url, &key.key_id, ts, &signature)
+                            .header("x-forwarded-for", ip),
+                    )
+                    .await;
             }
         }));
     }
@@ -157,9 +200,19 @@ async fn heartbeat_survives_a_flood_of_forged_requests() {
                 let sends: Vec<_> = keys
                     .iter()
                     .map(|key| {
-                        let canonical = crypto::canonical_string(&key.key_id, &ts.to_string(), &crypto::sha256_hex(b""));
-                        let signature = format!("v1={}", hex::encode(crypto::sign(key.secret.as_bytes(), &canonical)));
-                        let (legit, request) = (legit.clone(), request(&client, &url, &key.key_id, ts, &signature));
+                        let canonical = crypto::canonical_string(
+                            &key.key_id,
+                            &ts.to_string(),
+                            &crypto::sha256_hex(b""),
+                        );
+                        let signature = format!(
+                            "v1={}",
+                            hex::encode(crypto::sign(key.secret.as_bytes(), &canonical))
+                        );
+                        let (legit, request) = (
+                            legit.clone(),
+                            request(&client, &url, &key.key_id, ts, &signature),
+                        );
                         tokio::spawn(async move { legit.send(request).await })
                     })
                     .collect();
@@ -182,11 +235,12 @@ async fn heartbeat_survives_a_flood_of_forged_requests() {
     // Valid pings are written in a separate task: wait for all of them to land.
     let mut recorded = 0;
     for _ in 0..100 {
-        recorded = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM apps WHERE last_signed_ts = $1")
-            .bind(last_ts)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        recorded =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM apps WHERE last_signed_ts = $1")
+                .bind(last_ts)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         if recorded == APPS as i64 {
             break;
         }
@@ -196,9 +250,19 @@ async fn heartbeat_survives_a_flood_of_forged_requests() {
     let failures = hb.take_failures();
     let forged_sent = forged.sent.load(Ordering::Relaxed);
     let counted: i64 = failures.iter().map(|(_, _, c)| c.bad_signature).sum();
-    let replays: i64 = failures.iter().map(|(_, _, c)| c.replay + c.clock_skew).sum();
-    let max_ips = failures.iter().map(|(_, _, c)| c.ips.len()).max().unwrap_or(0);
-    let buckets: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM failure_buckets").fetch_one(&pool).await.unwrap();
+    let replays: i64 = failures
+        .iter()
+        .map(|(_, _, c)| c.replay + c.clock_skew)
+        .sum();
+    let max_ips = failures
+        .iter()
+        .map(|(_, _, c)| c.ips.len())
+        .max()
+        .unwrap_or(0);
+    let buckets: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM failure_buckets")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
     let rate = |n: u64| n as f64 / elapsed.as_secs_f64();
     println!(
@@ -210,8 +274,16 @@ async fn heartbeat_survives_a_flood_of_forged_requests() {
         legit.max_latency_us.load(Ordering::Relaxed) as f64 / 1000.0,
     );
 
-    assert_eq!(forged.errors.load(Ordering::Relaxed) + legit.errors.load(Ordering::Relaxed), 0, "network errors");
-    assert_eq!(forged.non_204.load(Ordering::Relaxed) + legit.non_204.load(Ordering::Relaxed), 0, "responses other than 204");
+    assert_eq!(
+        forged.errors.load(Ordering::Relaxed) + legit.errors.load(Ordering::Relaxed),
+        0,
+        "network errors"
+    );
+    assert_eq!(
+        forged.non_204.load(Ordering::Relaxed) + legit.non_204.load(Ordering::Relaxed),
+        0,
+        "responses other than 204"
+    );
     assert!(rounds >= 1, "no round of real pings");
     assert_eq!(legit.sent.load(Ordering::Relaxed), rounds * APPS as u64);
     assert_eq!(recorded, APPS as i64, "real pings lost during the attack");

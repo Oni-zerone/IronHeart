@@ -64,13 +64,25 @@ impl Reach {
 }
 
 pub async fn reach(state: &AppState, now: i64) -> anyhow::Result<Reach> {
-    let mail = state.mailer.is_enabled().then(|| state.mail_key.health(now));
-    let telegram = state.telegram.is_configured().then(|| state.telegram.health.health(now));
+    let mail = state
+        .mailer
+        .is_enabled()
+        .then(|| state.mail_key.health(now));
+    let telegram = state
+        .telegram
+        .is_configured()
+        .then(|| state.telegram.health.health(now));
     let master_chats = match telegram {
-        Some(_) => db::telegram_chats_for_email(&state.db, &state.admin_email).await?.len(),
+        Some(_) => db::telegram_chats_for_email(&state.db, &state.admin_email)
+            .await?
+            .len(),
         None => 0,
     };
-    Ok(Reach { mail, telegram, master_chats })
+    Ok(Reach {
+        mail,
+        telegram,
+        master_chats,
+    })
 }
 
 /// The entanglement pings must not go out: see the module comment.
@@ -101,7 +113,10 @@ pub async fn status(state: &AppState, user: &db::User, is_master: bool) -> anyho
         (false, true) => "telegram",
         _ => "mail",
     };
-    let telegram_linked = reach.telegram.is_some() && !db::telegram_chats_for_user(&state.db, &user.id).await?.is_empty();
+    let telegram_linked = reach.telegram.is_some()
+        && !db::telegram_chats_for_user(&state.db, &user.id)
+            .await?
+            .is_empty();
     Ok(Status {
         mode,
         mail: reach.mail,
@@ -189,7 +204,12 @@ async fn round(state: &AppState, memory: &mut Memory) -> anyhow::Result<()> {
 
 /// Tells the master on every channel that is not broken (SMTP without login
 /// included: it may work).
-async fn notify_master(state: &AppState, reach: &Reach, channel: Channel, broken: bool) -> anyhow::Result<()> {
+async fn notify_master(
+    state: &AppState,
+    reach: &Reach,
+    channel: Channel,
+    broken: bool,
+) -> anyhow::Result<()> {
     let detail = match channel {
         Channel::Mail => state.mail_key.get(),
         Channel::Telegram => state.telegram.health.get(),
@@ -210,11 +230,19 @@ async fn notify_master(state: &AppState, reach: &Reach, channel: Channel, broken
         });
     }
     let url = format!("{}/", state.public_base_url);
-    tracing::warn!(channel = name, broken, "alert channel changed: notifying the master");
+    tracing::warn!(
+        channel = name,
+        broken,
+        "alert channel changed: notifying the master"
+    );
 
     if channel != Channel::Mail && reach.mail.is_some_and(|h| h != Health::Broken) {
         let email = Letter {
-            title: if broken { format!("{name} broken") } else { format!("{name} back") },
+            title: if broken {
+                format!("{name} broken")
+            } else {
+                format!("{name} back")
+            },
             hot: broken,
             pulse: if broken { Pulse::Flat } else { Pulse::Beat },
             blocks: lines.iter().map(|l| Block::text(l.clone())).collect(),
@@ -222,14 +250,24 @@ async fn notify_master(state: &AppState, reach: &Reach, channel: Channel, broken
         }
         .into_email(
             &state.admin_email,
-            format!("IronHeart: {name} {}", if broken { "stopped working" } else { "works again" }),
+            format!(
+                "IronHeart: {name} {}",
+                if broken {
+                    "stopped working"
+                } else {
+                    "works again"
+                }
+            ),
         );
         state.outbox.urgent(email).await;
     }
     if channel != Channel::Telegram && reach.telegram.is_some_and(|h| h != Health::Broken) {
         let text = format!("!! {}\n{url}", lines.join("\n"));
         for chat_id in db::telegram_chats_for_email(&state.db, &state.admin_email).await? {
-            state.outbox.urgent(telegram::Message::text(chat_id, text.clone())).await;
+            state
+                .outbox
+                .urgent(telegram::Message::text(chat_id, text.clone()))
+                .await;
         }
     }
     Ok(())
@@ -242,15 +280,25 @@ mod tests {
     use Health::*;
 
     fn reach(mail: Option<Health>, telegram: Option<Health>, master_chats: usize) -> Reach {
-        Reach { mail, telegram, master_chats }
+        Reach {
+            mail,
+            telegram,
+            master_chats,
+        }
     }
 
     #[test]
     fn pings_are_held_only_when_nothing_reaches_the_master() {
         // Both working, or one of them broken while the other reaches the master.
         assert!(!reach(Some(Ok), Some(Ok), 1).held());
-        assert!(!reach(Some(Ok), Some(Broken), 1).held(), "email still works");
-        assert!(!reach(Some(Broken), Some(Ok), 1).held(), "telegram still works");
+        assert!(
+            !reach(Some(Ok), Some(Broken), 1).held(),
+            "email still works"
+        );
+        assert!(
+            !reach(Some(Broken), Some(Ok), 1).held(),
+            "telegram still works"
+        );
         // Email broken and the master has no chat: nothing reaches the master.
         assert!(reach(Some(Broken), Some(Ok), 0).held());
         assert!(reach(Some(Broken), Some(Broken), 1).held());
@@ -271,8 +319,14 @@ mod tests {
     fn notices_only_on_changes() {
         let mut memory = Memory::default();
         assert!(changes(&mut memory, &reach(Some(Ok), Some(Ok), 1)).is_empty());
-        assert_eq!(changes(&mut memory, &reach(Some(Ok), Some(Broken), 1)), [(Channel::Telegram, true)]);
-        assert!(changes(&mut memory, &reach(Some(Ok), Some(Broken), 1)).is_empty(), "once");
+        assert_eq!(
+            changes(&mut memory, &reach(Some(Ok), Some(Broken), 1)),
+            [(Channel::Telegram, true)]
+        );
+        assert!(
+            changes(&mut memory, &reach(Some(Ok), Some(Broken), 1)).is_empty(),
+            "once"
+        );
         assert_eq!(
             changes(&mut memory, &reach(Some(Broken), Some(Ok), 1)),
             [(Channel::Mail, true), (Channel::Telegram, false)]

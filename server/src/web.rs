@@ -31,16 +31,23 @@ pub async fn serve(uri: Uri) -> Response {
             "no-cache"
         };
         return (
-            [(header::CONTENT_TYPE, file.metadata.mimetype().to_owned()), (header::CACHE_CONTROL, cache.to_owned())],
+            [
+                (header::CONTENT_TYPE, file.metadata.mimetype().to_owned()),
+                (header::CACHE_CONTROL, cache.to_owned()),
+            ],
             file.data,
         )
             .into_response();
     }
     // Unknown API paths and missing files stay 404; everything else is a client route.
-    let is_client_route = !(path.starts_with("api/") || path.starts_with("auth/") || last_segment_has_dot(path));
+    let is_client_route =
+        !(path.starts_with("api/") || path.starts_with("auth/") || last_segment_has_dot(path));
     match Assets::get("index.html").filter(|_| is_client_route) {
         Some(index) => (
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")],
+            [
+                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
             index.data,
         )
             .into_response(),

@@ -31,7 +31,11 @@ pub fn down(items: &[DownItem], now: i64, apps_url: &str) -> String {
             "{failures} invalid attempts in the same period: the pings may be blocked by an attack."
         ));
     }
-    lines.push(link(items.len(), items.first().map(|i| i.url.as_str()), apps_url));
+    lines.push(link(
+        items.len(),
+        items.first().map(|i| i.url.as_str()),
+        apps_url,
+    ));
     lines.join("\n")
 }
 
@@ -44,11 +48,17 @@ pub fn recovered(items: &[RecoveredItem], apps_url: &str) -> String {
         [item] => vec![format!("UP: {} is back up{}.", item.name, down_for(item))],
         _ => {
             let mut lines = vec![format!("{} applications are back UP:", items.len())];
-            lines.extend(list(items, |item| format!("{}{}", item.name, down_for(item))));
+            lines.extend(list(items, |item| {
+                format!("{}{}", item.name, down_for(item))
+            }));
             lines
         }
     };
-    lines.push(link(items.len(), items.first().map(|i| i.url.as_str()), apps_url));
+    lines.push(link(
+        items.len(),
+        items.first().map(|i| i.url.as_str()),
+        apps_url,
+    ));
     lines.join("\n")
 }
 
@@ -58,20 +68,38 @@ pub fn failures(items: &[FailureItem], apps_url: &str) -> String {
         total.add(&item.counts);
     }
     let mut lines = match items {
-        [item] => vec![format!("!! {} invalid heartbeat attempts for {}", total.total(), item.name)],
+        [item] => vec![format!(
+            "!! {} invalid heartbeat attempts for {}",
+            total.total(),
+            item.name
+        )],
         _ => {
             let mut sorted: Vec<&FailureItem> = items.iter().collect();
-            sorted.sort_by(|a, b| b.counts.total().cmp(&a.counts.total()).then(a.name.cmp(&b.name)));
-            let mut lines =
-                vec![format!("!! {} invalid heartbeat attempts on {} applications:", total.total(), items.len())];
-            lines.extend(list(&sorted, |item| format!("{}: {}", item.name, item.counts.total())));
+            sorted.sort_by(|a, b| {
+                b.counts
+                    .total()
+                    .cmp(&a.counts.total())
+                    .then(a.name.cmp(&b.name))
+            });
+            let mut lines = vec![format!(
+                "!! {} invalid heartbeat attempts on {} applications:",
+                total.total(),
+                items.len()
+            )];
+            lines.extend(list(&sorted, |item| {
+                format!("{}: {}", item.name, item.counts.total())
+            }));
             lines
         }
     };
     lines.extend(reasons(&total));
     lines.extend(sources(&total));
     lines.push("A forged heartbeat, or a client with the wrong secret or clock.".into());
-    lines.push(link(items.len(), items.first().map(|i| i.url.as_str()), apps_url));
+    lines.push(link(
+        items.len(),
+        items.first().map(|i| i.url.as_str()),
+        apps_url,
+    ));
     lines.join("\n")
 }
 
@@ -96,7 +124,11 @@ pub fn sources(counts: &FailureCounts) -> Option<String> {
         return None;
     }
     ips.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-    let mut parts: Vec<String> = ips.iter().take(5).map(|(ip, n)| format!("{ip} ({n})")).collect();
+    let mut parts: Vec<String> = ips
+        .iter()
+        .take(5)
+        .map(|(ip, n)| format!("{ip} ({n})"))
+        .collect();
     let others = ips.iter().skip(5).map(|(_, n)| **n).sum::<i64>() + counts.other_ips;
     if others > 0 {
         parts.push(format!("{others} from other IPs"));
@@ -105,7 +137,11 @@ pub fn sources(counts: &FailureCounts) -> Option<String> {
 }
 
 fn list<T>(items: &[T], line: impl Fn(&T) -> String) -> Vec<String> {
-    let mut lines: Vec<String> = items.iter().take(LIST_MAX).map(|i| format!("- {}", line(i))).collect();
+    let mut lines: Vec<String> = items
+        .iter()
+        .take(LIST_MAX)
+        .map(|i| format!("- {}", line(i)))
+        .collect();
     if items.len() > LIST_MAX {
         lines.push(format!("- ... and {} more", items.len() - LIST_MAX));
     }
@@ -127,24 +163,46 @@ mod tests {
     const MIN: i64 = 60_000;
 
     fn down_item(name: &str, seen: Option<i64>, failures: i64) -> DownItem {
-        DownItem { name: name.into(), url: format!("https://x/apps/{name}"), last_seen_at: seen, failures }
+        DownItem {
+            name: name.into(),
+            url: format!("https://x/apps/{name}"),
+            last_seen_at: seen,
+            failures,
+        }
     }
 
     #[test]
     fn single_and_multiple_down() {
         let one = down(&[down_item("nas", Some(0), 0)], 12 * MIN, "https://x/apps");
-        assert_eq!(one, "!! DOWN: nas\nNo heartbeat within the expected interval, last signal 12 minutes ago.\nhttps://x/apps/nas");
+        assert_eq!(
+            one,
+            "!! DOWN: nas\nNo heartbeat within the expected interval, last signal 12 minutes ago.\nhttps://x/apps/nas"
+        );
 
-        let many = down(&[down_item("a", Some(0), 2), down_item("b", None, 1)], 5 * MIN, "https://x/apps");
-        assert!(many.starts_with("!! 2 applications are DOWN:\n- a: last signal 5 minutes ago\n- b: never a signal\n"));
+        let many = down(
+            &[down_item("a", Some(0), 2), down_item("b", None, 1)],
+            5 * MIN,
+            "https://x/apps",
+        );
+        assert!(many.starts_with(
+            "!! 2 applications are DOWN:\n- a: last signal 5 minutes ago\n- b: never a signal\n"
+        ));
         assert!(many.contains("3 invalid attempts"));
         assert!(many.ends_with("https://x/apps"));
     }
 
     #[test]
     fn recovered_shows_downtime() {
-        let item = RecoveredItem { name: "nas".into(), url: "https://x/apps/nas".into(), down_since: Some(0), last_seen_at: Some(90 * MIN) };
-        assert_eq!(recovered(&[item], "https://x/apps"), "UP: nas is back up (down for 1 hour and 30 minutes).\nhttps://x/apps/nas");
+        let item = RecoveredItem {
+            name: "nas".into(),
+            url: "https://x/apps/nas".into(),
+            down_since: Some(0),
+            last_seen_at: Some(90 * MIN),
+        };
+        assert_eq!(
+            recovered(&[item], "https://x/apps"),
+            "UP: nas is back up (down for 1 hour and 30 minutes).\nhttps://x/apps/nas"
+        );
     }
 
     #[test]
@@ -155,14 +213,23 @@ mod tests {
             ips: [("1.2.3.4".to_owned(), 8), ("5.6.7.8".to_owned(), 2)].into(),
             ..Default::default()
         };
-        let item = FailureItem { app_id: "id".into(), name: "nas".into(), url: "https://x/apps/id".into(), counts, since: None, next_report_in_ms: 0 };
+        let item = FailureItem {
+            app_id: "id".into(),
+            name: "nas".into(),
+            url: "https://x/apps/id".into(),
+            counts,
+            since: None,
+            next_report_in_ms: 0,
+        };
         let text = failures(&[item], "https://x/apps");
         assert!(text.starts_with("!! 10 invalid heartbeat attempts for nas\nreasons: bad signature 9, replayed 1\nsource: 1.2.3.4 (8), 5.6.7.8 (2)\n"), "{text}");
     }
 
     #[test]
     fn long_lists_are_cut() {
-        let items: Vec<DownItem> = (0..40).map(|i| down_item(&format!("app{i}"), None, 0)).collect();
+        let items: Vec<DownItem> = (0..40)
+            .map(|i| down_item(&format!("app{i}"), None, 0))
+            .collect();
         let text = down(&items, 0, "https://x/apps");
         assert!(text.contains("- ... and 10 more"));
         assert_eq!(text.lines().count(), 1 + LIST_MAX + 1 + 1);

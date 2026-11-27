@@ -85,11 +85,25 @@ pub struct Mailer {
 
 #[derive(Clone)]
 enum Transport {
-    Brevo { api_key: String },
-    Resend { api_key: String },
-    Postmark { server_token: String, message_stream: String },
-    Mailgun { api_key: String, domain: String },
-    Scaleway { secret_key: String, project_id: String, region: String },
+    Brevo {
+        api_key: String,
+    },
+    Resend {
+        api_key: String,
+    },
+    Postmark {
+        server_token: String,
+        message_stream: String,
+    },
+    Mailgun {
+        api_key: String,
+        domain: String,
+    },
+    Scaleway {
+        secret_key: String,
+        project_id: String,
+        region: String,
+    },
     Smtp {
         transport: AsyncSmtpTransport<Tokio1Executor>,
         /// With credentials the login is checked like an API key.
@@ -102,27 +116,47 @@ enum Transport {
 impl Mailer {
     pub fn new(config: &MailConfig) -> anyhow::Result<Self> {
         let (base_url, transport) = match &config.transport {
-            MailTransport::Brevo { api_key } => {
-                (brevo::BASE_URL, Transport::Brevo { api_key: api_key.clone() })
-            }
-            MailTransport::Resend { api_key } => {
-                (resend::BASE_URL, Transport::Resend { api_key: api_key.clone() })
-            }
-            MailTransport::Postmark { server_token, message_stream } => (
+            MailTransport::Brevo { api_key } => (
+                brevo::BASE_URL,
+                Transport::Brevo {
+                    api_key: api_key.clone(),
+                },
+            ),
+            MailTransport::Resend { api_key } => (
+                resend::BASE_URL,
+                Transport::Resend {
+                    api_key: api_key.clone(),
+                },
+            ),
+            MailTransport::Postmark {
+                server_token,
+                message_stream,
+            } => (
                 postmark::BASE_URL,
                 Transport::Postmark {
                     server_token: server_token.clone(),
                     message_stream: message_stream.clone(),
                 },
             ),
-            MailTransport::Mailgun { api_key, domain, region } => (
+            MailTransport::Mailgun {
+                api_key,
+                domain,
+                region,
+            } => (
                 match region {
                     MailgunRegion::Us => mailgun::BASE_URL_US,
                     MailgunRegion::Eu => mailgun::BASE_URL_EU,
                 },
-                Transport::Mailgun { api_key: api_key.clone(), domain: domain.clone() },
+                Transport::Mailgun {
+                    api_key: api_key.clone(),
+                    domain: domain.clone(),
+                },
             ),
-            MailTransport::Scaleway { secret_key, project_id, region } => (
+            MailTransport::Scaleway {
+                secret_key,
+                project_id,
+                region,
+            } => (
                 scaleway::BASE_URL,
                 Transport::Scaleway {
                     secret_key: secret_key.clone(),
@@ -142,7 +176,9 @@ impl Mailer {
         Ok(Self {
             from_email: config.from_email.clone(),
             from_name: config.from_name.clone(),
-            http: reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?,
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()?,
             base_url: base_url.to_owned(),
             transport,
         })
@@ -191,10 +227,18 @@ impl Mailer {
             Transport::Mailgun { api_key, domain } => {
                 (Probe::EmptySend, mailgun::check(self, api_key, domain))
             }
-            Transport::Scaleway { secret_key, project_id, region } => {
-                (Probe::EmptySend, scaleway::check(self, secret_key, project_id, region))
-            }
-            Transport::Smtp { transport, authenticated } => {
+            Transport::Scaleway {
+                secret_key,
+                project_id,
+                region,
+            } => (
+                Probe::EmptySend,
+                scaleway::check(self, secret_key, project_id, region),
+            ),
+            Transport::Smtp {
+                transport,
+                authenticated,
+            } => {
                 return match authenticated {
                     true => Some(smtp::check(transport).await),
                     false => None,
@@ -216,15 +260,18 @@ impl Mailer {
         let request = match &self.transport {
             Transport::Brevo { api_key } => brevo::request(self, api_key, email),
             Transport::Resend { api_key } => resend::request(self, api_key, email),
-            Transport::Postmark { server_token, message_stream } => {
-                postmark::request(self, server_token, message_stream, email)
-            }
+            Transport::Postmark {
+                server_token,
+                message_stream,
+            } => postmark::request(self, server_token, message_stream, email),
             Transport::Mailgun { api_key, domain } => {
                 mailgun::request(self, api_key, domain, email)
             }
-            Transport::Scaleway { secret_key, project_id, region } => {
-                scaleway::request(self, secret_key, project_id, region, email)
-            }
+            Transport::Scaleway {
+                secret_key,
+                project_id,
+                region,
+            } => scaleway::request(self, secret_key, project_id, region, email),
             Transport::Smtp { transport, .. } => return smtp::send(self, transport, email).await,
             Transport::None => bail!("email is off (MAIL_TRANSPORT=none)"),
         };
@@ -295,7 +342,10 @@ mod tests {
 
     impl Received {
         pub fn header(&self, name: &str) -> Option<&str> {
-            self.headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+            self.headers
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.as_str())
         }
     }
 
@@ -371,8 +421,14 @@ mod tests {
         assert!(matches!(check(EmptySend, 403, ""), KeyCheck::Rejected(_)));
         assert!(matches!(check(EmptySend, 404, ""), KeyCheck::Rejected(_)));
         assert!(matches!(check(Read, 404, ""), KeyCheck::Unreachable(_)));
-        assert!(matches!(check(EmptySend, 500, ""), KeyCheck::Unreachable(_)));
-        assert!(matches!(check(EmptySend, 429, ""), KeyCheck::Unreachable(_)));
+        assert!(matches!(
+            check(EmptySend, 500, ""),
+            KeyCheck::Unreachable(_)
+        ));
+        assert!(matches!(
+            check(EmptySend, 429, ""),
+            KeyCheck::Unreachable(_)
+        ));
     }
 
     #[tokio::test]
@@ -393,14 +449,30 @@ mod tests {
         let login = mailer(smtp(Some(("u".into(), "p".into()))), "");
         assert!(login.has_key());
         // Nobody listens on port 9: not a refusal.
-        assert!(matches!(login.check_key().await, Some(KeyCheck::Unreachable(_))));
+        assert!(matches!(
+            login.check_key().await,
+            Some(KeyCheck::Unreachable(_))
+        ));
 
-        assert!(mailer(MailTransport::Resend { api_key: "k".into() }, "").has_key());
+        assert!(
+            mailer(
+                MailTransport::Resend {
+                    api_key: "k".into()
+                },
+                ""
+            )
+            .has_key()
+        );
     }
 
     #[tokio::test]
     async fn unreachable_provider_is_not_a_refusal() {
-        let mailer = mailer(MailTransport::Resend { api_key: "k".into() }, "http://127.0.0.1:9");
+        let mailer = mailer(
+            MailTransport::Resend {
+                api_key: "k".into(),
+            },
+            "http://127.0.0.1:9",
+        );
         assert!(matches!(
             mailer.check_key().await,
             Some(KeyCheck::Unreachable(detail)) if detail.starts_with("Resend unreachable")
@@ -409,7 +481,12 @@ mod tests {
 
     #[test]
     fn sender_has_name() {
-        let mailer = mailer(MailTransport::Resend { api_key: "k".into() }, "");
+        let mailer = mailer(
+            MailTransport::Resend {
+                api_key: "k".into(),
+            },
+            "",
+        );
         assert_eq!(mailer.sender(), "IronHeart <noreply@example.com>");
     }
 
@@ -417,7 +494,12 @@ mod tests {
     async fn error_response_reports_status_and_truncated_body() {
         let long = "x".repeat(1000).leak();
         let (url, _) = server(StatusCode::UNPROCESSABLE_ENTITY, long).await;
-        let mailer = mailer(MailTransport::Resend { api_key: "k".into() }, &url);
+        let mailer = mailer(
+            MailTransport::Resend {
+                api_key: "k".into(),
+            },
+            &url,
+        );
         let err = format!("{:#}", mailer.send(&email()).await.unwrap_err());
         assert!(err.starts_with("Resend answered 422"), "{err}");
         assert!(err.len() < 400, "body not truncated: {} bytes", err.len());
@@ -425,7 +507,12 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_provider_is_an_error() {
-        let mailer = mailer(MailTransport::Brevo { api_key: "k".into() }, "http://127.0.0.1:9");
+        let mailer = mailer(
+            MailTransport::Brevo {
+                api_key: "k".into(),
+            },
+            "http://127.0.0.1:9",
+        );
         let err = format!("{:#}", mailer.send(&email()).await.unwrap_err());
         assert!(err.starts_with("Brevo unreachable"), "{err}");
     }

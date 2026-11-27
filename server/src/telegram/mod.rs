@@ -52,7 +52,11 @@ pub struct Message {
 
 impl Message {
     pub fn text(chat_id: i64, text: impl Into<String>) -> Self {
-        Self { chat_id, text: text.into(), buttons: Vec::new() }
+        Self {
+            chat_id,
+            text: text.into(),
+            buttons: Vec::new(),
+        }
     }
 }
 
@@ -108,7 +112,9 @@ impl<T> Envelope<T> {
             Some(403) => ApiError::Blocked(description),
             Some(400) if description.contains("chat not found") => ApiError::Blocked(description),
             Some(409) => ApiError::Conflict(description),
-            Some(429) => ApiError::RetryAfter(self.parameters.and_then(|p| p.retry_after).unwrap_or(5)),
+            Some(429) => {
+                ApiError::RetryAfter(self.parameters.and_then(|p| p.retry_after).unwrap_or(5))
+            }
             code => ApiError::Other(format!("{} {description}", code.unwrap_or(0))),
         })
     }
@@ -134,20 +140,31 @@ impl Telegram {
     pub fn new(token: Option<&str>, api_url: &str) -> anyhow::Result<Self> {
         let api = match token {
             Some(token) => Some(Api {
-                http: reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?,
+                http: reqwest::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()?,
                 base: format!("{}/bot{token}", api_url.trim_end_matches('/')),
             }),
             None => None,
         };
         let configured = api.is_some();
-        Ok(Self { api, configured, health: KeyMonitor::new(configured), username: RwLock::new(None) })
+        Ok(Self {
+            api,
+            configured,
+            health: KeyMonitor::new(configured),
+            username: RwLock::new(None),
+        })
     }
 
     /// Active bot without a token: the dashboard and the commands work, sends fail.
     #[cfg(test)]
     pub fn for_tests(username: &str) -> Self {
-        let telegram =
-            Self { api: None, configured: true, health: KeyMonitor::new(true), username: RwLock::new(Some(username.into())) };
+        let telegram = Self {
+            api: None,
+            configured: true,
+            health: KeyMonitor::new(true),
+            username: RwLock::new(Some(username.into())),
+        };
         record_check(&telegram.health, PROVIDER, KeyCheck::Valid, 0);
         telegram
     }
@@ -170,7 +187,12 @@ impl Telegram {
         self.bot_username().is_some()
     }
 
-    async fn call<T: DeserializeOwned>(&self, method: &str, body: Value, timeout: Duration) -> Result<T, ApiError> {
+    async fn call<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        body: Value,
+        timeout: Duration,
+    ) -> Result<T, ApiError> {
         let Some(api) = &self.api else {
             return Err(ApiError::Other("no bot token".into()));
         };
@@ -182,8 +204,10 @@ impl Telegram {
             .send()
             .await
             .map_err(|err| ApiError::Other(err.without_url().to_string()))?;
-        let envelope: Envelope<T> =
-            response.json().await.map_err(|err| ApiError::Other(err.without_url().to_string()))?;
+        let envelope: Envelope<T> = response
+            .json()
+            .await
+            .map_err(|err| ApiError::Other(err.without_url().to_string()))?;
         envelope.into_result()
     }
 
@@ -199,7 +223,12 @@ impl Telegram {
         Ok(())
     }
 
-    async fn send_part(&self, chat_id: i64, text: String, buttons: &[Vec<(String, String)>]) -> Result<(), ApiError> {
+    async fn send_part(
+        &self,
+        chat_id: i64,
+        text: String,
+        buttons: &[Vec<(String, String)>],
+    ) -> Result<(), ApiError> {
         let mut body = json!({
             "chat_id": chat_id,
             "text": text,
@@ -208,11 +237,17 @@ impl Telegram {
         if !buttons.is_empty() {
             let rows: Vec<Vec<Value>> = buttons
                 .iter()
-                .map(|row| row.iter().map(|(label, data)| json!({ "text": label, "callback_data": data })).collect())
+                .map(|row| {
+                    row.iter()
+                        .map(|(label, data)| json!({ "text": label, "callback_data": data }))
+                        .collect()
+                })
                 .collect();
             body["reply_markup"] = json!({ "inline_keyboard": rows });
         }
-        self.call::<Value>("sendMessage", body, REQUEST_TIMEOUT).await.map(|_| ())
+        self.call::<Value>("sendMessage", body, REQUEST_TIMEOUT)
+            .await
+            .map(|_| ())
     }
 
     /// Alert from the queue: honors 429 waits; a chat that refuses the
@@ -220,16 +255,23 @@ impl Telegram {
     pub async fn deliver(&self, pool: &db::Pool, message: &Message) {
         // Queued before the token was refused: nothing can go out.
         if self.health.rejected() {
-            tracing::warn!(chat_id = message.chat_id, "telegram: token refused, alert not sent");
+            tracing::warn!(
+                chat_id = message.chat_id,
+                "telegram: token refused, alert not sent"
+            );
             return;
         }
         for _ in 0..MAX_SEND_ATTEMPTS {
             match self.send(message).await {
                 Ok(()) => return,
-                Err(ApiError::RetryAfter(secs)) => tokio::time::sleep(Duration::from_secs(secs.min(60))).await,
+                Err(ApiError::RetryAfter(secs)) => {
+                    tokio::time::sleep(Duration::from_secs(secs.min(60))).await
+                }
                 Err(ApiError::Blocked(detail)) => {
                     tracing::warn!(chat_id = message.chat_id, %detail, "telegram: chat refuses messages, link disabled");
-                    if let Err(err) = db::disable_telegram_chat(pool, message.chat_id, now_ms()).await {
+                    if let Err(err) =
+                        db::disable_telegram_chat(pool, message.chat_id, now_ms()).await
+                    {
                         tracing::error!(err = ?err, "telegram: link not disabled");
                     }
                     return;
@@ -240,7 +282,10 @@ impl Telegram {
                 }
             }
         }
-        tracing::error!(chat_id = message.chat_id, "telegram: alert not sent (rate limited)");
+        tracing::error!(
+            chat_id = message.chat_id,
+            "telegram: alert not sent (rate limited)"
+        );
     }
 }
 
@@ -344,8 +389,13 @@ async fn check_loop(state: AppState) {
     let mut backoff = Duration::from_secs(5);
     loop {
         let was_ok = telegram.health.get().is_some_and(|s| s.state == "ok");
-        let check = match telegram.call::<BotUser>("getMe", json!({}), REQUEST_TIMEOUT).await {
-            Ok(BotUser { username: Some(username) }) => {
+        let check = match telegram
+            .call::<BotUser>("getMe", json!({}), REQUEST_TIMEOUT)
+            .await
+        {
+            Ok(BotUser {
+                username: Some(username),
+            }) => {
                 *telegram.username.write().expect("telegram lock") = Some(username.clone());
                 if !was_ok {
                     setup(telegram).await;
@@ -353,8 +403,12 @@ async fn check_loop(state: AppState) {
                 }
                 KeyCheck::Valid
             }
-            Ok(BotUser { username: None }) => KeyCheck::Rejected("getMe returned no bot username".into()),
-            Err(ApiError::Unauthorized) => KeyCheck::Rejected("Telegram refused the bot token".into()),
+            Ok(BotUser { username: None }) => {
+                KeyCheck::Rejected("getMe returned no bot username".into())
+            }
+            Err(ApiError::Unauthorized) => {
+                KeyCheck::Rejected("Telegram refused the bot token".into())
+            }
             Err(err) => KeyCheck::Unreachable(format!("Telegram unreachable: {err}")),
         };
         let unreachable = matches!(check, KeyCheck::Unreachable(_));
@@ -370,12 +424,24 @@ async fn check_loop(state: AppState) {
 
 async fn setup(telegram: &Telegram) {
     // Polling does not work while a webhook is set.
-    if let Err(err) = telegram.call::<bool>("deleteWebhook", json!({}), REQUEST_TIMEOUT).await {
+    if let Err(err) = telegram
+        .call::<bool>("deleteWebhook", json!({}), REQUEST_TIMEOUT)
+        .await
+    {
         tracing::warn!(%err, "telegram: deleteWebhook failed");
     }
-    let commands: Vec<Value> =
-        bot::COMMANDS.iter().map(|(command, description)| json!({ "command": command, "description": description })).collect();
-    if let Err(err) = telegram.call::<bool>("setMyCommands", json!({ "commands": commands }), REQUEST_TIMEOUT).await {
+    let commands: Vec<Value> = bot::COMMANDS
+        .iter()
+        .map(|(command, description)| json!({ "command": command, "description": description }))
+        .collect();
+    if let Err(err) = telegram
+        .call::<bool>(
+            "setMyCommands",
+            json!({ "commands": commands }),
+            REQUEST_TIMEOUT,
+        )
+        .await
+    {
         tracing::warn!(%err, "telegram: setMyCommands failed");
     }
 }
@@ -396,32 +462,48 @@ async fn poll_loop(state: AppState) {
             "timeout": POLL_SECS,
             "allowed_updates": ["message", "callback_query"],
         });
-        let updates: Vec<Update> =
-            match telegram.call("getUpdates", body, Duration::from_secs(POLL_SECS + 10)).await {
-                Ok(updates) => updates,
-                Err(ApiError::Unauthorized) => {
-                    record_check(&telegram.health, PROVIDER, KeyCheck::Rejected("Telegram refused the bot token".into()), now_ms());
-                    continue;
+        let updates: Vec<Update> = match telegram
+            .call("getUpdates", body, Duration::from_secs(POLL_SECS + 10))
+            .await
+        {
+            Ok(updates) => updates,
+            Err(ApiError::Unauthorized) => {
+                record_check(
+                    &telegram.health,
+                    PROVIDER,
+                    KeyCheck::Rejected("Telegram refused the bot token".into()),
+                    now_ms(),
+                );
+                continue;
+            }
+            Err(ApiError::Conflict(detail)) => {
+                tracing::warn!(%detail, "telegram: another process reads this bot's updates");
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                continue;
+            }
+            Err(ApiError::RetryAfter(secs)) => {
+                tokio::time::sleep(Duration::from_secs(secs)).await;
+                continue;
+            }
+            Err(err) => {
+                if telegram.health.get().is_some_and(|s| s.state == "ok") {
+                    let detail = format!("Telegram unreachable: {err}");
+                    record_check(
+                        &telegram.health,
+                        PROVIDER,
+                        KeyCheck::Unreachable(detail),
+                        now_ms(),
+                    );
                 }
-                Err(ApiError::Conflict(detail)) => {
-                    tracing::warn!(%detail, "telegram: another process reads this bot's updates");
-                    tokio::time::sleep(Duration::from_secs(30)).await;
-                    continue;
-                }
-                Err(ApiError::RetryAfter(secs)) => {
-                    tokio::time::sleep(Duration::from_secs(secs)).await;
-                    continue;
-                }
-                Err(err) => {
-                    if telegram.health.get().is_some_and(|s| s.state == "ok") {
-                        let detail = format!("Telegram unreachable: {err}");
-                        record_check(&telegram.health, PROVIDER, KeyCheck::Unreachable(detail), now_ms());
-                    }
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    continue;
-                }
-            };
-        if telegram.health.get().is_some_and(|s| s.state == "unreachable") {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+        };
+        if telegram
+            .health
+            .get()
+            .is_some_and(|s| s.state == "unreachable")
+        {
             record_check(&telegram.health, PROVIDER, KeyCheck::Valid, now_ms());
         }
         for update in updates {
@@ -433,10 +515,16 @@ async fn poll_loop(state: AppState) {
     }
 }
 
-async fn handle_update(state: &AppState, update: Update, limiter: &mut bot::Limiter) -> anyhow::Result<()> {
+async fn handle_update(
+    state: &AppState,
+    update: Update,
+    limiter: &mut bot::Limiter,
+) -> anyhow::Result<()> {
     let now = now_ms();
     let reply = if let Some(message) = update.message {
-        let Some(text) = message.text else { return Ok(()) };
+        let Some(text) = message.text else {
+            return Ok(());
+        };
         if !limiter.allow(message.chat.id, now) {
             return Ok(());
         }
@@ -454,9 +542,15 @@ async fn handle_update(state: &AppState, update: Update, limiter: &mut bot::Limi
         // Stops the spinner on the button, whatever happens next.
         let _ = state
             .telegram
-            .call::<bool>("answerCallbackQuery", json!({ "callback_query_id": query.id }), REQUEST_TIMEOUT)
+            .call::<bool>(
+                "answerCallbackQuery",
+                json!({ "callback_query_id": query.id }),
+                REQUEST_TIMEOUT,
+            )
             .await;
-        let (Some(message), Some(data)) = (query.message, query.data) else { return Ok(()) };
+        let (Some(message), Some(data)) = (query.message, query.data) else {
+            return Ok(());
+        };
         if message.chat.kind != "private" || !limiter.allow(message.chat.id, now) {
             return Ok(());
         }
@@ -477,31 +571,50 @@ mod tests {
     use super::*;
 
     fn envelope(body: &str) -> Result<Value, ApiError> {
-        serde_json::from_str::<Envelope<Value>>(body).unwrap().into_result()
+        serde_json::from_str::<Envelope<Value>>(body)
+            .unwrap()
+            .into_result()
     }
 
     #[test]
     fn api_errors_are_classified() {
         assert!(envelope(r#"{"ok":true,"result":true}"#).is_ok());
-        assert!(matches!(envelope(r#"{"ok":false,"error_code":401,"description":"Unauthorized"}"#), Err(ApiError::Unauthorized)));
-        assert!(matches!(envelope(r#"{"ok":false,"error_code":404,"description":"Not Found"}"#), Err(ApiError::Unauthorized)));
         assert!(matches!(
-            envelope(r#"{"ok":false,"error_code":403,"description":"Forbidden: bot was blocked by the user"}"#),
+            envelope(r#"{"ok":false,"error_code":401,"description":"Unauthorized"}"#),
+            Err(ApiError::Unauthorized)
+        ));
+        assert!(matches!(
+            envelope(r#"{"ok":false,"error_code":404,"description":"Not Found"}"#),
+            Err(ApiError::Unauthorized)
+        ));
+        assert!(matches!(
+            envelope(
+                r#"{"ok":false,"error_code":403,"description":"Forbidden: bot was blocked by the user"}"#
+            ),
             Err(ApiError::Blocked(_))
         ));
         assert!(matches!(
-            envelope(r#"{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}"#),
+            envelope(
+                r#"{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}"#
+            ),
             Err(ApiError::Blocked(_))
         ));
         assert!(matches!(
-            envelope(r#"{"ok":false,"error_code":400,"description":"Bad Request: message text is empty"}"#),
+            envelope(
+                r#"{"ok":false,"error_code":400,"description":"Bad Request: message text is empty"}"#
+            ),
             Err(ApiError::Other(_))
         ));
         assert!(matches!(
-            envelope(r#"{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":7}}"#),
+            envelope(
+                r#"{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":7}}"#
+            ),
             Err(ApiError::RetryAfter(7))
         ));
-        assert!(matches!(envelope(r#"{"ok":false,"error_code":409,"description":"Conflict"}"#), Err(ApiError::Conflict(_))));
+        assert!(matches!(
+            envelope(r#"{"ok":false,"error_code":409,"description":"Conflict"}"#),
+            Err(ApiError::Conflict(_))
+        ));
     }
 
     #[test]
@@ -511,14 +624,25 @@ mod tests {
         let text = vec![line.as_str(); 100].join("\n"); // 10,099 characters
         let parts = split_text(&text);
         assert_eq!(parts.len(), 3);
-        assert!(parts.iter().all(|p| p.encode_utf16().count() <= MAX_TEXT_CHARS));
-        assert!(parts.iter().all(|p| p.split('\n').all(|l| l.len() == 100)), "no line is cut");
+        assert!(
+            parts
+                .iter()
+                .all(|p| p.encode_utf16().count() <= MAX_TEXT_CHARS)
+        );
+        assert!(
+            parts.iter().all(|p| p.split('\n').all(|l| l.len() == 100)),
+            "no line is cut"
+        );
         assert_eq!(parts.join("\n"), text);
         // Emoji count twice for Telegram; a line longer than the limit is cut.
         let emoji = "😀".repeat(MAX_TEXT_CHARS);
         let parts = split_text(&emoji);
         assert_eq!(parts.len(), 2);
-        assert!(parts.iter().all(|p| p.encode_utf16().count() <= MAX_TEXT_CHARS));
+        assert!(
+            parts
+                .iter()
+                .all(|p| p.encode_utf16().count() <= MAX_TEXT_CHARS)
+        );
         assert_eq!(parts.concat(), emoji);
     }
 
@@ -534,9 +658,19 @@ mod tests {
     fn refused_token_turns_the_bot_off() {
         let telegram = Telegram::for_tests("ironheart_bot");
         assert!(telegram.is_active());
-        record_check(&telegram.health, PROVIDER, KeyCheck::Unreachable("timeout".into()), 1);
+        record_check(
+            &telegram.health,
+            PROVIDER,
+            KeyCheck::Unreachable("timeout".into()),
+            1,
+        );
         assert!(telegram.is_active(), "an outage keeps the bot active");
-        record_check(&telegram.health, PROVIDER, KeyCheck::Rejected("401".into()), 2);
+        record_check(
+            &telegram.health,
+            PROVIDER,
+            KeyCheck::Rejected("401".into()),
+            2,
+        );
         assert!(!telegram.is_active());
         assert!(telegram.is_configured());
     }

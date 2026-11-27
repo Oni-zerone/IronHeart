@@ -46,16 +46,24 @@ pub struct EntanglementInput<'a> {
 }
 
 pub async fn list_entanglements(pool: &Pool) -> sqlx::Result<Vec<Entanglement>> {
-    sqlx::query_as(concat!("SELECT ", entanglement_columns!(), " FROM entanglements ORDER BY name, id"))
-        .fetch_all(pool)
-        .await
+    sqlx::query_as(concat!(
+        "SELECT ",
+        entanglement_columns!(),
+        " FROM entanglements ORDER BY name, id"
+    ))
+    .fetch_all(pool)
+    .await
 }
 
 pub async fn get_entanglement(pool: &Pool, id: &str) -> sqlx::Result<Option<Entanglement>> {
-    sqlx::query_as(concat!("SELECT ", entanglement_columns!(), " FROM entanglements WHERE id = $1"))
-        .bind(id)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_as(concat!(
+        "SELECT ",
+        entanglement_columns!(),
+        " FROM entanglements WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(pool)
+    .await
 }
 
 /// The first ping goes out right away (`next_ping_at = now`).
@@ -205,17 +213,29 @@ mod tests {
     use crate::db::test_pool;
 
     fn input(enabled: bool) -> EntanglementInput<'static> {
-        EntanglementInput { name: "B", base_url: "https://b.example.com", interval_secs: 60, enabled }
+        EntanglementInput {
+            name: "B",
+            base_url: "https://b.example.com",
+            interval_secs: 60,
+            enabled,
+        }
     }
 
     #[tokio::test]
     async fn due_pings_are_taken_once_per_interval() {
         let pool = test_pool().await;
-        insert_entanglement(&pool, "e1", &input(true), "k", b"s", 1, 1_000).await.unwrap();
-        insert_entanglement(&pool, "e2", &input(false), "k", b"s", 1, 1_000).await.unwrap();
+        insert_entanglement(&pool, "e1", &input(true), "k", b"s", 1, 1_000)
+            .await
+            .unwrap();
+        insert_entanglement(&pool, "e2", &input(false), "k", b"s", 1, 1_000)
+            .await
+            .unwrap();
 
         let due = take_due_pings(&pool, 1_000).await.unwrap();
-        assert_eq!(due.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["e1"]);
+        assert_eq!(
+            due.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
+            ["e1"]
+        );
         assert!(take_due_pings(&pool, 60_999).await.unwrap().is_empty());
         assert_eq!(take_due_pings(&pool, 61_000).await.unwrap().len(), 1);
     }
@@ -223,10 +243,21 @@ mod tests {
     #[tokio::test]
     async fn results_keep_last_success() {
         let pool = test_pool().await;
-        insert_entanglement(&pool, "e1", &input(true), "k", b"s", 1, 1).await.unwrap();
+        insert_entanglement(&pool, "e1", &input(true), "k", b"s", 1, 1)
+            .await
+            .unwrap();
         record_ping_result(&pool, "e1", 10, None).await.unwrap();
-        record_ping_result(&pool, "e1", 20, Some("timeout")).await.unwrap();
+        record_ping_result(&pool, "e1", 20, Some("timeout"))
+            .await
+            .unwrap();
         let e = get_entanglement(&pool, "e1").await.unwrap().unwrap();
-        assert_eq!((e.last_attempt_at, e.last_success_at, e.last_error.as_deref()), (Some(20), Some(10), Some("timeout")));
+        assert_eq!(
+            (
+                e.last_attempt_at,
+                e.last_success_at,
+                e.last_error.as_deref()
+            ),
+            (Some(20), Some(10), Some("timeout"))
+        );
     }
 }

@@ -45,7 +45,10 @@ struct Overview {
     links: Vec<db::TelegramLink>,
 }
 
-async fn overview(State(state): State<AppState>, CurrentUser(user): CurrentUser) -> ApiResult<Json<Overview>> {
+async fn overview(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+) -> ApiResult<Json<Overview>> {
     let bot_username = bot_username(&state)?;
     Ok(Json(Overview {
         bot_url: format!("https://t.me/{bot_username}"),
@@ -61,17 +64,26 @@ struct LinkInvite {
     expires_at: i64,
 }
 
-async fn create_link(State(state): State<AppState>, CurrentUser(user): CurrentUser) -> ApiResult<Json<LinkInvite>> {
+async fn create_link(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+) -> ApiResult<Json<LinkInvite>> {
     let bot_username = bot_username(&state)?;
     // 32 characters from [A-Za-z0-9_-]: what Telegram accepts in `start` (at most 64).
     let token = URL_SAFE_NO_PAD.encode(rand::random::<[u8; 24]>());
     let expires_at = now_ms() + LINK_TTL_MS;
     db::insert_telegram_token(&state.db, &hash_token(&token), &user.id, expires_at).await?;
-    Ok(Json(LinkInvite { url: format!("https://t.me/{bot_username}?start={token}"), expires_at }))
+    Ok(Json(LinkInvite {
+        url: format!("https://t.me/{bot_username}?start={token}"),
+        expires_at,
+    }))
 }
 
 /// Sends a test message to every active chat of the account.
-async fn send_test(State(state): State<AppState>, CurrentUser(user): CurrentUser) -> ApiResult<StatusCode> {
+async fn send_test(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+) -> ApiResult<StatusCode> {
     bot_username(&state)?;
     let chats = db::telegram_chats_for_user(&state.db, &user.id).await?;
     if chats.is_empty() {
@@ -93,7 +105,11 @@ async fn send_test(State(state): State<AppState>, CurrentUser(user): CurrentUser
             }
         }
     }
-    Ok(if failed == 0 { StatusCode::NO_CONTENT } else { StatusCode::BAD_GATEWAY })
+    Ok(if failed == 0 {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::BAD_GATEWAY
+    })
 }
 
 async fn remove(
@@ -118,36 +134,76 @@ mod tests {
 
     async fn state(telegram: Telegram) -> (AppState, db::User) {
         let pool = db::test_pool().await;
-        let hb = Arc::new(heartbeat::Heartbeat::load(&pool, crypto::SecretBox::new(&[1; 32], 1), None).await.unwrap());
+        let hb = Arc::new(
+            heartbeat::Heartbeat::load(&pool, crypto::SecretBox::new(&[1; 32], 1), None)
+                .await
+                .unwrap(),
+        );
         let mut state = crate::test_state(pool, hb);
         state.telegram = Arc::new(telegram);
-        let user = db::upsert_google_user(&state.db, "s", "a@example.com", None, 1).await.unwrap();
+        let user = db::upsert_google_user(&state.db, "s", "a@example.com", None, 1)
+            .await
+            .unwrap();
         (state, user)
     }
 
     #[tokio::test]
     async fn inactive_bot_hides_everything() {
-        let (state, user) = state(Telegram::new(None, crate::telegram::DEFAULT_API_URL).unwrap()).await;
+        let (state, user) =
+            state(Telegram::new(None, crate::telegram::DEFAULT_API_URL).unwrap()).await;
         let me = || CurrentUser(user.clone());
-        assert!(matches!(overview(State(state.clone()), me()).await, Err(ApiError::NotFound)));
-        assert!(matches!(create_link(State(state.clone()), me()).await, Err(ApiError::NotFound)));
-        assert!(matches!(send_test(State(state.clone()), me()).await, Err(ApiError::NotFound)));
-        assert!(matches!(remove(State(state), me(), Path("x".into())).await, Err(ApiError::NotFound)));
+        assert!(matches!(
+            overview(State(state.clone()), me()).await,
+            Err(ApiError::NotFound)
+        ));
+        assert!(matches!(
+            create_link(State(state.clone()), me()).await,
+            Err(ApiError::NotFound)
+        ));
+        assert!(matches!(
+            send_test(State(state.clone()), me()).await,
+            Err(ApiError::NotFound)
+        ));
+        assert!(matches!(
+            remove(State(state), me(), Path("x".into())).await,
+            Err(ApiError::NotFound)
+        ));
     }
 
     #[tokio::test]
     async fn link_token_is_stored_hashed() {
         let (state, user) = state(Telegram::for_tests("ironheart_bot")).await;
-        let Json(invite) = create_link(State(state.clone()), CurrentUser(user.clone())).await.ok().unwrap();
-        let token = invite.url.strip_prefix("https://t.me/ironheart_bot?start=").unwrap();
+        let Json(invite) = create_link(State(state.clone()), CurrentUser(user.clone()))
+            .await
+            .ok()
+            .unwrap();
+        let token = invite
+            .url
+            .strip_prefix("https://t.me/ironheart_bot?start=")
+            .unwrap();
         assert_eq!(token.len(), 32);
-        assert!(db::take_telegram_token(&state.db, token, now_ms()).await.unwrap().is_none(), "not in clear");
-        let linked = db::take_telegram_token(&state.db, &hash_token(token), now_ms()).await.unwrap().unwrap();
+        assert!(
+            db::take_telegram_token(&state.db, token, now_ms())
+                .await
+                .unwrap()
+                .is_none(),
+            "not in clear"
+        );
+        let linked = db::take_telegram_token(&state.db, &hash_token(token), now_ms())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(linked.id, user.id);
 
-        let Json(view) = overview(State(state.clone()), CurrentUser(user.clone())).await.ok().unwrap();
+        let Json(view) = overview(State(state.clone()), CurrentUser(user.clone()))
+            .await
+            .ok()
+            .unwrap();
         assert_eq!(view.bot_url, "https://t.me/ironheart_bot");
         assert!(view.links.is_empty());
-        assert!(matches!(send_test(State(state), CurrentUser(user)).await, Err(ApiError::Invalid(_))));
+        assert!(matches!(
+            send_test(State(state), CurrentUser(user)).await,
+            Err(ApiError::Invalid(_))
+        ));
     }
 }

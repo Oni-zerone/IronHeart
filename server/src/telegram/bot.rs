@@ -60,7 +60,8 @@ pub struct Limiter {
 impl Limiter {
     pub fn allow(&mut self, chat_id: i64, now: i64) -> bool {
         if self.windows.len() > 10_000 {
-            self.windows.retain(|_, (start, _)| now - *start < MINUTE_MS);
+            self.windows
+                .retain(|_, (start, _)| now - *start < MINUTE_MS);
         }
         let (start, count) = self.windows.entry(chat_id).or_insert((now, 0));
         if now - *start >= MINUTE_MS {
@@ -83,19 +84,28 @@ pub fn hash_token(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
 
-pub async fn handle_message(state: &AppState, incoming: &Incoming, now: i64) -> anyhow::Result<Option<Message>> {
+pub async fn handle_message(
+    state: &AppState,
+    incoming: &Incoming,
+    now: i64,
+) -> anyhow::Result<Option<Message>> {
     let chat_id = incoming.chat_id;
     let Some((command, arg)) = parse_command(&incoming.text) else {
-        return Ok(if incoming.private { Some(Message::text(chat_id, "Commands start with /. Try /help.")) } else { None });
+        return Ok(if incoming.private {
+            Some(Message::text(chat_id, "Commands start with /. Try /help."))
+        } else {
+            None
+        });
     };
     if !incoming.private {
-        return Ok(Some(Message::text(chat_id, "IronHeart answers only in private chats.")));
+        return Ok(Some(Message::text(
+            chat_id,
+            "IronHeart answers only in private chats.",
+        )));
     }
     let reply = |text: String| Ok(Some(Message::text(chat_id, text)));
 
-    if command == "start"
-        && !arg.is_empty()
-    {
+    if command == "start" && !arg.is_empty() {
         let Some(user) = db::take_telegram_token(&state.db, &hash_token(arg), now).await? else {
             return reply(format!(
                 "This link is not valid any more (it lasts 10 minutes and works once). Create a new one from {}.",
@@ -133,7 +143,9 @@ pub async fn handle_message(state: &AppState, incoming: &Incoming, now: i64) -> 
             Ok(app) => reply(attempts_text(state, &app, now).await?),
             Err(message) => reply(message),
         },
-        "pause" | "resume" if arg.is_empty() => reply(format!("Usage: /{command} <application name>")),
+        "pause" | "resume" if arg.is_empty() => {
+            reply(format!("Usage: /{command} <application name>"))
+        }
         "pause" | "resume" => match find_app(state, &user, arg).await? {
             Ok(app) => Ok(Some(confirm_pause(chat_id, &app, command == "pause"))),
             Err(message) => reply(message),
@@ -148,7 +160,12 @@ pub async fn handle_message(state: &AppState, incoming: &Incoming, now: i64) -> 
 }
 
 /// Inline buttons: `status:<id>`, `pause:<id>`, `resume:<id>`, `cancel`.
-pub async fn handle_callback(state: &AppState, chat_id: i64, data: &str, now: i64) -> anyhow::Result<Option<Message>> {
+pub async fn handle_callback(
+    state: &AppState,
+    chat_id: i64,
+    data: &str,
+    now: i64,
+) -> anyhow::Result<Option<Message>> {
     let Some(user) = db::telegram_chat_user(&state.db, chat_id).await? else {
         return Ok(None);
     };
@@ -166,11 +183,18 @@ pub async fn handle_callback(state: &AppState, chat_id: i64, data: &str, now: i6
         "pause" | "resume" => {
             let pause = action == "pause";
             if pause == (app.state == "paused") {
-                return reply(format!("{} is already {}.", app.name, if pause { "paused" } else { "active" }));
+                return reply(format!(
+                    "{} is already {}.",
+                    app.name,
+                    if pause { "paused" } else { "active" }
+                ));
             }
             apps::set_paused(state, &user.id, &app, pause, now).await?;
             reply(if pause {
-                format!("{} paused: no alerts until you resume it (/resume {}).", app.name, app.name)
+                format!(
+                    "{} paused: no alerts until you resume it (/resume {}).",
+                    app.name, app.name
+                )
             } else {
                 format!(
                     "{} resumed: the next heartbeat is expected within {}.",
@@ -193,7 +217,11 @@ fn parse_command(text: &str) -> Option<(&str, &str)> {
 
 fn help_text() -> String {
     let mut lines = vec!["Commands:".to_owned()];
-    lines.extend(COMMANDS.iter().map(|(command, description)| format!("/{command} - {description}")));
+    lines.extend(
+        COMMANDS
+            .iter()
+            .map(|(command, description)| format!("/{command} - {description}")),
+    );
     lines.join("\n")
 }
 
@@ -202,19 +230,29 @@ fn telegram_page(state: &AppState) -> String {
 }
 
 /// By name, ignoring case: exact match first, then a unique prefix.
-async fn find_app(state: &AppState, user: &db::User, query: &str) -> anyhow::Result<Result<db::App, String>> {
+async fn find_app(
+    state: &AppState,
+    user: &db::User,
+    query: &str,
+) -> anyhow::Result<Result<db::App, String>> {
     let apps = db::list_apps(&state.db, &user.id).await?;
     let query = query.to_lowercase();
     if let Some(app) = apps.iter().find(|a| a.name.to_lowercase() == query) {
         return Ok(Ok(app.clone()));
     }
-    let matches: Vec<&db::App> = apps.iter().filter(|a| a.name.to_lowercase().starts_with(&query)).collect();
+    let matches: Vec<&db::App> = apps
+        .iter()
+        .filter(|a| a.name.to_lowercase().starts_with(&query))
+        .collect();
     Ok(match matches.as_slice() {
         [app] => Ok((*app).clone()),
         [] => Err("No application with that name. Try /apps.".into()),
         many => Err(format!(
             "More than one application matches: {}.",
-            many.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")
+            many.iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )),
     })
 }
@@ -223,7 +261,9 @@ async fn find_app(state: &AppState, user: &db::User, query: &str) -> anyhow::Res
 fn app_line(app: &db::App, now: i64) -> String {
     match app.state.as_str() {
         "up" => match app.next_deadline_at {
-            Some(at) if at > now => format!("[up] {} - deadline in {}", app.name, duration(at - now)),
+            Some(at) if at > now => {
+                format!("[up] {} - deadline in {}", app.name, duration(at - now))
+            }
             _ => format!("[up] {} - deadline passed, checking", app.name),
         },
         "down" => match app.down_since {
@@ -238,7 +278,10 @@ fn app_line(app: &db::App, now: i64) -> String {
 async fn apps_text(state: &AppState, user: &db::User, now: i64) -> anyhow::Result<String> {
     let apps = db::list_apps(&state.db, &user.id).await?;
     if apps.is_empty() {
-        return Ok(format!("No applications. Create one at {}/apps", state.public_base_url));
+        return Ok(format!(
+            "No applications. Create one at {}/apps",
+            state.public_base_url
+        ));
     }
     let down = apps.iter().filter(|a| a.state == "down").count();
     let mut lines = vec![format!("{} applications, {down} down:", apps.len())];
@@ -255,7 +298,9 @@ async fn down_text(state: &AppState, user: &db::User, now: i64) -> anyhow::Resul
     let lines: Vec<String> = down
         .iter()
         .map(|app| {
-            let seen = app.last_seen_at.map_or("never a signal".into(), |at| format!("last signal {} ago", duration(now - at)));
+            let seen = app.last_seen_at.map_or("never a signal".into(), |at| {
+                format!("last signal {} ago", duration(now - at))
+            });
             format!("{} - {seen}", app_line(app, now))
         })
         .collect();
@@ -275,10 +320,19 @@ async fn app_picker(state: &AppState, user: &db::User, chat_id: i64) -> anyhow::
         .chunks(2)
         .map(<[_]>::to_vec)
         .collect();
-    Ok(Message { chat_id, text: "Which application?".into(), buttons })
+    Ok(Message {
+        chat_id,
+        text: "Which application?".into(),
+        buttons,
+    })
 }
 
-async fn status_text(state: &AppState, user: &db::User, app: &db::App, now: i64) -> anyhow::Result<String> {
+async fn status_text(
+    state: &AppState,
+    user: &db::User,
+    app: &db::App,
+    now: i64,
+) -> anyhow::Result<String> {
     let mut lines = vec![app_line(app, now)];
     lines.push(match app.last_seen_at {
         Some(at) => format!("last signal: {} ago ({})", duration(now - at), datetime(at)),
@@ -308,19 +362,28 @@ async fn status_text(state: &AppState, user: &db::User, app: &db::App, now: i64)
 
 async fn attempts_overview(state: &AppState, user: &db::User, now: i64) -> anyhow::Result<String> {
     let apps = db::list_apps(&state.db, &user.id).await?;
-    let names: HashMap<&str, &str> = apps.iter().map(|a| (a.id.as_str(), a.name.as_str())).collect();
-    let mut totals: Vec<(String, i64)> = db::failure_totals_for_user(&state.db, &user.id, now - DAY_MS)
-        .await?
-        .into_iter()
-        .filter(|(_, n)| *n > 0)
-        .filter_map(|(id, n)| names.get(id.as_str()).map(|name| (name.to_string(), n)))
+    let names: HashMap<&str, &str> = apps
+        .iter()
+        .map(|a| (a.id.as_str(), a.name.as_str()))
         .collect();
+    let mut totals: Vec<(String, i64)> =
+        db::failure_totals_for_user(&state.db, &user.id, now - DAY_MS)
+            .await?
+            .into_iter()
+            .filter(|(_, n)| *n > 0)
+            .filter_map(|(id, n)| names.get(id.as_str()).map(|name| (name.to_string(), n)))
+            .collect();
     if totals.is_empty() {
         return Ok("No invalid attempts in the last 24 hours.".into());
     }
     totals.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     let mut lines = vec!["Invalid attempts in the last 24 hours:".to_owned()];
-    lines.extend(totals.iter().take(MAX_BUTTONS).map(|(name, n)| format!("- {name}: {n}")));
+    lines.extend(
+        totals
+            .iter()
+            .take(MAX_BUTTONS)
+            .map(|(name, n)| format!("- {name}: {n}")),
+    );
     lines.push("Details: /attempts <application name>".into());
     Ok(lines.join("\n"))
 }
@@ -328,8 +391,12 @@ async fn attempts_overview(state: &AppState, user: &db::User, now: i64) -> anyho
 async fn attempts_text(state: &AppState, app: &db::App, now: i64) -> anyhow::Result<String> {
     let day = db::failure_summary_since(&state.db, &app.id, now - DAY_MS).await?;
     let week = db::failure_summary_since(&state.db, &app.id, now - 7 * DAY_MS).await?;
-    let mut lines =
-        vec![format!("{}: {} invalid attempts in 24 hours, {} in 7 days", app.name, day.total(), week.total())];
+    let mut lines = vec![format!(
+        "{}: {} invalid attempts in 24 hours, {} in 7 days",
+        app.name,
+        day.total(),
+        week.total()
+    )];
     lines.extend(text::reasons(&day));
     lines.extend(text::sources(&day));
     Ok(lines.join("\n"))
@@ -337,14 +404,26 @@ async fn attempts_text(state: &AppState, app: &db::App, now: i64) -> anyhow::Res
 
 fn confirm_pause(chat_id: i64, app: &db::App, pause: bool) -> Message {
     let (verb, question) = if pause {
-        ("pause", format!("Pause {}? No alerts until you resume it.", app.name))
+        (
+            "pause",
+            format!("Pause {}? No alerts until you resume it.", app.name),
+        )
     } else {
-        ("resume", format!("Resume {}? The next heartbeat is expected within a full interval.", app.name))
+        (
+            "resume",
+            format!(
+                "Resume {}? The next heartbeat is expected within a full interval.",
+                app.name
+            ),
+        )
     };
     Message {
         chat_id,
         text: question,
-        buttons: vec![vec![(format!("yes, {verb}"), format!("{verb}:{}", app.id)), ("cancel".into(), "cancel".into())]],
+        buttons: vec![vec![
+            (format!("yes, {verb}"), format!("{verb}:{}", app.id)),
+            ("cancel".into(), "cancel".into()),
+        ]],
     }
 }
 
@@ -357,21 +436,37 @@ mod tests {
 
     async fn state() -> AppState {
         let pool = db::test_pool().await;
-        let hb = Arc::new(heartbeat::Heartbeat::load(&pool, crypto::SecretBox::new(&[1; 32], 1), None).await.unwrap());
+        let hb = Arc::new(
+            heartbeat::Heartbeat::load(&pool, crypto::SecretBox::new(&[1; 32], 1), None)
+                .await
+                .unwrap(),
+        );
         crate::test_state(pool, hb)
     }
 
     fn msg(chat_id: i64, text: &str) -> Incoming {
-        Incoming { chat_id, private: true, label: Some("@me".into()), text: text.into() }
+        Incoming {
+            chat_id,
+            private: true,
+            label: Some("@me".into()),
+            text: text.into(),
+        }
     }
 
     async fn say(state: &AppState, chat_id: i64, text: &str) -> String {
-        handle_message(state, &msg(chat_id, text), 1_000_000).await.unwrap().unwrap().text
+        handle_message(state, &msg(chat_id, text), 1_000_000)
+            .await
+            .unwrap()
+            .unwrap()
+            .text
     }
 
     #[test]
     fn commands_are_parsed() {
-        assert_eq!(parse_command("/status nas box"), Some(("status", "nas box")));
+        assert_eq!(
+            parse_command("/status nas box"),
+            Some(("status", "nas box"))
+        );
         assert_eq!(parse_command(" /apps@ironheart_bot "), Some(("apps", "")));
         assert_eq!(parse_command("hello"), None);
     }
@@ -398,22 +493,41 @@ mod tests {
     #[tokio::test]
     async fn unlinked_chat_learns_nothing() {
         let state = state().await;
-        let user = db::upsert_google_user(&state.db, "s", "a@example.com", None, 1).await.unwrap();
+        let user = db::upsert_google_user(&state.db, "s", "a@example.com", None, 1)
+            .await
+            .unwrap();
         crate::db::insert_test_app(&state.db, "app-1", &user.id).await;
         for command in ["/apps", "/down", "/status app", "/help", "/start"] {
             let text = say(&state, 7, command).await;
-            assert!(text.contains("not linked") && !text.contains("a@example.com"), "{command}: {text}");
+            assert!(
+                text.contains("not linked") && !text.contains("a@example.com"),
+                "{command}: {text}"
+            );
         }
         assert!(say(&state, 7, "/start bogus").await.contains("not valid"));
-        let group = Incoming { private: false, ..msg(7, "/apps") };
-        assert!(handle_message(&state, &group, 0).await.unwrap().unwrap().text.contains("private chats"));
+        let group = Incoming {
+            private: false,
+            ..msg(7, "/apps")
+        };
+        assert!(
+            handle_message(&state, &group, 0)
+                .await
+                .unwrap()
+                .unwrap()
+                .text
+                .contains("private chats")
+        );
     }
 
     #[tokio::test]
     async fn link_then_commands_see_only_own_apps() {
         let state = state().await;
-        let owner = db::upsert_google_user(&state.db, "s1", "a@example.com", None, 1).await.unwrap();
-        let other = db::upsert_google_user(&state.db, "s2", "b@example.com", None, 1).await.unwrap();
+        let owner = db::upsert_google_user(&state.db, "s1", "a@example.com", None, 1)
+            .await
+            .unwrap();
+        let other = db::upsert_google_user(&state.db, "s2", "b@example.com", None, 1)
+            .await
+            .unwrap();
         crate::db::insert_test_app(&state.db, "mine", &owner.id).await;
         crate::db::insert_test_app(&state.db, "theirs", &other.id).await;
         let update = db::AppUpdate {
@@ -425,22 +539,54 @@ mod tests {
             recipients: None,
             now: 1,
         };
-        db::update_app(&state.db, &other.id, "theirs", &update).await.unwrap();
-        db::insert_telegram_token(&state.db, &hash_token("tok"), &owner.id, 2_000_000).await.unwrap();
+        db::update_app(&state.db, &other.id, "theirs", &update)
+            .await
+            .unwrap();
+        db::insert_telegram_token(&state.db, &hash_token("tok"), &owner.id, 2_000_000)
+            .await
+            .unwrap();
 
-        assert!(say(&state, 7, "/start tok").await.starts_with("Linked to a@example.com."));
-        assert_eq!(db::list_telegram_links(&state.db, &owner.id).await.unwrap()[0].label, "@me");
-        assert!(say(&state, 8, "/start tok").await.contains("not valid"), "single use");
+        assert!(
+            say(&state, 7, "/start tok")
+                .await
+                .starts_with("Linked to a@example.com.")
+        );
+        assert_eq!(
+            db::list_telegram_links(&state.db, &owner.id).await.unwrap()[0].label,
+            "@me"
+        );
+        assert!(
+            say(&state, 8, "/start tok").await.contains("not valid"),
+            "single use"
+        );
 
         let apps = say(&state, 7, "/apps").await;
-        assert!(apps.contains("[new] App") && !apps.contains("Theirs"), "{apps}");
+        assert!(
+            apps.contains("[new] App") && !apps.contains("Theirs"),
+            "{apps}"
+        );
         assert_eq!(say(&state, 7, "/down").await, "No application is down.");
-        assert!(say(&state, 7, "/status app").await.contains("alerts to: a@example.com"));
-        assert!(say(&state, 7, "/status theirs").await.starts_with("No application"));
-        let theirs = db::get_app(&state.db, &other.id, "theirs").await.unwrap().unwrap();
+        assert!(
+            say(&state, 7, "/status app")
+                .await
+                .contains("alerts to: a@example.com")
+        );
+        assert!(
+            say(&state, 7, "/status theirs")
+                .await
+                .starts_with("No application")
+        );
+        let theirs = db::get_app(&state.db, &other.id, "theirs")
+            .await
+            .unwrap()
+            .unwrap();
 
         // A button with someone else's app id finds nothing.
-        let text = handle_callback(&state, 7, &format!("pause:{}", theirs.id), 0).await.unwrap().unwrap().text;
+        let text = handle_callback(&state, 7, &format!("pause:{}", theirs.id), 0)
+            .await
+            .unwrap()
+            .unwrap()
+            .text;
         assert_eq!(text, "This application no longer exists.");
 
         assert!(say(&state, 7, "/stop").await.starts_with("Chat unlinked"));
@@ -450,21 +596,62 @@ mod tests {
     #[tokio::test]
     async fn pause_needs_confirmation() {
         let state = state().await;
-        let owner = db::upsert_google_user(&state.db, "s1", "a@example.com", None, 1).await.unwrap();
+        let owner = db::upsert_google_user(&state.db, "s1", "a@example.com", None, 1)
+            .await
+            .unwrap();
         crate::db::insert_test_app(&state.db, "app-1", &owner.id).await;
-        db::link_telegram_chat(&state.db, &owner.id, 7, "@me", 1).await.unwrap();
+        db::link_telegram_chat(&state.db, &owner.id, 7, "@me", 1)
+            .await
+            .unwrap();
         let app = db::list_apps(&state.db, &owner.id).await.unwrap().remove(0);
 
-        let ask = handle_message(&state, &msg(7, &format!("/pause {}", app.name)), 0).await.unwrap().unwrap();
+        let ask = handle_message(&state, &msg(7, &format!("/pause {}", app.name)), 0)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(ask.buttons[0][0].1, format!("pause:{}", app.id));
-        assert_eq!(db::get_app(&state.db, &owner.id, &app.id).await.unwrap().unwrap().state, "new", "not yet");
+        assert_eq!(
+            db::get_app(&state.db, &owner.id, &app.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "new",
+            "not yet"
+        );
 
-        let done = handle_callback(&state, 7, &ask.buttons[0][0].1, 0).await.unwrap().unwrap();
+        let done = handle_callback(&state, 7, &ask.buttons[0][0].1, 0)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(done.text.contains("paused"), "{}", done.text);
-        assert_eq!(db::get_app(&state.db, &owner.id, &app.id).await.unwrap().unwrap().state, "paused");
-        assert!(handle_callback(&state, 7, &ask.buttons[0][0].1, 0).await.unwrap().unwrap().text.contains("already"));
+        assert_eq!(
+            db::get_app(&state.db, &owner.id, &app.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "paused"
+        );
+        assert!(
+            handle_callback(&state, 7, &ask.buttons[0][0].1, 0)
+                .await
+                .unwrap()
+                .unwrap()
+                .text
+                .contains("already")
+        );
 
-        handle_callback(&state, 7, &format!("resume:{}", app.id), 0).await.unwrap();
-        assert_eq!(db::get_app(&state.db, &owner.id, &app.id).await.unwrap().unwrap().state, "new");
+        handle_callback(&state, 7, &format!("resume:{}", app.id), 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            db::get_app(&state.db, &owner.id, &app.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "new"
+        );
     }
 }

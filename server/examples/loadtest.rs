@@ -49,7 +49,12 @@ struct Opts {
 
 fn parse() -> Opts {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let get = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+    let get = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
     let mode = match get("--mode").as_deref().unwrap_or("unknown") {
         "unknown" => Mode::Unknown,
         "bad" => Mode::Bad,
@@ -68,7 +73,10 @@ fn parse() -> Opts {
         })
         .unwrap_or_default();
     let opts = Opts {
-        url: format!("{}/api/v1/heartbeat", get("--url").expect("--url").trim_end_matches('/')),
+        url: format!(
+            "{}/api/v1/heartbeat",
+            get("--url").expect("--url").trim_end_matches('/')
+        ),
         mode,
         concurrency: get("--concurrency").map_or(64, |v| v.parse().unwrap()),
         duration: Duration::from_secs(get("--duration").map_or(30, |v| v.parse().unwrap())),
@@ -83,7 +91,10 @@ fn parse() -> Opts {
 }
 
 fn now_secs() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
 
 fn signature(secret: &str, key_id: &str, ts: i64) -> String {
@@ -111,7 +122,11 @@ impl Stats {
         self.latencies_us.sort_unstable();
         let n = self.latencies_us.len();
         let pct = |p: f64| {
-            if n == 0 { 0.0 } else { self.latencies_us[((n as f64 * p) as usize).min(n - 1)] as f64 / 1000.0 }
+            if n == 0 {
+                0.0
+            } else {
+                self.latencies_us[((n as f64 * p) as usize).min(n - 1)] as f64 / 1000.0
+            }
         };
         println!(
             "{label:<10} requests {n:>8}  {:>8.0}/s  p50 {:>6.2} ms  p95 {:>6.2} ms  p99 {:>7.2} ms  max {:>7.2} ms  non-204 {}  errors {}",
@@ -166,28 +181,64 @@ async fn main() {
     let deadline = Instant::now() + opts.duration;
     let started = Instant::now();
     let next_key = Arc::new(AtomicUsize::new(0));
-    let last_ts: Arc<Vec<AtomicI64>> = Arc::new((0..opts.keys.len()).map(|_| AtomicI64::new(0)).collect());
+    let last_ts: Arc<Vec<AtomicI64>> =
+        Arc::new((0..opts.keys.len()).map(|_| AtomicI64::new(0)).collect());
 
-    let flood_mode = if opts.mode == Mode::Mixed { Mode::Bad } else { opts.mode };
+    let flood_mode = if opts.mode == Mode::Mixed {
+        Mode::Bad
+    } else {
+        opts.mode
+    };
     let mut workers = Vec::new();
     for worker in 0..opts.concurrency {
-        let (opts, client, next_key, last_ts) = (opts.clone(), client.clone(), next_key.clone(), last_ts.clone());
+        let (opts, client, next_key, last_ts) = (
+            opts.clone(),
+            client.clone(),
+            next_key.clone(),
+            last_ts.clone(),
+        );
         workers.push(tokio::spawn(async move {
             let mut stats = Stats::default();
             let mut i: u64 = worker as u64;
             while Instant::now() < deadline {
-                i = i.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                let ip = (opts.spoof_ips > 0)
-                    .then(|| format!("10.{}.{}.{}", (i >> 40) % 256, (i >> 32) % 256, (i >> 24) as usize % opts.spoof_ips % 256));
+                i = i
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let ip = (opts.spoof_ips > 0).then(|| {
+                    format!(
+                        "10.{}.{}.{}",
+                        (i >> 40) % 256,
+                        (i >> 32) % 256,
+                        (i >> 24) as usize % opts.spoof_ips % 256
+                    )
+                });
                 let ts = now_secs();
                 match flood_mode {
                     Mode::Unknown => {
                         let key = format!("{:012x}", i >> 16);
-                        send(&client, &opts.url, &key, ts, &format!("v1={:064x}", i), ip, &mut stats).await;
+                        send(
+                            &client,
+                            &opts.url,
+                            &key,
+                            ts,
+                            &format!("v1={:064x}", i),
+                            ip,
+                            &mut stats,
+                        )
+                        .await;
                     }
                     Mode::Bad => {
                         let (key, _) = &opts.keys[(i >> 20) as usize % opts.keys.len()];
-                        send(&client, &opts.url, key, ts, &format!("v1={:064x}", i), ip, &mut stats).await;
+                        send(
+                            &client,
+                            &opts.url,
+                            key,
+                            ts,
+                            &format!("v1={:064x}", i),
+                            ip,
+                            &mut stats,
+                        )
+                        .await;
                     }
                     _ => {
                         // A key that is free in this second, otherwise wait a moment.
@@ -197,7 +248,16 @@ async fn main() {
                             let k = next_key.fetch_add(1, Ordering::Relaxed) % n;
                             if last_ts[k].fetch_max(ts, Ordering::SeqCst) < ts {
                                 let (key, secret) = &opts.keys[k];
-                                send(&client, &opts.url, key, ts, &signature(secret, key, ts), ip.clone(), &mut stats).await;
+                                send(
+                                    &client,
+                                    &opts.url,
+                                    key,
+                                    ts,
+                                    &signature(secret, key, ts),
+                                    ip.clone(),
+                                    &mut stats,
+                                )
+                                .await;
                                 sent = true;
                                 break;
                             }
@@ -264,7 +324,11 @@ async fn main() {
     total.report(label, elapsed);
     if let Some(legit) = legit {
         let (stats, rounds) = legit.await.unwrap();
-        println!("real pings sent: {} rounds × {} keys", rounds, opts.keys.len());
+        println!(
+            "real pings sent: {} rounds × {} keys",
+            rounds,
+            opts.keys.len()
+        );
         stats.report("real", elapsed);
     }
 }

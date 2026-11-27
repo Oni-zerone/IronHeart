@@ -46,9 +46,15 @@ async fn overview(state: &AppState) -> ApiResult<Overview> {
     let users = db::list_users(&state.db)
         .await?
         .into_iter()
-        .map(|user| UserView { is_master: user.email == state.admin_email.as_ref(), user })
+        .map(|user| UserView {
+            is_master: user.email == state.admin_email.as_ref(),
+            user,
+        })
         .collect();
-    Ok(Overview { users, invites: db::list_invites(&state.db).await? })
+    Ok(Overview {
+        users,
+        invites: db::list_invites(&state.db).await?,
+    })
 }
 
 async fn list(State(state): State<AppState>, _: AdminUser) -> ApiResult<Json<Overview>> {
@@ -72,11 +78,15 @@ async fn invite(
     }
     validate_role(&input.role)?;
     if email == state.admin_email.as_ref() {
-        return Err(ApiError::Invalid("This is the master user: they already have admin access.".into()));
+        return Err(ApiError::Invalid(
+            "This is the master user: they already have admin access.".into(),
+        ));
     }
     match db::create_invite(&state.db, &email, &input.role, Some(&admin.id), now_ms()).await? {
         InviteOutcome::AlreadyUser => {
-            return Err(ApiError::Invalid("This address already has an account.".into()));
+            return Err(ApiError::Invalid(
+                "This address already has an account.".into(),
+            ));
         }
         InviteOutcome::Created => send_invite_email(&state, &admin, &email).await,
         InviteOutcome::Updated => {}
@@ -97,7 +107,10 @@ async fn send_invite_email(state: &AppState, admin: &db::User, to: &str) {
         hot: false,
         pulse: Pulse::Beat,
         blocks: vec![
-            Block::Para(vec![hi(who), fg(" invited you to IronHeart, the service that monitors application heartbeats.")]),
+            Block::Para(vec![
+                hi(who),
+                fg(" invited you to IronHeart, the service that monitors application heartbeats."),
+            ]),
             Block::text("Sign in with the Google account for this address."),
         ],
         action: Some(("sign in".into(), url)),
@@ -142,7 +155,9 @@ async fn remove(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Overview>> {
     protect(&state, &admin, &id).await?;
-    let app_ids = db::delete_user(&state.db, &id).await?.ok_or(ApiError::NotFound)?;
+    let app_ids = db::delete_user(&state.db, &id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
     for app_id in &app_ids {
         state.heartbeat.remove_app(app_id);
     }
@@ -152,12 +167,18 @@ async fn remove(
 
 /// The master and the admin themselves are off limits.
 async fn protect(state: &AppState, admin: &db::User, target_id: &str) -> ApiResult<()> {
-    let target = db::find_user(&state.db, target_id).await?.ok_or(ApiError::NotFound)?;
+    let target = db::find_user(&state.db, target_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
     if target.email == state.admin_email.as_ref() {
-        return Err(ApiError::Invalid("The master user cannot be changed.".into()));
+        return Err(ApiError::Invalid(
+            "The master user cannot be changed.".into(),
+        ));
     }
     if target.id == admin.id {
-        return Err(ApiError::Invalid("You cannot change your own account.".into()));
+        return Err(ApiError::Invalid(
+            "You cannot change your own account.".into(),
+        ));
     }
     Ok(())
 }

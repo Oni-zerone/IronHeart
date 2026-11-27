@@ -151,19 +151,21 @@ pub async fn failure_buckets_since(
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(period_start, flushed_at, bad_signature, replay, clock_skew, ips, other_ips)| {
-            FailureBucket {
-                period_start,
-                flushed_at,
-                counts: FailureCounts {
-                    bad_signature,
-                    replay,
-                    clock_skew,
-                    ips: serde_json::from_str(&ips).unwrap_or_default(),
-                    other_ips,
-                },
-            }
-        })
+        .map(
+            |(period_start, flushed_at, bad_signature, replay, clock_skew, ips, other_ips)| {
+                FailureBucket {
+                    period_start,
+                    flushed_at,
+                    counts: FailureCounts {
+                        bad_signature,
+                        replay,
+                        clock_skew,
+                        ips: serde_json::from_str(&ips).unwrap_or_default(),
+                        other_ips,
+                    },
+                }
+            },
+        )
         .collect())
 }
 
@@ -214,7 +216,9 @@ mod tests {
     #[tokio::test]
     async fn summary_merges_buckets_after_cutoff() {
         let pool = test_pool().await;
-        let user = upsert_google_user(&pool, "sub", "o@example.com", None, 1).await.unwrap();
+        let user = upsert_google_user(&pool, "sub", "o@example.com", None, 1)
+            .await
+            .unwrap();
         insert_test_app(&pool, "a", &user.id).await;
 
         let bucket = |bad, ip: &str| FailureCounts {
@@ -222,16 +226,27 @@ mod tests {
             ips: [(ip.to_owned(), bad)].into(),
             ..Default::default()
         };
-        insert_failure_bucket(&pool, "a", 0, 10, &bucket(1, "1.1.1.1")).await.unwrap();
-        insert_failure_bucket(&pool, "a", 10, 20, &bucket(2, "1.1.1.1")).await.unwrap();
-        insert_failure_bucket(&pool, "a", 20, 30, &bucket(4, "2.2.2.2")).await.unwrap();
+        insert_failure_bucket(&pool, "a", 0, 10, &bucket(1, "1.1.1.1"))
+            .await
+            .unwrap();
+        insert_failure_bucket(&pool, "a", 10, 20, &bucket(2, "1.1.1.1"))
+            .await
+            .unwrap();
+        insert_failure_bucket(&pool, "a", 20, 30, &bucket(4, "2.2.2.2"))
+            .await
+            .unwrap();
 
         let summary = failure_summary_since(&pool, "a", 10).await.unwrap();
         assert_eq!(summary.bad_signature, 6);
-        assert_eq!(summary.ips, [("1.1.1.1".into(), 2), ("2.2.2.2".into(), 4)].into());
+        assert_eq!(
+            summary.ips,
+            [("1.1.1.1".into(), 2), ("2.2.2.2".into(), 4)].into()
+        );
 
         // Counts of an app already deleted: ignored without error.
-        insert_failure_bucket(&pool, "missing", 0, 40, &bucket(1, "x")).await.unwrap();
+        insert_failure_bucket(&pool, "missing", 0, 40, &bucket(1, "x"))
+            .await
+            .unwrap();
 
         // In bulk: same counts, the missing app is skipped.
         let pending = vec![
@@ -241,7 +256,10 @@ mod tests {
         insert_failure_buckets(&pool, 50, &pending).await.unwrap();
         let summary = failure_summary_since(&pool, "a", 30).await.unwrap();
         assert_eq!((summary.bad_signature, summary.ips.len()), (8, 1));
-        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM failure_buckets").fetch_one(&pool).await.unwrap();
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM failure_buckets")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(total, 4);
     }
 }

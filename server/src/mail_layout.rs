@@ -64,15 +64,24 @@ pub struct Span {
 }
 
 pub fn fg(text: impl Into<String>) -> Span {
-    Span { style: Style::Fg, text: text.into() }
+    Span {
+        style: Style::Fg,
+        text: text.into(),
+    }
 }
 
 pub fn hi(text: impl Into<String>) -> Span {
-    Span { style: Style::Hi, text: text.into() }
+    Span {
+        style: Style::Hi,
+        text: text.into(),
+    }
 }
 
 pub fn dim(text: impl Into<String>) -> Span {
-    Span { style: Style::Dim, text: text.into() }
+    Span {
+        style: Style::Dim,
+        text: text.into(),
+    }
 }
 
 /// App state, drawn like `StateTag`.
@@ -126,7 +135,12 @@ impl Letter {
     pub fn into_email(self, to: &str, subject: String) -> Email {
         let text = self.text();
         let html = self.html(&subject);
-        Email { to: to.to_owned(), subject, text, html }
+        Email {
+            to: to.to_owned(),
+            subject,
+            text,
+            html,
+        }
     }
 
     fn text(&self) -> String {
@@ -146,11 +160,19 @@ impl Letter {
     }
 
     fn html(&self, subject: &str) -> String {
-        let url = self.action.as_ref().map(|(_, url)| url.as_str()).unwrap_or("");
+        let url = self
+            .action
+            .as_ref()
+            .map(|(_, url)| url.as_str())
+            .unwrap_or("");
         let body: String = self
             .rows(true)
             .iter()
-            .map(|row| row.iter().map(|(style, text)| span_html(*style, text, url)).collect::<String>())
+            .map(|row| {
+                row.iter()
+                    .map(|(style, text)| span_html(*style, text, url))
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n");
         format!(
@@ -175,12 +197,20 @@ font-family:{MONO};font-size:14px;line-height:20px;font-variant-ligatures:none;f
     /// (in plain text the URL goes below the frame instead).
     fn rows(&self, html: bool) -> Vec<Row> {
         let mut rows: Vec<Row> = vec![
-            vec![(Style::Glow, "<3".into()), (Style::Fg, " ".into()), (Style::Hi, "IRONHEART".into())],
+            vec![
+                (Style::Glow, "<3".into()),
+                (Style::Fg, " ".into()),
+                (Style::Hi, "IRONHEART".into()),
+            ],
             ecg(self.pulse),
             vec![],
         ];
 
-        let (edge, title) = if self.hot { (Style::Accent, Style::Hi) } else { (Style::Dim, Style::Accent) };
+        let (edge, title) = if self.hot {
+            (Style::Accent, Style::Hi)
+        } else {
+            (Style::Dim, Style::Accent)
+        };
         let mut name = self.title.to_uppercase();
         if name.chars().count() > COLS - 8 {
             name = name.chars().take(COLS - 9).collect::<String>() + "~";
@@ -207,7 +237,11 @@ font-family:{MONO};font-size:14px;line-height:20px;font-variant-ligatures:none;f
         }
         if let (true, Some((label, _))) = (html, &self.action) {
             content.push(vec![]);
-            content.push(vec![(Style::Dim, "[ ".into()), (Style::Link, label.clone()), (Style::Dim, " ]".into())]);
+            content.push(vec![
+                (Style::Dim, "[ ".into()),
+                (Style::Link, label.clone()),
+                (Style::Dim, " ]".into()),
+            ]);
         }
         content.push(vec![]);
 
@@ -220,7 +254,10 @@ font-family:{MONO};font-size:14px;line-height:20px;font-variant-ligatures:none;f
             rows.push(line);
         }
         rows.push(vec![(edge, format!("+{}+", "-".repeat(COLS - 2)))]);
-        rows.push(vec![(Style::Dim, "  times in UTC. -- IronHeart, heartbeat monitor".into())]);
+        rows.push(vec![(
+            Style::Dim,
+            "  times in UTC. -- IronHeart, heartbeat monitor".into(),
+        )]);
         rows.into_iter().map(merge).collect()
     }
 }
@@ -262,7 +299,11 @@ fn block_rows(block: &Block) -> Vec<Row> {
                 State::Up => Style::Accent,
                 State::Down => Style::Hi,
             };
-            let lead = vec![(glyph_style, glyph.to_owned()), (label_style, label.to_owned()), (Style::Fg, "  ".into())];
+            let lead = vec![
+                (glyph_style, glyph.to_owned()),
+                (label_style, label.to_owned()),
+                (Style::Fg, "  ".into()),
+            ];
             let indent = glyph.len() + label.len() + 2;
             let mut rows = wrap(&[hi(name.clone())], INNER - indent, indent);
             rows[0].splice(0..1, lead);
@@ -298,7 +339,11 @@ fn wrap(spans: &[Span], width: usize, indent: usize) -> Vec<Row> {
         if !line.is_empty() && line.len() + 1 + word.len() <= width {
             // Between two words of the same style the space keeps it, so a run is not split.
             let before = line.last().map(|(style, _)| *style);
-            let space = if before == word.first().map(|(style, _)| *style) { before.unwrap() } else { Style::Fg };
+            let space = if before == word.first().map(|(style, _)| *style) {
+                before.unwrap()
+            } else {
+                Style::Fg
+            };
             line.push((space, ' '));
             line.extend(word);
             continue;
@@ -365,7 +410,10 @@ fn span_html(style: Style, text: &str, url: &str) -> String {
 }
 
 pub fn escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// The content of the frame as running text: borders removed and wrapped
@@ -391,18 +439,30 @@ mod tests {
             pulse: Pulse::Flat,
             blocks: vec![
                 Block::State(State::Down, "nightly <backup>".into()),
-                Block::text("It did not send its heartbeat within the expected interval, and this sentence is long enough to wrap."),
+                Block::text(
+                    "It did not send its heartbeat within the expected interval, and this sentence is long enough to wrap.",
+                ),
                 Block::text("Apps:"),
-                Block::Item(vec![hi("a-very-long-application-name-that-does-not-fit-on-one-line-at-all"), fg(": never")]),
+                Block::Item(vec![
+                    hi("a-very-long-application-name-that-does-not-fit-on-one-line-at-all"),
+                    fg(": never"),
+                ]),
             ],
-            action: Some(("open the application".into(), "https://x/apps/1?a=1&b=2".into())),
+            action: Some((
+                "open the application".into(),
+                "https://x/apps/1?a=1&b=2".into(),
+            )),
         }
     }
 
     #[test]
     fn every_row_of_the_frame_is_as_wide_as_the_grid() {
         let email = letter().into_email("a@example.com", "Subject".into());
-        let framed: Vec<&str> = email.text.lines().filter(|l| l.starts_with('|') || l.starts_with('+')).collect();
+        let framed: Vec<&str> = email
+            .text
+            .lines()
+            .filter(|l| l.starts_with('|') || l.starts_with('+'))
+            .collect();
         assert!(framed.len() > 8);
         for line in framed {
             assert_eq!(line.chars().count(), COLS, "{line:?}");
@@ -411,7 +471,11 @@ mod tests {
         assert!(email.text.starts_with("<3 IRONHEART\n"));
         assert!(email.text.contains("+-[ APP DOWN ]---"));
         assert!(email.text.contains("| </3 DOWN  nightly <backup>"));
-        assert!(email.text.contains("\nopen the application: https://x/apps/1?a=1&b=2\n"));
+        assert!(
+            email
+                .text
+                .contains("\nopen the application: https://x/apps/1?a=1&b=2\n")
+        );
         assert!(email.text.is_ascii());
     }
 

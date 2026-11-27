@@ -151,7 +151,10 @@ pub async fn take_oauth_flow(
     .await?;
     Ok(row
         .filter(|(_, _, created_at)| *created_at > created_after)
-        .map(|(nonce, pkce_verifier, _)| OAuthFlow { nonce, pkce_verifier }))
+        .map(|(nonce, pkce_verifier, _)| OAuthFlow {
+            nonce,
+            pkce_verifier,
+        }))
 }
 
 pub async fn delete_oauth_flows_before(pool: &Pool, before: i64) -> sqlx::Result<()> {
@@ -220,8 +223,12 @@ mod tests {
     #[tokio::test]
     async fn upsert_keeps_id_and_updates_email() {
         let pool = memory_pool().await;
-        let first = upsert_google_user(&pool, "sub-1", "a@example.com", Some("A"), 1).await.unwrap();
-        let second = upsert_google_user(&pool, "sub-1", "b@example.com", None, 2).await.unwrap();
+        let first = upsert_google_user(&pool, "sub-1", "a@example.com", Some("A"), 1)
+            .await
+            .unwrap();
+        let second = upsert_google_user(&pool, "sub-1", "b@example.com", None, 2)
+            .await
+            .unwrap();
         assert_eq!(first.id, second.id);
         assert_eq!(second.email, "b@example.com");
         assert_eq!(second.name, None);
@@ -230,17 +237,24 @@ mod tests {
     #[tokio::test]
     async fn alert_recipients_fall_back_to_account_email() {
         let pool = memory_pool().await;
-        let user = upsert_google_user(&pool, "sub-1", "owner@example.com", None, 1).await.unwrap();
+        let user = upsert_google_user(&pool, "sub-1", "owner@example.com", None, 1)
+            .await
+            .unwrap();
         crate::db::insert_test_app(&pool, "app-1", &user.id).await;
 
-        assert_eq!(alert_recipients(&pool, "app-1").await.unwrap(), ["owner@example.com"]);
+        assert_eq!(
+            alert_recipients(&pool, "app-1").await.unwrap(),
+            ["owner@example.com"]
+        );
 
         for email in ["ops@example.com", "dev@example.com"] {
-            sqlx::query("INSERT INTO app_recipients (app_id, email, created_at) VALUES ('app-1', $1, 1)")
-                .bind(email)
-                .execute(&pool)
-                .await
-                .unwrap();
+            sqlx::query(
+                "INSERT INTO app_recipients (app_id, email, created_at) VALUES ('app-1', $1, 1)",
+            )
+            .bind(email)
+            .execute(&pool)
+            .await
+            .unwrap();
         }
         let mut recipients = alert_recipients(&pool, "app-1").await.unwrap();
         recipients.sort();
@@ -253,33 +267,64 @@ mod tests {
         let pool = memory_pool().await;
         let login = |sub: &'static str, email: &'static str, master: bool| {
             let pool = pool.clone();
-            async move { login_google_user(&pool, sub, email, None, master, 1).await.unwrap() }
+            async move {
+                login_google_user(&pool, sub, email, None, master, 1)
+                    .await
+                    .unwrap()
+            }
         };
 
-        assert!(login("sub-x", "x@example.com", false).await.is_none(), "without an invite");
-        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users").fetch_one(&pool).await.unwrap(), 0);
+        assert!(
+            login("sub-x", "x@example.com", false).await.is_none(),
+            "without an invite"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
 
         let master = login("sub-m", "m@example.com", true).await.unwrap();
         assert_eq!(master.role, "admin");
 
-        crate::db::create_invite(&pool, "x@example.com", "user", Some(&master.id), 2).await.unwrap();
+        crate::db::create_invite(&pool, "x@example.com", "user", Some(&master.id), 2)
+            .await
+            .unwrap();
         let invited = login("sub-x", "x@example.com", false).await.unwrap();
         assert_eq!(invited.role, "user");
-        assert!(crate::db::list_invites(&pool).await.unwrap().is_empty(), "invite consumed");
+        assert!(
+            crate::db::list_invites(&pool).await.unwrap().is_empty(),
+            "invite consumed"
+        );
 
         // Already registered: gets in without an invite and keeps the role.
-        crate::db::set_user_role(&pool, &invited.id, "admin").await.unwrap();
-        assert_eq!(login("sub-x", "x2@example.com", false).await.unwrap().role, "admin");
+        crate::db::set_user_role(&pool, &invited.id, "admin")
+            .await
+            .unwrap();
+        assert_eq!(
+            login("sub-x", "x2@example.com", false).await.unwrap().role,
+            "admin"
+        );
 
         // The master becomes admin again even if the role in the database changed.
-        crate::db::set_user_role(&pool, &master.id, "user").await.unwrap();
-        assert_eq!(login("sub-m", "m@example.com", true).await.unwrap().role, "admin");
+        crate::db::set_user_role(&pool, &master.id, "user")
+            .await
+            .unwrap();
+        assert_eq!(
+            login("sub-m", "m@example.com", true).await.unwrap().role,
+            "admin"
+        );
     }
 
     #[tokio::test]
     async fn oauth_flow_is_single_use_and_expires() {
         let pool = memory_pool().await;
-        let flow = OAuthFlow { nonce: "n".into(), pkce_verifier: "v".into() };
+        let flow = OAuthFlow {
+            nonce: "n".into(),
+            pkce_verifier: "v".into(),
+        };
         insert_oauth_flow(&pool, "s1", &flow, 100).await.unwrap();
         insert_oauth_flow(&pool, "s2", &flow, 100).await.unwrap();
 
@@ -291,10 +336,17 @@ mod tests {
     #[tokio::test]
     async fn session_lookup_respects_expiry() {
         let pool = memory_pool().await;
-        let user = upsert_google_user(&pool, "sub-1", "a@example.com", None, 1).await.unwrap();
-        insert_session(&pool, "h", &user.id, 1, 1_000).await.unwrap();
+        let user = upsert_google_user(&pool, "sub-1", "a@example.com", None, 1)
+            .await
+            .unwrap();
+        insert_session(&pool, "h", &user.id, 1, 1_000)
+            .await
+            .unwrap();
 
-        assert_eq!(session_user(&pool, "h", 999).await.unwrap().map(|u| u.id), Some(user.id));
+        assert_eq!(
+            session_user(&pool, "h", 999).await.unwrap().map(|u| u.id),
+            Some(user.id)
+        );
         assert!(session_user(&pool, "h", 1_000).await.unwrap().is_none());
         delete_expired_sessions(&pool, 1_000).await.unwrap();
         assert!(session_user(&pool, "h", 0).await.unwrap().is_none());

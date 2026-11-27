@@ -81,7 +81,11 @@ pub struct KeyMonitor {
 
 impl KeyMonitor {
     pub fn new(enabled: bool) -> Self {
-        Self { enabled, status: watch::Sender::new(None), wake: tokio::sync::Notify::new() }
+        Self {
+            enabled,
+            status: watch::Sender::new(None),
+            wake: tokio::sync::Notify::new(),
+        }
     }
 
     pub fn get(&self) -> Option<KeyStatus> {
@@ -95,7 +99,9 @@ impl KeyMonitor {
     /// A send failed: check again soon instead of waiting a day, so a long
     /// outage is noticed (at most once every `EARLY_CHECK_MIN`).
     pub fn recheck_soon(&self) {
-        let recent = self.get().is_some_and(|s| clock::now_ms() - s.checked_at < EARLY_CHECK_MIN.as_millis() as i64);
+        let recent = self
+            .get()
+            .is_some_and(|s| clock::now_ms() - s.checked_at < EARLY_CHECK_MIN.as_millis() as i64);
         if self.enabled && !recent {
             self.wake.notify_one();
         }
@@ -109,14 +115,22 @@ impl KeyMonitor {
             None => Health::Checking,
             Some(s) if s.state == REJECTED => Health::Broken,
             Some(s) if s.state == "ok" => Health::Ok,
-            Some(s) if s.failing_since.is_some_and(|since| now - since >= LONG_OUTAGE_MS) => Health::Broken,
+            Some(s)
+                if s.failing_since
+                    .is_some_and(|since| now - since >= LONG_OUTAGE_MS) =>
+            {
+                Health::Broken
+            }
             Some(_) => Health::Unreachable,
         }
     }
 
     /// The key was refused (a long outage is not a refusal: see `health`).
     pub fn rejected(&self) -> bool {
-        self.status.borrow().as_ref().is_some_and(|s| s.state == REJECTED)
+        self.status
+            .borrow()
+            .as_ref()
+            .is_some_and(|s| s.state == REJECTED)
     }
 
     /// Waits for the first check (immediately without a key), so that at startup
@@ -143,16 +157,35 @@ pub fn spawn(state: AppState) {
 
 /// Stores the outcome of the email check and returns when to check again.
 fn record(state: &AppState, check: KeyCheck) -> Duration {
-    record_check(&state.mail_key, state.mailer.describe(), check, clock::now_ms())
+    record_check(
+        &state.mail_key,
+        state.mailer.describe(),
+        check,
+        clock::now_ms(),
+    )
 }
 
 /// Stores the outcome of a key check (email or Telegram) and returns when to
 /// check again: daily when it works, hourly while it fails.
-pub fn record_check(monitor: &KeyMonitor, provider: &'static str, check: KeyCheck, now: i64) -> Duration {
+pub fn record_check(
+    monitor: &KeyMonitor,
+    provider: &'static str,
+    check: KeyCheck,
+    now: i64,
+) -> Duration {
     let previous = monitor.get();
     let was_rejected = monitor.rejected();
-    let failing_since = previous.as_ref().and_then(|p| p.failing_since).or(Some(now));
-    let status = |state, error, failing_since| KeyStatus { provider, state, checked_at: now, error, failing_since };
+    let failing_since = previous
+        .as_ref()
+        .and_then(|p| p.failing_since)
+        .or(Some(now));
+    let status = |state, error, failing_since| KeyStatus {
+        provider,
+        state,
+        checked_at: now,
+        error,
+        failing_since,
+    };
     match check {
         KeyCheck::Valid => {
             if was_rejected {
@@ -189,7 +222,11 @@ mod tests {
     async fn state() -> AppState {
         let pool = db::test_pool().await;
         let secret_box = crypto::SecretBox::new(&[1; 32], 1);
-        let hb = Arc::new(heartbeat::Heartbeat::load(&pool, secret_box, None).await.unwrap());
+        let hb = Arc::new(
+            heartbeat::Heartbeat::load(&pool, secret_box, None)
+                .await
+                .unwrap(),
+        );
         crate::test_state(pool, hb)
     }
 
@@ -201,13 +238,22 @@ mod tests {
         assert_eq!(state.mail_key.get().unwrap().state, "ok");
         assert!(!state.mail_key.rejected());
 
-        assert_eq!(record(&state, KeyCheck::Rejected("401".into())), RETRY_AFTER);
+        assert_eq!(
+            record(&state, KeyCheck::Rejected("401".into())),
+            RETRY_AFTER
+        );
         let status = state.mail_key.get().unwrap();
-        assert_eq!((status.state, status.error.as_deref()), (REJECTED, Some("401")));
+        assert_eq!(
+            (status.state, status.error.as_deref()),
+            (REJECTED, Some("401"))
+        );
         assert!(state.mail_key.rejected());
 
         // A network error later does not hide the refusal.
-        assert_eq!(record(&state, KeyCheck::Unreachable("timeout".into())), RETRY_AFTER);
+        assert_eq!(
+            record(&state, KeyCheck::Unreachable("timeout".into())),
+            RETRY_AFTER
+        );
         assert!(state.mail_key.rejected());
 
         record(&state, KeyCheck::Valid);
@@ -222,16 +268,34 @@ mod tests {
     fn long_outage_counts_as_broken() {
         let monitor = KeyMonitor::new(true);
         assert_eq!(monitor.health(0), Health::Checking);
-        record_check(&monitor, "Telegram", KeyCheck::Unreachable("timeout".into()), 1_000);
-        assert_eq!(monitor.health(1_000 + LONG_OUTAGE_MS - 1), Health::Unreachable);
+        record_check(
+            &monitor,
+            "Telegram",
+            KeyCheck::Unreachable("timeout".into()),
+            1_000,
+        );
+        assert_eq!(
+            monitor.health(1_000 + LONG_OUTAGE_MS - 1),
+            Health::Unreachable
+        );
         // The next failure keeps the start of the outage.
-        record_check(&monitor, "Telegram", KeyCheck::Unreachable("timeout".into()), 1_000 + LONG_OUTAGE_MS);
+        record_check(
+            &monitor,
+            "Telegram",
+            KeyCheck::Unreachable("timeout".into()),
+            1_000 + LONG_OUTAGE_MS,
+        );
         assert_eq!(monitor.get().unwrap().failing_since, Some(1_000));
         assert_eq!(monitor.health(1_000 + LONG_OUTAGE_MS), Health::Broken);
         record_check(&monitor, "Telegram", KeyCheck::Valid, 2 * LONG_OUTAGE_MS);
         assert_eq!(monitor.health(2 * LONG_OUTAGE_MS), Health::Ok);
         assert_eq!(monitor.get().unwrap().failing_since, None);
-        record_check(&monitor, "Telegram", KeyCheck::Rejected("401".into()), 3 * LONG_OUTAGE_MS);
+        record_check(
+            &monitor,
+            "Telegram",
+            KeyCheck::Rejected("401".into()),
+            3 * LONG_OUTAGE_MS,
+        );
         assert_eq!(monitor.health(3 * LONG_OUTAGE_MS), Health::Broken);
         assert_eq!(KeyMonitor::new(false).health(0), Health::Unverified);
     }
@@ -248,7 +312,13 @@ mod tests {
         });
         tokio::task::yield_now().await;
         assert!(!waiting.is_finished());
-        monitor.set(KeyStatus { provider: "Brevo", state: "ok", checked_at: 1, error: None, failing_since: None });
+        monitor.set(KeyStatus {
+            provider: "Brevo",
+            state: "ok",
+            checked_at: 1,
+            error: None,
+            failing_since: None,
+        });
         waiting.await.unwrap();
     }
 }

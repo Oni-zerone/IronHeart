@@ -64,8 +64,18 @@ impl Outbox {
     fn with_capacity(urgent: usize, reports: usize) -> (Self, Receivers) {
         let (urgent_tx, urgent_rx) = mpsc::channel(urgent);
         let (reports_tx, reports_rx) = mpsc::channel(reports);
-        let outbox = Self { urgent: urgent_tx, reports: reports_tx, dropped_reports: AtomicU64::new(0) };
-        (outbox, Receivers { urgent: urgent_rx, reports: reports_rx })
+        let outbox = Self {
+            urgent: urgent_tx,
+            reports: reports_tx,
+            dropped_reports: AtomicU64::new(0),
+        };
+        (
+            outbox,
+            Receivers {
+                urgent: urgent_rx,
+                reports: reports_rx,
+            },
+        )
     }
 
     pub fn start(senders: Senders) -> Arc<Self> {
@@ -103,7 +113,11 @@ async fn run(mut receivers: Receivers, senders: Senders) {
             Some(message) = receivers.reports.recv() => message,
             else => break,
         };
-        let permit = permits.clone().acquire_owned().await.expect("semaphore open");
+        let permit = permits
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("semaphore open");
         let senders = senders.clone();
         tokio::spawn(async move {
             match message {
@@ -132,7 +146,12 @@ mod tests {
     }
 
     fn email(n: usize) -> Email {
-        Email { to: format!("u{n}@example.com"), subject: "s".into(), text: "t".into(), html: "h".into() }
+        Email {
+            to: format!("u{n}@example.com"),
+            subject: "s".into(),
+            text: "t".into(),
+            html: "h".into(),
+        }
     }
 
     #[tokio::test]
@@ -151,6 +170,9 @@ mod tests {
         assert!(!waiting.is_finished());
         assert_eq!(to(receivers.urgent.recv().await.unwrap()), "u4@example.com");
         waiting.await.unwrap();
-        assert_eq!(to(receivers.reports.recv().await.unwrap()), "u1@example.com");
+        assert_eq!(
+            to(receivers.reports.recv().await.unwrap()),
+            "u1@example.com"
+        );
     }
 }

@@ -21,23 +21,30 @@ pub async fn insert_telegram_token(
     user_id: &str,
     expires_at: i64,
 ) -> sqlx::Result<()> {
-    sqlx::query("INSERT INTO telegram_link_tokens (token_hash, user_id, expires_at) VALUES ($1, $2, $3)")
-        .bind(token_hash)
-        .bind(user_id)
-        .bind(expires_at)
-        .execute(pool)
-        .await
-        .map(|_| ())
+    sqlx::query(
+        "INSERT INTO telegram_link_tokens (token_hash, user_id, expires_at) VALUES ($1, $2, $3)",
+    )
+    .bind(token_hash)
+    .bind(user_id)
+    .bind(expires_at)
+    .execute(pool)
+    .await
+    .map(|_| ())
 }
 
 /// Consumes the token (single use) and returns its user, if it has not expired.
-pub async fn take_telegram_token(pool: &Pool, token_hash: &str, now: i64) -> sqlx::Result<Option<User>> {
+pub async fn take_telegram_token(
+    pool: &Pool,
+    token_hash: &str,
+    now: i64,
+) -> sqlx::Result<Option<User>> {
     let mut tx = pool.begin().await?;
-    let row: Option<(String, i64)> =
-        sqlx::query_as("DELETE FROM telegram_link_tokens WHERE token_hash = $1 RETURNING user_id, expires_at")
-            .bind(token_hash)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let row: Option<(String, i64)> = sqlx::query_as(
+        "DELETE FROM telegram_link_tokens WHERE token_hash = $1 RETURNING user_id, expires_at",
+    )
+    .bind(token_hash)
+    .fetch_optional(&mut *tx)
+    .await?;
     let user = match row {
         Some((user_id, expires_at)) if expires_at > now => {
             sqlx::query_as("SELECT id, email, name, role FROM users WHERE id = $1")
@@ -153,12 +160,14 @@ pub async fn delete_telegram_chat(pool: &Pool, chat_id: i64) -> sqlx::Result<boo
 
 /// Telegram refused delivery (bot blocked or chat gone): stop sending to it.
 pub async fn disable_telegram_chat(pool: &Pool, chat_id: i64, now: i64) -> sqlx::Result<()> {
-    sqlx::query("UPDATE telegram_links SET disabled_at = $1 WHERE chat_id = $2 AND disabled_at IS NULL")
-        .bind(now)
-        .bind(chat_id)
-        .execute(pool)
-        .await
-        .map(|_| ())
+    sqlx::query(
+        "UPDATE telegram_links SET disabled_at = $1 WHERE chat_id = $2 AND disabled_at IS NULL",
+    )
+    .bind(now)
+    .bind(chat_id)
+    .execute(pool)
+    .await
+    .map(|_| ())
 }
 
 /// Active chats per account email: alerts follow the email recipients.
@@ -179,38 +188,89 @@ mod tests {
     #[tokio::test]
     async fn token_is_single_use_and_expires() {
         let pool = test_pool().await;
-        let user = upsert_google_user(&pool, "sub", "a@example.com", None, 1).await.unwrap();
-        insert_telegram_token(&pool, "h1", &user.id, 100).await.unwrap();
-        insert_telegram_token(&pool, "h2", &user.id, 100).await.unwrap();
+        let user = upsert_google_user(&pool, "sub", "a@example.com", None, 1)
+            .await
+            .unwrap();
+        insert_telegram_token(&pool, "h1", &user.id, 100)
+            .await
+            .unwrap();
+        insert_telegram_token(&pool, "h2", &user.id, 100)
+            .await
+            .unwrap();
 
-        assert_eq!(take_telegram_token(&pool, "h1", 50).await.unwrap().unwrap().id, user.id);
-        assert!(take_telegram_token(&pool, "h1", 50).await.unwrap().is_none(), "single use");
-        assert!(take_telegram_token(&pool, "h2", 100).await.unwrap().is_none(), "expired");
-        assert!(take_telegram_token(&pool, "nope", 0).await.unwrap().is_none());
+        assert_eq!(
+            take_telegram_token(&pool, "h1", 50)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            user.id
+        );
+        assert!(
+            take_telegram_token(&pool, "h1", 50)
+                .await
+                .unwrap()
+                .is_none(),
+            "single use"
+        );
+        assert!(
+            take_telegram_token(&pool, "h2", 100)
+                .await
+                .unwrap()
+                .is_none(),
+            "expired"
+        );
+        assert!(
+            take_telegram_token(&pool, "nope", 0)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
     async fn chat_moves_between_accounts_and_routes_follow_email() {
         let pool = test_pool().await;
-        let a = upsert_google_user(&pool, "a", "a@example.com", None, 1).await.unwrap();
-        let b = upsert_google_user(&pool, "b", "b@example.com", None, 1).await.unwrap();
+        let a = upsert_google_user(&pool, "a", "a@example.com", None, 1)
+            .await
+            .unwrap();
+        let b = upsert_google_user(&pool, "b", "b@example.com", None, 1)
+            .await
+            .unwrap();
         link_telegram_chat(&pool, &a.id, 42, "@a", 1).await.unwrap();
         link_telegram_chat(&pool, &a.id, 43, "A2", 2).await.unwrap();
-        assert_eq!(telegram_routes(&pool).await.unwrap(), [("a@example.com".into(), 42), ("a@example.com".into(), 43)]);
+        assert_eq!(
+            telegram_routes(&pool).await.unwrap(),
+            [("a@example.com".into(), 42), ("a@example.com".into(), 43)]
+        );
 
         link_telegram_chat(&pool, &b.id, 42, "@b", 3).await.unwrap();
-        assert_eq!(telegram_chat_user(&pool, 42).await.unwrap().unwrap().id, b.id);
+        assert_eq!(
+            telegram_chat_user(&pool, 42).await.unwrap().unwrap().id,
+            b.id
+        );
         assert_eq!(list_telegram_links(&pool, &a.id).await.unwrap().len(), 1);
 
         disable_telegram_chat(&pool, 43, 5).await.unwrap();
-        assert_eq!(telegram_routes(&pool).await.unwrap(), [("b@example.com".into(), 42)]);
-        assert!(telegram_chats_for_user(&pool, &a.id).await.unwrap().is_empty());
+        assert_eq!(
+            telegram_routes(&pool).await.unwrap(),
+            [("b@example.com".into(), 42)]
+        );
+        assert!(
+            telegram_chats_for_user(&pool, &a.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         // A message from the chat enables it again.
         telegram_chat_user(&pool, 43).await.unwrap();
         assert_eq!(telegram_chats_for_user(&pool, &a.id).await.unwrap(), [43]);
 
         let link = &list_telegram_links(&pool, &a.id).await.unwrap()[0];
-        assert!(!delete_telegram_link(&pool, &b.id, &link.id).await.unwrap(), "only the owner");
+        assert!(
+            !delete_telegram_link(&pool, &b.id, &link.id).await.unwrap(),
+            "only the owner"
+        );
         assert!(delete_telegram_link(&pool, &a.id, &link.id).await.unwrap());
         assert!(delete_telegram_chat(&pool, 42).await.unwrap());
         assert!(telegram_routes(&pool).await.unwrap().is_empty());
