@@ -91,12 +91,20 @@ pub async fn handle_message(
 ) -> anyhow::Result<Option<Message>> {
     let chat_id = incoming.chat_id;
     let Some((command, arg)) = parse_command(&incoming.text) else {
-        return Ok(if incoming.private {
-            Some(Message::text(chat_id, "Commands start with /. Try /help."))
-        } else {
-            None
-        });
+        if !incoming.private {
+            return Ok(None);
+        }
+        // Any message proves the bot is no longer blocked: this re-enables a
+        // disabled chat, as the dashboard promises ("write to the bot to resume").
+        db::telegram_chat_user(&state.db, chat_id).await?;
+        return Ok(Some(Message::text(
+            chat_id,
+            "Commands start with /. Try /help.",
+        )));
     };
+    // Phone keyboards often capitalize the first letter (/Apps).
+    let command = command.to_ascii_lowercase();
+    let command = command.as_str();
     if !incoming.private {
         return Ok(Some(Message::text(
             chat_id,
@@ -469,6 +477,37 @@ mod tests {
         );
         assert_eq!(parse_command(" /apps@ironheart_bot "), Some(("apps", "")));
         assert_eq!(parse_command("hello"), None);
+    }
+
+    #[tokio::test]
+    async fn commands_ignore_case_and_plain_text_reenables_a_blocked_chat() {
+        let state = state().await;
+        let user = db::upsert_google_user(&state.db, "s", "a@example.com", None, 1)
+            .await
+            .unwrap();
+        db::link_telegram_chat(&state.db, &user.id, 7, "@me", 1)
+            .await
+            .unwrap();
+        assert!(
+            say(&state, 7, "/Help")
+                .await
+                .starts_with("Linked to a@example.com.")
+        );
+        assert!(
+            !say(&state, 7, "/APPS@ironheart_bot")
+                .await
+                .contains("Unknown command")
+        );
+
+        db::disable_telegram_chat(&state.db, 7, 2).await.unwrap();
+        let disabled = || async {
+            db::list_telegram_links(&state.db, &user.id).await.unwrap()[0]
+                .disabled_at
+                .is_some()
+        };
+        assert!(disabled().await);
+        assert!(say(&state, 7, "hi").await.contains("Try /help"));
+        assert!(!disabled().await, "plain text re-enables the chat");
     }
 
     #[test]
