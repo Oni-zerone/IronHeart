@@ -70,11 +70,16 @@ const MAIL_TRANSPORTS: &str = "brevo, resend, postmark, mailgun, scaleway, smtp"
 
 impl MailConfig {
     fn from_env() -> anyhow::Result<Self> {
-        Self::from_vars(&std::env::vars().collect())
+        // `vars()` panics on a non-UTF-8 variable, even one unrelated to email:
+        // those are skipped (an email variable that is not UTF-8 counts as missing).
+        let vars = std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+            .collect();
+        Self::from_vars(&vars)
     }
 
     /// Reads the email configuration from a map of variables (the environment, or a test).
-    /// Empty values count as missing.
+    /// Empty values count as missing. Values are trimmed, except `SMTP_PASSWORD`.
     pub fn from_vars(vars: &HashMap<String, String>) -> anyhow::Result<Self> {
         let get = |key: &str| {
             vars.get(key).map(|v| v.trim()).filter(|v| !v.is_empty()).map(str::to_owned)
@@ -104,7 +109,7 @@ impl MailConfig {
                 project_id: need("SCW_PROJECT_ID")?,
                 region: get("SCW_REGION").unwrap_or_else(|| "fr-par".into()),
             },
-            "smtp" => MailTransport::Smtp(smtp_config(&get)?),
+            "smtp" => MailTransport::Smtp(smtp_config(&get, vars)?),
             other => bail!("unknown MAIL_TRANSPORT: {other} (valid: {MAIL_TRANSPORTS})"),
         };
         Ok(Self {
@@ -115,10 +120,16 @@ impl MailConfig {
     }
 }
 
-fn smtp_config(get: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<SmtpConfig> {
+fn smtp_config(
+    get: &dyn Fn(&str) -> Option<String>,
+    vars: &HashMap<String, String>,
+) -> anyhow::Result<SmtpConfig> {
     let host = get("SMTP_HOST").unwrap_or_else(|| "localhost".into());
     let local = is_local_host(&host);
+    let port: Option<u16> = get("SMTP_PORT").map(|p| p.parse()).transpose().context("invalid SMTP_PORT")?;
     let tls = match get("SMTP_TLS").map(|v| v.to_lowercase()).as_deref() {
+        // 465 is implicit TLS: STARTTLS there would wait for a greeting that never comes.
+        None if port == Some(465) => SmtpTls::Tls,
         None if local => SmtpTls::None,
         None => SmtpTls::StartTls,
         Some("none") => SmtpTls::None,
@@ -126,15 +137,17 @@ fn smtp_config(get: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<SmtpConfi
         Some("tls") => SmtpTls::Tls,
         Some(other) => bail!("invalid SMTP_TLS: {other} (none, starttls or tls)"),
     };
-    let port = match get("SMTP_PORT") {
-        Some(port) => port.parse().context("invalid SMTP_PORT")?,
+    let port = match port {
+        Some(port) => port,
         None => match tls {
             SmtpTls::None => 1025,
             SmtpTls::StartTls => 587,
             SmtpTls::Tls => 465,
         },
     };
-    let credentials = match (get("SMTP_USERNAME"), get("SMTP_PASSWORD")) {
+    // The password is kept as written: it may start or end with a space.
+    let password = vars.get("SMTP_PASSWORD").filter(|v| !v.trim().is_empty()).cloned();
+    let credentials = match (get("SMTP_USERNAME"), password) {
         (Some(user), Some(password)) => Some((user, password)),
         (None, None) => None,
         (Some(_), None) => bail!("missing variable SMTP_PASSWORD (SMTP_USERNAME is set)"),
@@ -150,7 +163,8 @@ fn smtp_config(get: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<SmtpConfi
 
 /// Hosts where plain-text SMTP is acceptable: this machine or the Mailpit container.
 fn is_local_host(host: &str) -> bool {
-    matches!(host.to_lowercase().as_str(), "localhost" | "127.0.0.1" | "::1" | "[::1]" | "mailpit")
+    // Not `[::1]`: lettre resolves the host as written and rejects the brackets.
+    matches!(host.to_lowercase().as_str(), "localhost" | "127.0.0.1" | "::1" | "mailpit")
 }
 
 impl Config {
@@ -326,6 +340,12 @@ mod tests {
             ("SMTP_PORT", "2525"),
         ]);
         assert_eq!((custom.tls, custom.port), (SmtpTls::StartTls, 2525));
+        // Port 465 without SMTP_TLS is implicit TLS, not STARTTLS.
+        let gmail = smtp(&[("SMTP_HOST", "smtp.gmail.com"), ("SMTP_PORT", "465")]);
+        assert_eq!((gmail.tls, gmail.port), (SmtpTls::Tls, 465));
+        // Brackets are not a host lettre can resolve: not treated as local.
+        assert_eq!(smtp(&[("SMTP_HOST", "[::1]")]).tls, SmtpTls::StartTls);
+        assert_eq!(smtp(&[("SMTP_HOST", "::1")]).tls, SmtpTls::None);
         assert!(error(&[("SMTP_TLS", "ssl")]).contains("SMTP_TLS"));
         assert!(error(&[("SMTP_PORT", "x")]).contains("SMTP_PORT"));
     }
@@ -338,6 +358,14 @@ mod tests {
             ("SMTP_PASSWORD", "secret"),
         ]);
         assert_eq!(auth.credentials, Some(("user".into(), "secret".into())));
+        // The password is not trimmed; the other values are.
+        let spaced = smtp(&[
+            ("SMTP_HOST", "smtp.example.com"),
+            ("SMTP_USERNAME", " user "),
+            ("SMTP_PASSWORD", " secret "),
+        ]);
+        assert_eq!(spaced.credentials, Some(("user".into(), " secret ".into())));
+        assert!(error(&[("SMTP_USERNAME", "user"), ("SMTP_PASSWORD", "  ")]).contains("SMTP_PASSWORD"));
         assert!(error(&[("SMTP_USERNAME", "user")]).contains("SMTP_PASSWORD"));
         assert!(error(&[("SMTP_PASSWORD", "secret")]).contains("SMTP_USERNAME"));
     }
@@ -351,7 +379,7 @@ mod tests {
             ("SMTP_PASSWORD", "secret"),
         ]);
         assert!(err.contains("clear text") && !err.contains("secret"), "{err}");
-        // Towards a local host it is allowed (Mailpit accepts any credentials).
+        // Towards a local host it is allowed (Mailpit, with authentication enabled).
         let local =
             smtp(&[("SMTP_HOST", "127.0.0.1"), ("SMTP_USERNAME", "u"), ("SMTP_PASSWORD", "p")]);
         assert_eq!(local.tls, SmtpTls::None);

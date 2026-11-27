@@ -35,13 +35,16 @@ pub fn transport(config: &SmtpConfig) -> anyhow::Result<AsyncSmtpTransport<Tokio
     Ok(builder.build())
 }
 
-/// Connects and logs in, then quits. A permanent (5xx) answer, such as a
-/// refused login, cannot be fixed by retrying: alerts would not go out.
+/// Connects and logs in, then quits. A permanent (5xx) answer such as a refused
+/// login, no common login mechanism or a TLS failure (certificate) cannot be
+/// fixed by retrying: alerts would not go out. Timeouts and network errors can.
 pub async fn check(transport: &AsyncSmtpTransport<Tokio1Executor>) -> KeyCheck {
     match transport.test_connection().await {
         Ok(true) => KeyCheck::Valid,
         Ok(false) => KeyCheck::Unreachable("SMTP server did not answer".into()),
-        Err(err) if err.is_permanent() => KeyCheck::Rejected(format!("SMTP server refused: {err}")),
+        Err(err) if err.is_permanent() || err.is_client() || err.is_tls() => {
+            KeyCheck::Rejected(format!("SMTP server refused: {err}"))
+        }
         Err(err) => KeyCheck::Unreachable(format!("SMTP unreachable: {err}")),
     }
 }

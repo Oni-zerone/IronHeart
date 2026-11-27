@@ -127,7 +127,7 @@ The provider is chosen with `MAIL_TRANSPORT`; the sender is `MAIL_FROM_EMAIL` / 
 | `scaleway` | HTTP API (Transactional Email) | `SCW_SECRET_KEY`, `SCW_PROJECT_ID`, `SCW_REGION` (default `fr-par`) |
 | `smtp` (default) | SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_TLS` = `none` \| `starttls` \| `tls` |
 
-- `smtp` is the fallback for any other provider (Brevo SMTP, Amazon SES via SMTP, Gmail, Fastmail, your own server). Without `SMTP_TLS` it is `none` towards `localhost`/`127.0.0.1`/`mailpit` and `starttls` elsewhere; the default port follows the TLS mode (1025, 587, 465). With credentials and no TLS towards a non-local host the service refuses to start. Locally it reaches Mailpit with no configuration.
+- `smtp` is the fallback for any other provider (Brevo SMTP, Amazon SES via SMTP, Gmail, Fastmail, your own server). Without `SMTP_TLS` it is `tls` with `SMTP_PORT=465`, `none` towards `localhost`/`127.0.0.1`/`mailpit` and `starttls` elsewhere; the default port follows the TLS mode (1025, 587, 465). With credentials and no TLS towards a non-local host the service refuses to start. Locally it reaches Mailpit with no configuration.
 - The HTTP APIs also work where outgoing SMTP ports are blocked (some DigitalOcean accounts).
 - A wrong configuration stops the startup with the name of the missing variable; the log names only the provider, never the credentials. `POST /api/me/test-email` sends a test email to the signed-in user.
 - A failed send is not retried and there is no failover between providers.
@@ -148,7 +148,7 @@ With every app up IronHeart sends no email for months, so a broken key would onl
 
 Sends are used instead of reads because keys that may only send (Resend "Sending access", Mailgun domain sending keys, a Scaleway key with only `TransactionalEmailEmailApiCreate`) are refused on reads.
 
-If the provider refuses the key (401/403, or a 5xx to the SMTP login), the error is logged, the master sees `!! mail key` in the top bar, and the outgoing [entanglement](CLAUDE.md#entanglement-master-only) pings stop, so the other instances report this one as down with their own email. While refused, the key is checked again every hour and the pings resume as soon as the provider accepts it. To fix it, create a new key, set it and restart. A network error or an outage at the provider does not stop the pings.
+If the provider refuses the key (401/403; 404 to the empty send, i.e. a wrong Mailgun domain or region; a 5xx, missing login mechanism or TLS failure on SMTP), the error is logged, the master sees `!! mail key` in the top bar, and the outgoing [entanglement](CLAUDE.md#entanglement-master-only) pings stop, so the other instances report this one as down with their own email. While refused, the key is checked again every hour and the pings resume as soon as the provider accepts it. To fix it, create a new key, set it and restart. A network error or an outage at the provider does not stop the pings.
 
 ## Database
 

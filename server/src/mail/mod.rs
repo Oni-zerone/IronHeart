@@ -53,7 +53,10 @@ impl KeyCheck {
         }
         let body: String = body.chars().take(200).collect();
         let detail = format!("{provider} answered {status}: {body}");
-        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        // On the send endpoint a 404 is a wrong domain, region or project
+        // (Mailgun in the other region): no email can go out, like a refused key.
+        let not_found = matches!(probe, Probe::EmptySend) && status == StatusCode::NOT_FOUND;
+        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN || not_found {
             Self::Rejected(detail)
         } else {
             Self::Unreachable(detail)
@@ -354,7 +357,8 @@ mod tests {
         assert_eq!(check(EmptySend, 422, ""), KeyCheck::Valid);
         assert!(matches!(check(EmptySend, 401, ""), KeyCheck::Rejected(_)));
         assert!(matches!(check(EmptySend, 403, ""), KeyCheck::Rejected(_)));
-        assert!(matches!(check(EmptySend, 404, ""), KeyCheck::Unreachable(_)));
+        assert!(matches!(check(EmptySend, 404, ""), KeyCheck::Rejected(_)));
+        assert!(matches!(check(Read, 404, ""), KeyCheck::Unreachable(_)));
         assert!(matches!(check(EmptySend, 500, ""), KeyCheck::Unreachable(_)));
         assert!(matches!(check(EmptySend, 429, ""), KeyCheck::Unreachable(_)));
     }
