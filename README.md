@@ -1,3 +1,29 @@
+<div align="center">
+<pre>
+                  .-=====-.       .-=====-.                 
+                :*#########*-   -*#########*:               
+               =##########  #+.+#############=              
+              :##########    #*###############:             
+              :#########  #  #################:             
+                         ###  ###############+              
+ . - --- ----==.=###########   #############=.==---- --- - .
+                 .=##########  ##                           
+                   .=########      #####=.                  
+                     .-*######    ###*-.                    
+                        .=####   ##=.                       
+                          .=#####=.                         
+                            .+#+.                           
+                              -                             
+</pre>
+<pre>
+ ___                 _   _                 _   
+|_ _|_ __ ___  _ __ | | | | ___  __ _ _ __| |_ 
+ | || '__/ _ \| '_ \| |_| |/ _ \/ _` | '__| __|
+ | || | | (_) | | | |  _  |  __/ (_| | |  | |_ 
+|___|_|  \___/|_| |_|_| |_|\___|\__,_|_|   \__|
+</pre>
+</div>
+
 # IronHeart
 
 Lightweight heartbeat service. Every registered application sends a signed ping at regular intervals: if the ping does not arrive within the expected interval, IronHeart emails the application's recipients.
