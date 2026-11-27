@@ -10,27 +10,26 @@ const loginOutcome = computed(() => route.query.login)
 
 // The heart with a pulse line of the old icon (mdiHeartPulse), in ASCII: a solid heart (edges
 // shaded with " .:-=+*#") with the pulse line cut out of it. Outside the heart, streaks that thin
-// out give a sense of speed: on the left one row above the line, on the right one row below.
+// out give a sense of speed: on the left one row below the line, on the right one row above.
 const heart = [
   '                  .-=====-.       .-=====-.',
   '                :*#########*-   -*#########*:',
   '               =##########  #+.+#############=',
   '              :##########    #*###############:',
-  '. - --- ----==:#########  #  #################:',
+  '              :#########  #  #################:',
   '                         ###  ###############+',
-  '               .=###########   #############=.',
+  ' . - --- ----==.=###########   #############=.==---- --- - .',
   '                 .=##########  ##',
-  '                   .=########      #####=.==---- --- - .',
+  '                   .=########      #####=.',
   '                     .-*######    ###*-.',
   '                        .=####   ##=.',
   '                          .=#####=.',
   '                            .+#+.',
   '                              -',
 ]
-/** Columns taken by the streaks: before the heart on the line's left row, after it on the right row. */
+/** Columns taken by the streaks: before and after the heart on their row. */
 const STREAKS: Record<number, (col: number) => boolean> = {
-  4: (col) => col < 14,
-  8: (col) => col >= 42,
+  6: (col) => col < 15 || col >= 46,
 }
 
 type Kind = 'heart' | 'streak-near' | 'streak' | 'streak-far'
