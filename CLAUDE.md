@@ -47,7 +47,7 @@ The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) 
 1. **All SQLite tables are `STRICT`**, so SQLite rejects wrong types instead of storing them.
 2. **Times as `INTEGER` Unix UTC milliseconds**, computed in Rust and passed as parameters. No `datetime('now')`, `CURRENT_TIMESTAMP` or date arithmetic in SQL. chrono's SQLite encoding is text with a variable number of decimals and does not sort correctly as a string. In Postgres they are `BIGINT`.
 3. **IDs as UUID v7 generated in Rust**, stored as `TEXT`. No `AUTOINCREMENT`.
-4. **Only SQL common to both databases**: `INSERT … ON CONFLICT` (never `INSERT OR REPLACE`), `RETURNING`, partial indexes, `UPDATE … FROM (VALUES …)` (columns `column1…`). No `GLOB`, SQLite-specific functions or `PRAGMA` outside `db::connect`.
+4. **Only SQL common to both databases**: `INSERT … ON CONFLICT` (never `INSERT OR REPLACE`), `RETURNING`, partial indexes, `UPDATE … FROM (VALUES …)` (columns `column1…`). No `GLOB`, SQLite-specific functions or `PRAGMA` outside `db::connect`. Only exception: a SQLite migration that rebuilds a table referenced by others turns `foreign_keys` off and on around the rebuild, as `-- no-transaction` with its own `BEGIN`/`COMMIT` (0009); if it fails the service does not start.
 5. **`$1, $2…` placeholders** on SQLite too (sqlx accepts them), so queries stay valid in Postgres.
 6. **All queries live in `server/src/db.rs`** (or in a `db/` module if it grows). Handlers do not write SQL.
 7. **Booleans as `INTEGER` 0/1** with `CHECK`, and enumerations as `TEXT` with `CHECK (… IN (…))`.
@@ -69,9 +69,31 @@ The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) 
 - Access is by invitation only. `ADMIN_EMAIL` is the master user: always allowed in, always admin (the role is reset at every sign-in), cannot be demoted or removed.
 - Others get in if they already have an account (recognized by Google's `sub`) or if there is an invite for their email (`user_invites`, consumed at first sign-in in `db::login_google_user`). Without an invite the login redirects to `/?login=denied` and creates nothing.
 - Roles: `admin` (invites, changes roles, removes users; API `/api/admin/*`, `AdminUser` extractor) and `user` (only their own apps). Apps stay personal for admins too.
-- An admin cannot demote or remove themselves. Removing a user cascades to their apps and sessions, and their apps must be removed from the in-memory registry.
+- An admin cannot demote or remove themselves. Removing a user cascades to their personal apps and sessions (their group apps stay with the groups), and those apps must be removed from the in-memory registry.
 - Emails (accounts, invites, `ADMIN_EMAIL`) are compared in lowercase.
-- For the master only, `/api/me` includes `database` (`db::DatabaseInfo`: `postgres` or `sqlite` and where it lives, without credentials); the top bar shows it as a chip, yellow for local SQLite.
+- For the master only, `/api/me` includes `database` (`db::DatabaseInfo`: `postgres` or `sqlite` and where it lives, without credentials); the status row shows it as a chip, amber for local SQLite.
+- Top of every page: one row with `/apps /groups /telegram`, the email and sign out; under the ECG line the status row, with the alert channels (`AlertChannels part="row"`) on the left and, for admins, `/users` (and for the master `/entanglement`, the database and the email key chips) aligned right.
+- Errors and alerts use the amber `--alert` token (`.err`): `!!` notices, stopped apps, invalid attempts, destructive actions, the SQLite chip. `--hi` is only emphasis.
+
+## Groups
+
+- Users gather in groups (`groups`, `group_members`; module `groups`, queries in `db/groups.rs`). Any user can be a member, the master included, and a user can be in several groups. At most 50 groups per instance, 100 members per group, names up to 80 characters, unique ignoring case (`name_key`, lowercase computed in Rust).
+- Roles: instance admins create and delete groups (`/api/admin/groups`), appoint the first group admin and can manage any group. A group admin (`group_members.role = 'admin'`) invites, removes, promotes and demotes members and renames the group. A group always keeps at least one group admin (`MemberChange::LastAdmin`); when the last admin's account is removed, the oldest remaining member is promoted (`promote_successors` in `db::delete_user`).
+- Joining is always an invitation the person accepts (`group_invites`, 7 days, only for existing accounts, shown on `/apps` under pending). `POST /api/groups/{id}/invites` answers `202 {"result":"sent"}` for every address (privacy): unknown addresses and existing members are dropped silently, and the email goes through the outbox so the request time does not tell either. Group admins never see pending invitations. At most 50 invitations per group admin per day, counted in memory on every request (`groups::DailyLimit`).
+- Apps belong to a user or to a group (`apps.user_id` / `apps.group_id`, exactly one: CHECK in migration 0009, which rebuilds the table on SQLite with `-- no-transaction` and the foreign keys off, so `app_recipients` and `failure_buckets` survive). Every query on a user's apps goes through one rule in `db/apps.rs`: `select_apps!` / `visible_to!` (their own apps and their groups' apps) and `managed_by!` (their own and those of the groups where they are group admin). Anything else answers 404.
+- Rights on group apps: every member sees, edits, pauses and rotates the key, and creates apps in the group; only group admins delete them (403 for a plain member) or move them out. `AppView` carries `owner`, `group_role` and `can_manage`, and the dashboard hides what is not allowed.
+- Limits: 100 personal apps per user and 100 apps per group, counted separately (`count_owned_apps`). A group that owns apps cannot be deleted (422, and `ON DELETE RESTRICT`).
+- Alerts of a group app without explicit recipients go to every member (`db::alert_recipients`); Telegram follows the emails as usual. With email off, a group app needs a linked chat of at least one member.
+- Exception: an instance admin who is also admin of the group turns an unknown address into an instance invite (`user_invites`, role `user`) with the group attached (`user_invite_groups`); the membership is added at the first sign-in in `db::login_google_user`, with no accept step, and the invite email mentions the group. The answer is then `instance_invite`. The instance invite rules do not change otherwise.
+
+## Moving apps (`transfers`, queries in `db/transfers.rs`)
+
+- An app keeps its id, key, state, deadline, recipients and history when it changes owner; the in-memory heartbeat registry does not know the owner and is not touched.
+- Immediate moves (`POST /api/apps/{id}/move`, `{ "to": { "kind": "user" } }` or `{ "kind": "group", "id" }`): a user moves their personal app into one of their groups (any member); a group admin moves a group app to themselves or into another group they belong to. A plain member cannot move an app out of a group (403). Atomic `UPDATE` with a check on the current owner (`MoveOutcome::Stale`) and the target limit in the same transaction.
+- To another person it is a request (`app_transfers`, migration 0010): `POST /api/apps/{id}/transfer {email}` by the owner or an admin of the owning group answers `202` with the same body whether or not an account has the address (the row is stored either way). The recipient is told through the outbox by email, or with email off in their linked Telegram chats; nothing is sent to an unknown address. At most one pending request per app (a new one cancels the old), 20 requests per user per day, 7 days to answer. `pending_transfer` is in `AppView` only for those who manage the app.
+- The recipient sees the request on `/apps` (pending box) and accepts (`/api/transfers/{id}/accept`: the app becomes personal, if its owner did not change meanwhile and they have room) or rejects (the sender is told). A move, a deletion or a new request cancels the pending one.
+- Removing a user: `DELETE /api/admin/users/{id}?move_apps_to=<group>` moves their personal apps into that group instead of deleting them; their pending requests (sent or received) are cancelled.
+- The periodic check marks expired requests and deletes closed ones after 30 days.
 
 ## Entanglement (master only)
 
@@ -141,7 +163,7 @@ Rules that must not be broken:
 2. Moves `up` apps past their deadline to `down` (atomically) and alerts; the email mentions the invalid attempts since the last signal.
 3. Sends the recovery emails (`recovery_pending`, set by the ping that brings the app back `up`).
 4. Failed-attempt summaries per app: at rest the first one goes out immediately, then windows of 5, 10, 20, 40, 80, 120 minutes; a window with attempts produces a summary and moves up a level, one without attempts moves down a level (never straight back to rest, to prevent bursts of emails). Logic in `monitor::escalate`, with tests.
-5. Cleans up attempts older than 7 days, expired sessions, abandoned logins and expired Telegram link tokens.
+5. Cleans up attempts older than 7 days, expired sessions, abandoned logins, expired Telegram link tokens and expired group invitations; expires transfer requests and deletes closed ones after 30 days.
 
 At startup, deadlines that have already passed restart from now (`reschedule_overdue`). The state is saved before sending the email: a failed send is not retried.
 
@@ -153,8 +175,8 @@ Alert emails:
 
 ## Domain rules
 
-- Each app can have an optional list of alert recipients (`app_recipients`, lowercase emails). If the list is empty, alerts go to the owner account's email (`db::alert_recipients`). For now added addresses do not require confirmation.
+- Each app can have an optional list of alert recipients (`app_recipients`, lowercase emails). If the list is empty, alerts go to the owner account's email, or to every member of the owning group (`db::alert_recipients`). For now added addresses do not require confirmation.
 
-- App: `new` (never pinged), `up`, `down`, `paused` (no deadline; on resume a full interval is awaited). Interval from 30 seconds to 7 days, grace period up to 1 day, at most 100 apps per user and 10 recipients per app.
+- App: `new` (never pinged), `up`, `down`, `paused` (no deadline; on resume a full interval is awaited). Interval from 30 seconds to 7 days, grace period up to 1 day, at most 100 personal apps per user, 100 apps per group and 10 recipients per app.
 - The `up → down` transition is atomic (`UPDATE … WHERE state = 'up' RETURNING …`), so the email goes out only once. When the application comes back a recovery email is sent.
 - After a service restart, deadlines that passed while the service was down do not generate alerts: they are postponed before being evaluated.

@@ -70,7 +70,7 @@ const logo = heart.flatMap((line, row) => {
           </p>
         </div>
         <div v-else-if="loginOutcome === 'failed'" class="notice">
-          <span class="hi">!!</span>
+          <span class="err">!!</span>
           <p>Sign-in failed. Try again.</p>
         </div>
         <p>Access is by invitation only, with the Google account of the invited address.</p>

@@ -42,6 +42,14 @@ pub async fn find_user(pool: &Pool, user_id: &str) -> sqlx::Result<Option<UserSu
     .await
 }
 
+/// Id of the account with this (lowercase) email.
+pub async fn user_id_by_email(pool: &Pool, email: &str) -> sqlx::Result<Option<String>> {
+    sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(email)
+        .fetch_optional(pool)
+        .await
+}
+
 pub async fn list_invites(pool: &Pool) -> sqlx::Result<Vec<Invite>> {
     sqlx::query_as("SELECT email, role, created_at FROM user_invites ORDER BY email")
         .fetch_all(pool)
@@ -56,13 +64,36 @@ pub enum InviteOutcome {
     AlreadyUser,
 }
 
-/// `email` must be passed in lowercase.
+/// `email` must be passed in lowercase. An existing invite gets the new role.
 pub async fn create_invite(
     pool: &Pool,
     email: &str,
     role: &str,
     invited_by: Option<&str>,
     now: i64,
+) -> sqlx::Result<InviteOutcome> {
+    upsert_invite(pool, email, role, invited_by, now, true).await
+}
+
+/// Like `create_invite`, but an existing invite keeps its role (`Updated`
+/// then means "already invited"): a group invitation must not change it.
+pub async fn ensure_invite(
+    pool: &Pool,
+    email: &str,
+    role: &str,
+    invited_by: Option<&str>,
+    now: i64,
+) -> sqlx::Result<InviteOutcome> {
+    upsert_invite(pool, email, role, invited_by, now, false).await
+}
+
+async fn upsert_invite(
+    pool: &Pool,
+    email: &str,
+    role: &str,
+    invited_by: Option<&str>,
+    now: i64,
+    update_role: bool,
 ) -> sqlx::Result<InviteOutcome> {
     let mut tx = pool.begin().await?;
     // COUNT instead of EXISTS: EXISTS is a boolean in Postgres and an integer in SQLite.
@@ -77,10 +108,13 @@ pub async fn create_invite(
         .bind(email)
         .fetch_one(&mut *tx)
         .await?;
-    sqlx::query(
+    sqlx::query(if update_role {
         "INSERT INTO user_invites (email, role, invited_by, created_at) VALUES ($1, $2, $3, $4)
-         ON CONFLICT (email) DO UPDATE SET role = excluded.role",
-    )
+         ON CONFLICT (email) DO UPDATE SET role = excluded.role"
+    } else {
+        "INSERT INTO user_invites (email, role, invited_by, created_at) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (email) DO NOTHING"
+    })
     .bind(email)
     .bind(role)
     .bind(invited_by)
@@ -114,14 +148,24 @@ pub async fn set_user_role(pool: &Pool, user_id: &str, role: &str) -> sqlx::Resu
         == 1)
 }
 
-/// Deletes the user with apps and sessions (cascading). Returns the ids of the
-/// deleted apps, to remove from the in-memory registry, or `None` if it did not exist.
-pub async fn delete_user(pool: &Pool, user_id: &str) -> sqlx::Result<Option<Vec<String>>> {
+/// Deletes the user with their personal apps and sessions (cascading); with
+/// `move_apps_to` the personal apps move to that group instead. Their group
+/// apps stay with the groups, and the pending transfer requests they sent or
+/// received are cancelled. Returns the ids of the deleted apps, to remove from
+/// the in-memory registry, or `None` if the user did not exist.
+pub async fn delete_user(
+    pool: &Pool,
+    user_id: &str,
+    move_apps_to: Option<&str>,
+    now: i64,
+) -> sqlx::Result<Option<Vec<String>>> {
     let mut tx = pool.begin().await?;
+    super::transfers::release_user(&mut tx, user_id, move_apps_to, now).await?;
     let app_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM apps WHERE user_id = $1")
         .bind(user_id)
         .fetch_all(&mut *tx)
         .await?;
+    super::groups::promote_successors(&mut tx, user_id).await?;
     let deleted = sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)
         .execute(&mut *tx)
@@ -180,10 +224,10 @@ mod tests {
         assert_eq!(list_users(&pool).await.unwrap()[0].app_count, 1);
 
         assert_eq!(
-            delete_user(&pool, &user.id).await.unwrap(),
+            delete_user(&pool, &user.id, None, 1).await.unwrap(),
             Some(vec!["a1".to_owned()])
         );
         assert!(session_user(&pool, "h", 0).await.unwrap().is_none());
-        assert_eq!(delete_user(&pool, &user.id).await.unwrap(), None);
+        assert_eq!(delete_user(&pool, &user.id, None, 1).await.unwrap(), None);
     }
 }

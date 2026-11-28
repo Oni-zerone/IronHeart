@@ -103,6 +103,21 @@ pub fn failures(items: &[FailureItem], apps_url: &str) -> String {
     lines.join("\n")
 }
 
+/// Someone asks the recipient to take an app over (email off: Telegram instead).
+pub fn transfer_request(from: &str, app: &str, interval_secs: i64, apps_url: &str) -> String {
+    [
+        format!("{from} asks you to take over {app} (every {}).", duration(interval_secs * 1000)),
+        "If you accept, it becomes one of your applications, with the same key: its clients keep working without changes.".to_owned(),
+        format!("Accept or reject it on your dashboard, within 7 days: {apps_url}"),
+    ]
+    .join("\n")
+}
+
+/// The recipient rejected a transfer request.
+pub fn transfer_rejected(by: &str, app: &str, apps_url: &str) -> String {
+    format!("{by} rejected the transfer of {app}: it stays where it was.\n{apps_url}")
+}
+
 /// "bad signature 12, replayed 2".
 pub fn reasons(counts: &FailureCounts) -> Option<String> {
     let parts: Vec<String> = [

@@ -7,6 +7,16 @@ use super::Pool;
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct App {
     pub id: String,
+    /// Owner: a user (always the viewer, for personal apps) or a group.
+    #[serde(skip)]
+    pub user_id: Option<String>,
+    #[serde(skip)]
+    pub group_id: Option<String>,
+    #[serde(skip)]
+    pub group_name: Option<String>,
+    /// Role of the viewer in the owning group.
+    #[serde(skip)]
+    pub group_role: Option<String>,
     pub name: String,
     pub key_id: String,
     pub interval_secs: i64,
@@ -19,17 +29,84 @@ pub struct App {
     pub updated_at: i64,
 }
 
-/// Columns of `App`: a macro, so queries stay string literals (sqlx 0.9).
-macro_rules! app_columns {
+impl App {
+    /// The viewer can delete it and move it to another owner: it is theirs, or
+    /// they are admin of the owning group.
+    pub fn manageable(&self) -> bool {
+        self.user_id.is_some() || self.group_role.as_deref() == Some("admin")
+    }
+}
+
+/// `App` as seen by the user `$1`: the owning group and the viewer's role in it.
+/// A macro, so queries stay string literals (sqlx 0.9).
+macro_rules! select_apps {
     () => {
-        "id, name, key_id, interval_secs, grace_secs, state, \
-         last_seen_at, next_deadline_at, down_since, created_at, updated_at"
+        "SELECT apps.id, apps.user_id, apps.group_id, g.name AS group_name, m.role AS group_role, \
+                apps.name, apps.key_id, apps.interval_secs, apps.grace_secs, apps.state, \
+                apps.last_seen_at, apps.next_deadline_at, apps.down_since, \
+                apps.created_at, apps.updated_at \
+         FROM apps LEFT JOIN groups g ON g.id = apps.group_id \
+         LEFT JOIN group_members m ON m.group_id = apps.group_id AND m.user_id = $1 \
+         WHERE (apps.user_id = $1 OR m.role IS NOT NULL)"
     };
+}
+
+/// Apps that the user `$p` sees and works on: their own and those of their
+/// groups. Every query on a user's apps goes through this rule.
+macro_rules! visible_to {
+    ($p:literal) => {
+        concat!(
+            "(user_id = ",
+            $p,
+            " OR group_id IN ",
+            "(SELECT group_id FROM group_members WHERE user_id = ",
+            $p,
+            "))"
+        )
+    };
+}
+
+/// Apps that the user `$p` can delete and move: their own and those of the
+/// groups where they are group admin.
+macro_rules! managed_by {
+    ($p:literal) => {
+        concat!(
+            "(user_id = ",
+            $p,
+            " OR group_id IN ",
+            "(SELECT group_id FROM group_members WHERE user_id = ",
+            $p,
+            " AND role = 'admin'))"
+        )
+    };
+}
+
+/// Who owns an app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owner<'a> {
+    User(&'a str),
+    Group(&'a str),
+}
+
+impl<'a> Owner<'a> {
+    fn user(self) -> Option<&'a str> {
+        match self {
+            Self::User(id) => Some(id),
+            Self::Group(_) => None,
+        }
+    }
+
+    fn group(self) -> Option<&'a str> {
+        match self {
+            Self::User(_) => None,
+            Self::Group(id) => Some(id),
+        }
+    }
 }
 
 pub struct NewApp<'a> {
     pub id: &'a str,
-    pub user_id: &'a str,
+    pub owner: Owner<'a>,
     pub name: &'a str,
     pub key_id: &'a str,
     pub secret_enc: &'a [u8],
@@ -42,12 +119,12 @@ pub struct NewApp<'a> {
 pub async fn insert_app(pool: &Pool, app: &NewApp<'_>, recipients: &[String]) -> sqlx::Result<()> {
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO apps (id, user_id, name, key_id, secret_enc, secret_key_version,
+        "INSERT INTO apps (id, user_id, group_id, name, key_id, secret_enc, secret_key_version,
                            interval_secs, grace_secs, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)",
+         VALUES ($1, $2, $10, $3, $4, $5, $6, $7, $8, $9, $9)",
     )
     .bind(app.id)
-    .bind(app.user_id)
+    .bind(app.owner.user())
     .bind(app.name)
     .bind(app.key_id)
     .bind(app.secret_enc)
@@ -55,51 +132,55 @@ pub async fn insert_app(pool: &Pool, app: &NewApp<'_>, recipients: &[String]) ->
     .bind(app.interval_secs)
     .bind(app.grace_secs)
     .bind(app.now)
+    .bind(app.owner.group())
     .execute(&mut *tx)
     .await?;
     replace_recipients(&mut tx, app.id, recipients, app.now).await?;
     tx.commit().await
 }
 
-pub async fn count_apps(pool: &Pool, user_id: &str) -> sqlx::Result<i64> {
-    sqlx::query_scalar("SELECT COUNT(*) FROM apps WHERE user_id = $1")
+/// Apps of an owner: limits are per user (personal apps) and per group.
+/// Takes the pool or a transaction.
+pub async fn count_owned_apps<'e>(
+    executor: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    owner: Owner<'_>,
+) -> sqlx::Result<i64> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM apps
+         WHERE ($1 IS NOT NULL AND user_id = $1) OR ($2 IS NOT NULL AND group_id = $2)",
+    )
+    .bind(owner.user())
+    .bind(owner.group())
+    .fetch_one(executor)
+    .await
+}
+
+/// Apps the user sees: their own and those of their groups.
+pub async fn list_apps(pool: &Pool, user_id: &str) -> sqlx::Result<Vec<App>> {
+    sqlx::query_as(concat!(select_apps!(), " ORDER BY apps.name, apps.id"))
         .bind(user_id)
-        .fetch_one(pool)
+        .fetch_all(pool)
         .await
 }
 
-pub async fn list_apps(pool: &Pool, user_id: &str) -> sqlx::Result<Vec<App>> {
-    sqlx::query_as(concat!(
-        "SELECT ",
-        app_columns!(),
-        " FROM apps WHERE user_id = $1 ORDER BY name, id"
-    ))
-    .bind(user_id)
-    .fetch_all(pool)
-    .await
-}
-
 pub async fn get_app(pool: &Pool, user_id: &str, app_id: &str) -> sqlx::Result<Option<App>> {
-    sqlx::query_as(concat!(
-        "SELECT ",
-        app_columns!(),
-        " FROM apps WHERE id = $1 AND user_id = $2"
-    ))
-    .bind(app_id)
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await
+    sqlx::query_as(concat!(select_apps!(), " AND apps.id = $2"))
+        .bind(user_id)
+        .bind(app_id)
+        .fetch_optional(pool)
+        .await
 }
 
-/// Configured recipients of a user's apps (without the account fallback).
+/// Configured recipients of the apps a user sees (without the fallback).
 pub async fn configured_recipients(
     pool: &Pool,
     user_id: &str,
 ) -> sqlx::Result<Vec<(String, String)>> {
-    sqlx::query_as(
-        "SELECT r.app_id, r.email FROM app_recipients r JOIN apps a ON a.id = r.app_id
-         WHERE a.user_id = $1 ORDER BY r.email",
-    )
+    sqlx::query_as(concat!(
+        "SELECT r.app_id, r.email FROM app_recipients r WHERE r.app_id IN (SELECT id FROM apps WHERE ",
+        visible_to!("$1"),
+        ") ORDER BY r.email"
+    ))
     .bind(user_id)
     .fetch_all(pool)
     .await
@@ -123,11 +204,12 @@ pub async fn update_app(
     update: &AppUpdate<'_>,
 ) -> sqlx::Result<bool> {
     let mut tx = pool.begin().await?;
-    let updated = sqlx::query(
+    let updated = sqlx::query(concat!(
         "UPDATE apps SET name = $1, interval_secs = $2, grace_secs = $3, state = $4,
                          next_deadline_at = $5, updated_at = $6
-         WHERE id = $7 AND user_id = $8",
-    )
+         WHERE id = $7 AND ",
+        visible_to!("$8")
+    ))
     .bind(update.name)
     .bind(update.interval_secs)
     .bind(update.grace_secs)
@@ -178,11 +260,12 @@ pub async fn rotate_key(
     secret_key_version: i64,
     now: i64,
 ) -> sqlx::Result<bool> {
-    Ok(sqlx::query(
+    Ok(sqlx::query(concat!(
         "UPDATE apps SET key_id = $1, secret_enc = $2, secret_key_version = $3,
                          last_signed_ts = NULL, updated_at = $4
-         WHERE id = $5 AND user_id = $6",
-    )
+         WHERE id = $5 AND ",
+        visible_to!("$6")
+    ))
     .bind(key_id)
     .bind(secret_enc)
     .bind(secret_key_version)
@@ -195,13 +278,18 @@ pub async fn rotate_key(
         == 1)
 }
 
-/// Deletes the app and returns its `key_id`, to remove from the registry.
+/// Deletes the app (owner, or admin of the owning group) and returns its
+/// `key_id`, to remove from the registry.
 pub async fn delete_app(pool: &Pool, user_id: &str, app_id: &str) -> sqlx::Result<Option<String>> {
-    sqlx::query_scalar("DELETE FROM apps WHERE id = $1 AND user_id = $2 RETURNING key_id")
-        .bind(app_id)
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_scalar(concat!(
+        "DELETE FROM apps WHERE id = $1 AND ",
+        managed_by!("$2"),
+        " RETURNING key_id"
+    ))
+    .bind(app_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
 }
 
 // ---- Key registry -----------------------------------------------------------
@@ -452,6 +540,114 @@ mod tests {
             .fetch_one(pool)
             .await
             .unwrap()
+    }
+
+    /// Group app: every member sees and edits it, only group admins delete it,
+    /// outsiders do not see it, and it survives the removal of its creator.
+    #[tokio::test]
+    async fn group_apps_follow_the_group() {
+        use crate::db::{
+            accept_group_invite, alert_recipients, create_group, delete_user, invite_to_group,
+        };
+        let pool = test_pool().await;
+        let mut ids = Vec::new();
+        for name in ["admin", "member", "outsider"] {
+            let user = upsert_google_user(&pool, name, &format!("{name}@example.com"), None, 1)
+                .await
+                .unwrap();
+            ids.push(user.id);
+        }
+        let [admin, member, outsider] = [&ids[0], &ids[1], &ids[2]];
+        create_group(&pool, "g", "Ops", "ops", admin, admin, 1)
+            .await
+            .unwrap();
+        invite_to_group(&pool, "g", "member@example.com", "member", admin, 1, 100)
+            .await
+            .unwrap();
+        accept_group_invite(&pool, "g", member, 2, 100)
+            .await
+            .unwrap();
+        insert_app(
+            &pool,
+            &NewApp {
+                id: "ga",
+                owner: Owner::Group("g"),
+                name: "Shared",
+                key_id: "k-ga",
+                secret_enc: b"secret",
+                secret_key_version: 1,
+                interval_secs: 60,
+                grace_secs: 0,
+                now: 1,
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let seen = get_app(&pool, member, "ga").await.unwrap().unwrap();
+        assert_eq!(
+            (
+                seen.group_name.as_deref(),
+                seen.group_role.as_deref(),
+                seen.manageable()
+            ),
+            (Some("Ops"), Some("member"), false)
+        );
+        assert!(
+            get_app(&pool, admin, "ga")
+                .await
+                .unwrap()
+                .unwrap()
+                .manageable()
+        );
+        assert!(get_app(&pool, outsider, "ga").await.unwrap().is_none());
+        assert!(list_apps(&pool, outsider).await.unwrap().is_empty());
+        assert_eq!(list_apps(&pool, member).await.unwrap().len(), 1);
+
+        let update = AppUpdate {
+            name: "Renamed",
+            interval_secs: 120,
+            grace_secs: 0,
+            state: "new",
+            next_deadline_at: None,
+            recipients: None,
+            now: 3,
+        };
+        assert!(update_app(&pool, member, "ga", &update).await.unwrap());
+        assert!(!update_app(&pool, outsider, "ga", &update).await.unwrap());
+        assert!(
+            rotate_key(&pool, member, "ga", "k2", b"s", 1, 4)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !rotate_key(&pool, outsider, "ga", "k3", b"s", 1, 4)
+                .await
+                .unwrap()
+        );
+
+        let mut recipients = alert_recipients(&pool, "ga").await.unwrap();
+        recipients.sort();
+        assert_eq!(recipients, ["admin@example.com", "member@example.com"]);
+        assert_eq!(count_owned_apps(&pool, Owner::Group("g")).await.unwrap(), 1);
+        assert_eq!(
+            count_owned_apps(&pool, Owner::User(admin)).await.unwrap(),
+            0
+        );
+
+        assert!(delete_app(&pool, member, "ga").await.unwrap().is_none());
+        // The creator leaves: the app stays with the group, the member takes over.
+        assert_eq!(
+            delete_user(&pool, admin, None, 1).await.unwrap(),
+            Some(vec![])
+        );
+        let seen = get_app(&pool, member, "ga").await.unwrap().unwrap();
+        assert_eq!(seen.group_role.as_deref(), Some("admin"));
+        assert_eq!(
+            delete_app(&pool, member, "ga").await.unwrap().as_deref(),
+            Some("k2")
+        );
     }
 
     #[tokio::test]

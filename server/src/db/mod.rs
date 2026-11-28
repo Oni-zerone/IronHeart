@@ -8,7 +8,9 @@ mod apps;
 mod auth;
 mod entanglements;
 mod failures;
+mod groups;
 mod telegram;
+mod transfers;
 mod users;
 
 use std::time::Duration;
@@ -19,7 +21,9 @@ pub use apps::*;
 pub use auth::*;
 pub use entanglements::*;
 pub use failures::*;
+pub use groups::*;
 pub use telegram::*;
+pub use transfers::*;
 pub use users::*;
 
 pub type Pool = AnyPool;
@@ -56,29 +60,40 @@ const SQLITE_PRAGMAS: &str = "PRAGMA journal_mode = WAL;
      PRAGMA temp_store = MEMORY;";
 
 pub async fn connect(database_url: &str) -> anyhow::Result<Pool> {
+    let (pool, backend) = open(database_url).await?;
+    migrator(backend).run(&pool).await?;
+    Ok(pool)
+}
+
+/// Pool without migrations.
+async fn open(database_url: &str) -> anyhow::Result<(Pool, Backend)> {
     sqlx::any::install_default_drivers();
-    let pool = match Backend::from_url(database_url)? {
+    let backend = Backend::from_url(database_url)?;
+    let pool = match backend {
         Backend::Sqlite => {
-            let pool = AnyPoolOptions::new()
+            AnyPoolOptions::new()
                 .after_connect(|conn, _| {
                     Box::pin(async move { conn.execute(SQLITE_PRAGMAS).await.map(|_| ()) })
                 })
                 .connect(&sqlite_create_if_missing(database_url))
-                .await?;
-            sqlx::migrate!("./migrations/sqlite").run(&pool).await?;
-            pool
+                .await?
         }
         Backend::Postgres => {
-            let pool = AnyPoolOptions::new()
+            AnyPoolOptions::new()
                 .max_connections(10)
                 .acquire_timeout(Duration::from_secs(10))
                 .connect(database_url)
-                .await?;
-            sqlx::migrate!("./migrations/postgres").run(&pool).await?;
-            pool
+                .await?
         }
     };
-    Ok(pool)
+    Ok((pool, backend))
+}
+
+fn migrator(backend: Backend) -> sqlx::migrate::Migrator {
+    match backend {
+        Backend::Sqlite => sqlx::migrate!("./migrations/sqlite"),
+        Backend::Postgres => sqlx::migrate!("./migrations/postgres"),
+    }
 }
 
 /// Database in use, without credentials: for the log and the master's dashboard.
@@ -146,6 +161,14 @@ pub async fn ping(pool: &Pool) -> sqlx::Result<()> {
 /// connections; with `IRONHEART_TEST_POSTGRES_URL` a new schema in that Postgres.
 #[cfg(test)]
 pub async fn test_pool() -> Pool {
+    let (pool, backend) = unmigrated_test_pool().await;
+    migrator(backend).run(&pool).await.unwrap();
+    pool
+}
+
+/// Like `test_pool`, without migrations: to test a migration on existing data.
+#[cfg(test)]
+async fn unmigrated_test_pool() -> (Pool, Backend) {
     let name = format!("t{}", uuid::Uuid::now_v7().simple());
     match std::env::var("IRONHEART_TEST_POSTGRES_URL") {
         Ok(url) => {
@@ -161,11 +184,11 @@ pub async fn test_pool() -> Pool {
                 .unwrap();
             admin.close().await;
             let sep = if url.contains('?') { '&' } else { '?' };
-            connect(&format!("{url}{sep}options[search_path]={name}"))
+            open(&format!("{url}{sep}options[search_path]={name}"))
                 .await
                 .unwrap()
         }
-        Err(_) => connect(&format!("sqlite:file:{name}?mode=memory&cache=shared"))
+        Err(_) => open(&format!("sqlite:file:{name}?mode=memory&cache=shared"))
             .await
             .unwrap(),
     }
@@ -178,7 +201,7 @@ pub async fn insert_test_app(pool: &Pool, id: &str, user_id: &str) {
         pool,
         &NewApp {
             id,
-            user_id,
+            owner: Owner::User(user_id),
             name: "App",
             key_id: &format!("key-{id}"),
             secret_enc: b"secret",
@@ -229,6 +252,77 @@ mod tests {
             sqlite_create_if_missing("sqlite://data/x.db"),
             "sqlite://data/x.db?mode=rwc"
         );
+    }
+
+    /// Migration 0009 rebuilds `apps` on SQLite: the rows that reference it
+    /// (recipients, failed attempts) must survive, and the cascades still work.
+    #[tokio::test]
+    async fn app_groups_migration_keeps_existing_data() {
+        let (pool, backend) = unmigrated_test_pool().await;
+        let migrator = migrator(backend);
+        migrator.run_to(8, &pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, google_sub, email, role, created_at)
+             VALUES ('u', 's', 'u@example.com', 'user', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO apps (id, user_id, name, key_id, secret_enc, secret_key_version,
+                               interval_secs, state, last_signed_ts, created_at, updated_at)
+             VALUES ('a', 'u', 'App', 'k', $1, 1, 60, 'up', 42, 1, 1)",
+        )
+        .bind(b"secret".as_slice())
+        .execute(&pool)
+        .await
+        .unwrap();
+        for sql in [
+            "INSERT INTO app_recipients (app_id, email, created_at) VALUES ('a', 'ops@example.com', 1)",
+            "INSERT INTO failure_buckets (id, app_id, period_start, flushed_at, bad_signature,
+                                          replay, clock_skew, ips, other_ips)
+             VALUES ('b', 'a', 1, 2, 3, 0, 0, '{}', 0)",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+
+        migrator.run(&pool).await.unwrap();
+
+        let count = |sql: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(sql)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(count("SELECT COUNT(*) FROM app_recipients").await, 1);
+        assert_eq!(count("SELECT COUNT(*) FROM failure_buckets").await, 1);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM apps WHERE user_id = 'u' AND group_id IS NULL AND last_signed_ts = 42").await,
+            1
+        );
+        // Exactly one owner.
+        assert!(
+            sqlx::query(
+                "INSERT INTO apps (id, name, key_id, secret_enc, secret_key_version,
+                                   interval_secs, created_at, updated_at)
+                 VALUES ('x', 'X', 'kx', $1, 1, 60, 1, 1)",
+            )
+            .bind(b"secret".as_slice())
+            .execute(&pool)
+            .await
+            .is_err()
+        );
+        // The foreign keys are on again and point to the new table.
+        sqlx::query("DELETE FROM users WHERE id = 'u'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM apps").await, 0);
+        assert_eq!(count("SELECT COUNT(*) FROM app_recipients").await, 0);
+        assert_eq!(count("SELECT COUNT(*) FROM failure_buckets").await, 0);
     }
 
     /// The test pool's connections see the same database.

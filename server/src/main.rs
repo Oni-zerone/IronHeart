@@ -10,6 +10,7 @@ mod db;
 mod db_bench;
 mod entanglement;
 mod error;
+mod groups;
 mod heartbeat;
 #[cfg(test)]
 mod load_tests;
@@ -19,6 +20,7 @@ mod mail_layout;
 mod monitor;
 mod outbox;
 mod telegram;
+mod transfers;
 mod users;
 mod web;
 
@@ -57,6 +59,8 @@ pub struct AppState {
     mail_key: Arc<mail_check::KeyMonitor>,
     /// Telegram bot: active only with a token that `getMe` accepted.
     telegram: Arc<telegram::Telegram>,
+    /// Group invitations sent per group admin in the last day.
+    group_invites: Arc<groups::DailyLimit>,
 }
 
 #[tokio::main]
@@ -108,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
         admin_email: config.admin_email.as_str().into(),
         entanglement: Arc::new(entanglement::Sender::new()?),
         database,
+        group_invites: Arc::default(),
     };
     monitor::spawn(state.clone());
     mail_check::spawn(state.clone());
@@ -125,6 +130,8 @@ async fn main() -> anyhow::Result<()> {
         .merge(auth::routes())
         .merge(apps::routes())
         .merge(users::routes())
+        .merge(groups::routes())
+        .merge(transfers::routes())
         .merge(entanglement::routes())
         .merge(telegram::api::routes());
     let app = if web::available() {
@@ -190,6 +197,7 @@ pub fn test_state(db: db::Pool, heartbeat: Arc<heartbeat::Heartbeat>) -> AppStat
         entanglement: Arc::new(entanglement::Sender::new().unwrap()),
         database: Arc::new(db::DatabaseInfo::from_url("sqlite::memory:")),
         mail_key,
+        group_invites: Arc::default(),
     }
 }
 
@@ -219,6 +227,8 @@ struct Me {
     telegram: Option<TelegramInfo>,
     /// Alert channels and their state, for the main page.
     alerts: channels::Status,
+    /// Groups the user belongs to, with their role there.
+    groups: Vec<db::Membership>,
 }
 
 #[derive(serde::Serialize)]
@@ -242,6 +252,7 @@ async fn me(
         .telegram
         .bot_username()
         .map(|bot_username| TelegramInfo { bot_username });
+    let groups = db::memberships(&state.db, &user.id).await?;
     Ok(Json(Me {
         user,
         is_master,
@@ -249,6 +260,7 @@ async fn me(
         mail_key,
         telegram,
         alerts,
+        groups,
     }))
 }
 

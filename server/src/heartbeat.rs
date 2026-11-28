@@ -405,7 +405,7 @@ mod tests {
             &pool,
             &NewApp {
                 id: "app",
-                user_id: &user.id,
+                owner: db::Owner::User(&user.id),
                 name: "App",
                 key_id: "key",
                 secret_enc: &secret_box.seal(secret.as_bytes(), "app"),

@@ -274,6 +274,8 @@ pub async fn tick(state: &AppState, memory: &mut Memory, now: i64) -> anyhow::Re
     db::delete_expired_sessions(pool, now).await?;
     db::delete_oauth_flows_before(pool, now - LOGIN_TTL_MS).await?;
     db::delete_telegram_tokens_before(pool, now).await?;
+    db::delete_group_invites_before(pool, now).await?;
+    db::expire_transfers(pool, now, now - crate::transfers::CLOSED_RETENTION_MS).await?;
     Ok(())
 }
 

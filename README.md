@@ -32,6 +32,7 @@ Lightweight heartbeat service. Every registered application sends a signed ping 
 - Google sign-in, invitation only; the master user is `ADMIN_EMAIL`.
 - Pings signed with HMAC-SHA256 and an ever-increasing timestamp: the secret never travels and an intercepted request cannot be reused.
 - The service always answers `204`, whatever the outcome: whoever tries to forge a ping cannot tell whether it worked. Invalid attempts are counted and summarized by email.
+- Groups: users share applications with a group, and applications move between accounts and groups.
 - Entanglement: several IronHeart instances can monitor each other.
 
 Architecture, protocol and development rules: [CLAUDE.md](CLAUDE.md).
@@ -150,6 +151,15 @@ With every app up IronHeart sends no email for months, so a broken key would onl
 Sends are used instead of reads because keys that may only send (Resend "Sending access", Mailgun domain sending keys, a Scaleway key with only `TransactionalEmailEmailApiCreate`) are refused on reads.
 
 If the provider refuses the key (401/403; 404 to the empty send, i.e. a wrong Mailgun domain or region; a 5xx, missing login mechanism or TLS failure on SMTP), the error is logged, the master sees `!! mail key` in the top bar, and the master is told on Telegram when it works, and the outgoing [entanglement](CLAUDE.md#entanglement-master-only) pings stop if no channel reaches the master any more (see [Alert channels](#alert-channels)). While refused, the key is checked again every hour. To fix it, create a new key, set it and restart. A network error or an outage at the provider counts as a failure only after an hour; an alert email that fails to send triggers an early check.
+
+## Groups
+
+Users can gather in groups (page `/groups`) and an application belongs either to a user or to a group.
+
+- Instance admins create groups and appoint the first group admin. Group admins invite members by email, change their role and remove them. Joining is always an invitation the person accepts on their main page; invitations reach only existing accounts and the answer never tells whether an address has one. An instance admin who is also admin of the group can invite a new person: they get the IronHeart invite and join the group at their first sign-in.
+- Every member sees, edits, pauses and rotates the key of the group's applications, and alerts without explicit recipients go to every member. Only group admins delete them or move them out of the group.
+- Applications move without touching the monitoring (same key, state and history): into one of your groups right away, or to another person with a transfer request they accept or reject within 7 days. When an admin removes a user, the user's applications can move to a group instead of being deleted.
+- Limits: 50 groups per instance, 100 members per group, 100 applications per group (and 100 personal ones per user).
 
 ## Telegram
 

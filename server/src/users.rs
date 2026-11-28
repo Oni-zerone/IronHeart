@@ -3,9 +3,11 @@
 //! The master (`ADMIN_EMAIL`) cannot be demoted or removed, and an admin
 //! cannot demote or remove themselves.
 
+use std::collections::HashMap;
+
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, get, patch},
 };
@@ -34,27 +36,59 @@ struct UserView {
     #[serde(flatten)]
     user: db::UserSummary,
     is_master: bool,
+    groups: Vec<GroupTag>,
+}
+
+#[derive(Serialize)]
+struct InviteView {
+    #[serde(flatten)]
+    invite: db::Invite,
+    /// Groups joined at the first sign-in.
+    groups: Vec<GroupTag>,
+}
+
+/// A group and the role in it, for the users table.
+#[derive(Serialize)]
+struct GroupTag {
+    name: String,
+    role: String,
 }
 
 #[derive(Serialize)]
 struct Overview {
     users: Vec<UserView>,
-    invites: Vec<db::Invite>,
+    invites: Vec<InviteView>,
+}
+
+fn group_tags(rows: Vec<(String, String, String)>) -> HashMap<String, Vec<GroupTag>> {
+    let mut tags: HashMap<String, Vec<GroupTag>> = HashMap::new();
+    for (key, name, role) in rows {
+        tags.entry(key).or_default().push(GroupTag { name, role });
+    }
+    tags
 }
 
 async fn overview(state: &AppState) -> ApiResult<Overview> {
+    let mut memberships = group_tags(db::all_memberships(&state.db).await?);
+    let mut invite_groups = group_tags(db::invite_groups(&state.db).await?);
     let users = db::list_users(&state.db)
         .await?
         .into_iter()
         .map(|user| UserView {
             is_master: user.email == state.admin_email.as_ref(),
+            groups: memberships.remove(&user.id).unwrap_or_default(),
             user,
         })
         .collect();
-    Ok(Overview {
-        users,
-        invites: db::list_invites(&state.db).await?,
-    })
+    let invites = db::list_invites(&state.db)
+        .await?
+        .into_iter()
+        .map(|invite| InviteView {
+            groups: invite_groups.remove(&invite.email).unwrap_or_default(),
+            invite,
+        })
+        .collect();
+    Ok(Overview { users, invites })
 }
 
 async fn list(State(state): State<AppState>, _: AdminUser) -> ApiResult<Json<Overview>> {
@@ -88,31 +122,48 @@ async fn invite(
                 "This address already has an account.".into(),
             ));
         }
-        InviteOutcome::Created => send_invite_email(&state, &admin, &email).await,
+        InviteOutcome::Created => send_invite_email(&state, &admin, &email, None).await,
         InviteOutcome::Updated => {}
     }
     Ok((StatusCode::CREATED, Json(overview(&state).await?)))
 }
 
 /// Notice to the invitee. If sending fails, the invite stays valid. With email
-/// off the admin tells the invitee the instance's address.
-async fn send_invite_email(state: &AppState, admin: &db::User, to: &str) {
+/// off the admin tells the invitee the instance's address. `group`: name and
+/// role of the group joined at the first sign-in.
+pub async fn send_invite_email(
+    state: &AppState,
+    admin: &db::User,
+    to: &str,
+    group: Option<(&str, &str)>,
+) {
     if !state.mailer.is_enabled() {
         return;
     }
     let who = admin.name.clone().unwrap_or_else(|| admin.email.clone());
     let url = format!("{}/", state.public_base_url);
+    let mut blocks = vec![Block::Para(vec![
+        hi(who),
+        fg(" invited you to IronHeart, the service that monitors application heartbeats."),
+    ])];
+    if let Some((name, role)) = group {
+        blocks.push(Block::Para(vec![
+            fg("At your first sign-in you join the group "),
+            hi(name),
+            fg(format!(
+                " as {}: no further step needed.",
+                crate::groups::role_label(role)
+            )),
+        ]));
+    }
+    blocks.push(Block::text(
+        "Sign in with the Google account for this address.",
+    ));
     let email = Letter {
         title: "Invitation".into(),
         hot: false,
         pulse: Pulse::Beat,
-        blocks: vec![
-            Block::Para(vec![
-                hi(who),
-                fg(" invited you to IronHeart, the service that monitors application heartbeats."),
-            ]),
-            Block::text("Sign in with the Google account for this address."),
-        ],
+        blocks,
         action: Some(("sign in".into(), url)),
     }
     .into_email(to, "Invitation to IronHeart".into());
@@ -149,13 +200,45 @@ async fn update(
     Ok(Json(overview(&state).await?))
 }
 
+#[derive(Deserialize)]
+struct RemoveQuery {
+    /// Group that takes the user's personal apps; absent = they are deleted.
+    move_apps_to: Option<String>,
+}
+
 async fn remove(
     State(state): State<AppState>,
     AdminUser(admin): AdminUser,
     Path(id): Path<String>,
+    Query(query): Query<RemoveQuery>,
 ) -> ApiResult<Json<Overview>> {
     protect(&state, &admin, &id).await?;
-    let app_ids = db::delete_user(&state.db, &id)
+    // A group left without members would keep apps that nobody sees or is alerted for.
+    let sole = db::sole_member_groups(&state.db, &id).await?;
+    if let Some((_, name, _)) = sole.iter().find(|(_, _, apps)| *apps > 0) {
+        return Err(ApiError::Invalid(format!(
+            "They are the only member of {name}, which owns applications: add another member first."
+        )));
+    }
+    if let Some(group_id) = &query.move_apps_to {
+        if sole.iter().any(|(gid, _, _)| gid == group_id) {
+            return Err(ApiError::Invalid(
+                "They are the only member of that group: choose a group with other members.".into(),
+            ));
+        }
+        if db::get_group(&state.db, group_id).await?.is_none() {
+            return Err(ApiError::Invalid("That group does not exist.".into()));
+        }
+        let moving = db::count_owned_apps(&state.db, db::Owner::User(&id)).await?;
+        let there = db::count_owned_apps(&state.db, db::Owner::Group(group_id)).await?;
+        if moving + there > crate::apps::MAX_APPS_PER_OWNER {
+            return Err(ApiError::Invalid(format!(
+                "The group has room for {} more applications, not {moving}.",
+                (crate::apps::MAX_APPS_PER_OWNER - there).max(0)
+            )));
+        }
+    }
+    let app_ids = db::delete_user(&state.db, &id, query.move_apps_to.as_deref(), now_ms())
         .await?
         .ok_or(ApiError::NotFound)?;
     for app_id in &app_ids {

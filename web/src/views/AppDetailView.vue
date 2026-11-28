@@ -3,8 +3,11 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import {
+  cancelTransfer,
   deleteApp,
   getApp,
+  moveApp,
+  requestTransfer,
   rotateKey,
   updateApp,
   type AppDetail,
@@ -13,13 +16,21 @@ import {
   type FailureBucket,
 } from '@/api'
 import AppForm from '@/components/AppForm.vue'
+import AsciiDialog from '@/components/AsciiDialog.vue'
 import AsciiBox from '@/components/AsciiBox.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import CredentialsDialog from '@/components/CredentialsDialog.vue'
 import DeadlineBar from '@/components/DeadlineBar.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import StateTag from '@/components/StateTag.vue'
-import { formatDateTime, formatDuration, formatElapsed, formatRelative, formatTime } from '@/format'
+import {
+  GROUP_ROLE_LABEL,
+  formatDateTime,
+  formatDuration,
+  formatElapsed,
+  formatRelative,
+  formatTime,
+} from '@/format'
 import { useNow, usePolling } from '@/grid'
 import { copy, currentUser, errorText, notify } from '@/session'
 import { highlightSnippet, shellSnippet } from '@/snippet'
@@ -39,9 +50,112 @@ const confirm = ref<'rotate' | 'delete' | null>(null)
 const busy = ref(false)
 
 const snippet = computed(() => (app.value ? shellSnippet(window.location.origin, app.value.key_id) : ''))
-const recipientsText = computed(() =>
-  app.value?.recipients.length ? app.value.recipients.join(', ') : `${currentUser.value?.email} (account)`,
+const recipientsText = computed(() => {
+  if (app.value?.recipients.length) return app.value.recipients.join(', ')
+  return app.value?.owner.kind === 'group'
+    ? `members of ${app.value.owner.name}`
+    : `${currentUser.value?.email} (account)`
+})
+/** Fallback recipients, for the help of the settings form. */
+const fallback = computed(() =>
+  app.value?.owner.kind === 'group' ? `every member of ${app.value.owner.name}` : undefined,
 )
+
+// ---- Transfer to another user (a request they accept) and move (immediate) ----
+
+const transferring = ref(false)
+const transferEmail = ref('')
+const transferError = ref('')
+/** Address the request was sent to: the dialog then shows the confirmation. */
+const transferSent = ref('')
+
+interface MoveTarget {
+  /** 'me', or a group id. */
+  value: string
+  label: string
+  note: string
+}
+
+const moving = ref(false)
+const moveTarget = ref('')
+const moveError = ref('')
+
+/** Where the app can go right away: the user (group apps), or their other groups. */
+const moveTargets = computed<MoveTarget[]>(() => {
+  const a = app.value
+  if (!a?.can_manage) return []
+  const out: MoveTarget[] = []
+  if (a.owner.kind === 'group') out.push({ value: 'me', label: 'me', note: 'personal' })
+  for (const g of currentUser.value?.groups ?? []) {
+    if (a.owner.kind === 'group' && a.owner.id === g.id) continue
+    out.push({ value: g.id, label: `group: ${g.name}`, note: GROUP_ROLE_LABEL[g.role] })
+  }
+  return out
+})
+
+/** With no recipients configured, who gets the alerts after the move. */
+const moveRecipients = computed(() => {
+  if (app.value?.recipients.length) return ''
+  const target = moveTargets.value.find((t) => t.value === moveTarget.value)
+  if (!target) return ''
+  return target.value === 'me'
+    ? 'No alert recipients are configured: after the move alerts go to you only.'
+    : `No alert recipients are configured: after the move alerts go to every member of ${target.label.slice(7)}.`
+})
+
+function openTransfer() {
+  transferEmail.value = ''
+  transferError.value = ''
+  transferSent.value = ''
+  transferring.value = true
+}
+
+async function submitTransfer() {
+  busy.value = true
+  transferError.value = ''
+  try {
+    const sent = await requestTransfer(props.id, transferEmail.value)
+    transferSent.value = sent.to_email
+    await refresh()
+  } catch (err) {
+    transferError.value = errorText(err)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function cancelRequest() {
+  try {
+    await cancelTransfer(props.id)
+    notify('Transfer request cancelled.')
+    await refresh()
+  } catch (err) {
+    notify(errorText(err), 'error')
+  }
+}
+
+function openMove() {
+  moveTarget.value = moveTargets.value[0]?.value ?? ''
+  moveError.value = ''
+  moving.value = true
+}
+
+async function submitMove() {
+  const target = moveTargets.value.find((t) => t.value === moveTarget.value)
+  if (!target) return
+  busy.value = true
+  moveError.value = ''
+  try {
+    await moveApp(props.id, target.value === 'me' ? { kind: 'user' } : { kind: 'group', id: target.value })
+    moving.value = false
+    notify(`Moved to ${target.label}.`)
+    setApp(await getApp(props.id))
+  } catch (err) {
+    moveError.value = errorText(err)
+  } finally {
+    busy.value = false
+  }
+}
 
 /** Invalid attempts per hour over the last 24 hours, oldest first. */
 const hourly = computed(() => {
@@ -161,14 +275,28 @@ usePolling(refresh, 15_000)
       <div class="page-head">
         <h1>{{ app.name }}</h1>
         <StateTag :state="app.state" />
+        <span v-if="app.owner.kind === 'group'" class="nowrap">
+          <span class="dim">owner</span>
+          <RouterLink class="acc" :to="{ name: 'group', params: { id: app.owner.id } }">[group: {{ app.owner.name }}]</RouterLink>
+        </span>
       </div>
 
       <div v-if="app.state === 'down'" class="notice">
-        <span class="hi blink">!!</span>
-        <p class="hi">
+        <span class="err blink">!!</span>
+        <p class="err">
           No valid heartbeat for
           {{ app.last_seen_at === null ? 'a while' : formatElapsed(app.last_seen_at, now) }}. Alert sent to
           {{ recipientsText }} at {{ formatTime(app.down_since) }}.
+        </p>
+      </div>
+
+      <div v-if="app.pending_transfer" class="notice">
+        <span class="acc">&gt;</span>
+        <p>
+          Transfer requested to <span class="hi">{{ app.pending_transfer.to_email }}</span> ·
+          {{ formatDateTime(app.pending_transfer.created_at) }} · expires
+          {{ formatRelative(app.pending_transfer.expires_at, now) }}. The app keeps working here until it is accepted.
+          <button class="link-btn" type="button" @click="cancelRequest">[cancel request]</button>
         </p>
       </div>
 
@@ -176,6 +304,12 @@ usePolling(refresh, 15_000)
         <AsciiBox title="status" :hot="app.state === 'down'">
           <div class="form">
             <dl class="kv">
+              <dt>owner</dt>
+              <dd v-if="app.owner.kind === 'group'">
+                group <span class="hi">{{ app.owner.name }}</span>
+                <span class="dim">· you are {{ app.group_role === 'admin' ? 'a group admin' : 'a member' }}</span>
+              </dd>
+              <dd v-else>you</dd>
               <dt>last heartbeat</dt>
               <dd>
                 {{ formatRelative(app.last_seen_at, now) }}
@@ -190,7 +324,7 @@ usePolling(refresh, 15_000)
               </template>
               <template v-if="app.state === 'down'">
                 <dt>down since</dt>
-                <dd class="hi nowrap">{{ formatDateTime(app.down_since) }}</dd>
+                <dd class="err nowrap">{{ formatDateTime(app.down_since) }}</dd>
               </template>
               <dt>check</dt>
               <dd>every {{ formatDuration(app.interval_secs) }}, tolerance {{ formatDuration(app.grace_secs) }}</dd>
@@ -214,13 +348,18 @@ usePolling(refresh, 15_000)
         <AsciiBox title="settings">
           <form class="form" @submit.prevent="save">
             <div v-if="saveError" class="notice">
-              <span class="hi">!!</span>
+              <span class="err">!!</span>
               <p>{{ saveError }}</p>
             </div>
-            <AppForm v-model="form" />
+            <AppForm v-model="form" :fallback="fallback" />
+            <p v-if="!app.can_manage" class="help">
+              Only admins of {{ app.owner.name }} can delete it or move it out of the group.
+            </p>
             <div class="actions">
-              <button class="btn danger" type="button" @click="confirm = 'delete'">delete</button>
+              <button v-if="app.can_manage" class="btn danger" type="button" @click="confirm = 'delete'">delete</button>
               <span class="grow" />
+              <button v-if="moveTargets.length" class="btn plain" type="button" @click="openMove">move</button>
+              <button v-if="app.can_manage" class="btn plain" type="button" @click="openTransfer">transfer</button>
               <button class="btn" type="submit" :disabled="saving"><LoadingSpinner v-if="saving" />save</button>
             </div>
           </form>
@@ -244,9 +383,9 @@ usePolling(refresh, 15_000)
               <span class="rule" aria-hidden="true">{{ '-'.repeat(300) }}</span>
               <template v-for="bucket in app.failures" :key="bucket.flushed_at">
                 <span role="cell">{{ formatDateTime(bucket.period_start) }}</span>
-                <span class="num" :class="{ hi: bucket.bad_signature }" role="cell">{{ bucket.bad_signature }}</span>
-                <span class="num" :class="{ hi: bucket.replay }" role="cell">{{ bucket.replay }}</span>
-                <span class="num" :class="{ hi: bucket.clock_skew }" role="cell">{{ bucket.clock_skew }}</span>
+                <span class="num" :class="{ err: bucket.bad_signature }" role="cell">{{ bucket.bad_signature }}</span>
+                <span class="num" :class="{ err: bucket.replay }" role="cell">{{ bucket.replay }}</span>
+                <span class="num" :class="{ err: bucket.clock_skew }" role="cell">{{ bucket.clock_skew }}</span>
                 <span role="cell">{{ ipsText(bucket) }}</span>
               </template>
             </div>
@@ -294,6 +433,102 @@ usePolling(refresh, 15_000)
     >
       The application, its key and the history of attempts are deleted.
     </ConfirmDialog>
+
+    <AsciiDialog v-if="transferring && app" :title="`transfer ${app.name}`" @close="transferring = false">
+      <form v-if="!transferSent" class="form" @submit.prevent="submitTransfer">
+        <p>
+          Ask another user to take this application over. It moves to them only when they accept, with the same key,
+          state and history.
+        </p>
+        <div v-if="transferError" class="notice">
+          <span class="err">!!</span>
+          <p>{{ transferError }}</p>
+        </div>
+        <div class="field">
+          <label class="field-label" for="transfer-email">new owner's email</label>
+          <input
+            id="transfer-email"
+            v-model="transferEmail"
+            class="input"
+            type="email"
+            placeholder="name@example.com"
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <p class="help">
+            They get an email (or a Telegram message if email is off) and find the request on their dashboard. It
+            expires in 7 days.
+          </p>
+        </div>
+        <div v-if="!app.recipients.length" class="notice">
+          <span class="err">!!</span>
+          <p>
+            No alert recipients are configured: after the transfer alerts go to the new owner<template
+              v-if="app.owner.kind === 'group'"
+            >, no longer to the members of {{ app.owner.name }}</template>.
+          </p>
+        </div>
+        <div class="actions">
+          <span class="grow" />
+          <button class="btn plain" type="button" @click="transferring = false">cancel</button>
+          <button class="btn" type="submit" :disabled="busy || !transferEmail.trim()">
+            <LoadingSpinner v-if="busy" />send request
+          </button>
+        </div>
+      </form>
+      <div v-else class="form">
+        <p><span class="acc">&gt;</span> Transfer request sent to <span class="hi">{{ transferSent }}</span>.</p>
+        <p class="help">
+          They can accept or reject it from their dashboard. Until then the app stays where it is and keeps working;
+          you can cancel the request from this page.
+        </p>
+        <div class="actions">
+          <span class="grow" />
+          <button class="btn" type="button" @click="transferring = false">close</button>
+        </div>
+      </div>
+    </AsciiDialog>
+
+    <AsciiDialog v-if="moving && app" :title="`move ${app.name}`" @close="moving = false">
+      <form class="form" @submit.prevent="submitMove">
+        <p>
+          Now owned by <span class="hi">{{ app.owner.kind === 'group' ? `group ${app.owner.name}` : 'you' }}</span>.
+          Moving is immediate: same key, state, deadline and history.
+        </p>
+        <div v-if="moveError" class="notice">
+          <span class="err">!!</span>
+          <p>{{ moveError }}</p>
+        </div>
+        <div class="field" role="radiogroup" aria-label="New owner">
+          <span class="field-label">new owner</span>
+          <button
+            v-for="target in moveTargets"
+            :key="target.value"
+            class="check pre"
+            type="button"
+            role="radio"
+            :aria-checked="moveTarget === target.value"
+            @click="moveTarget = target.value"
+          ><span class="mark">{{ moveTarget === target.value ? '(*)' : '( )' }}</span> {{ target.label }}  <span class="dim">{{ target.note }}</span></button>
+        </div>
+        <div v-if="moveRecipients" class="notice">
+          <span class="err">!!</span>
+          <p>{{ moveRecipients }}</p>
+        </div>
+        <p class="help">
+          {{
+            app.owner.kind === 'group'
+              ? 'Only your groups are listed. To give the app to another person, use transfer: they have to accept it.'
+              : 'Group admins can move it out of the group again; plain members cannot.'
+          }}
+        </p>
+        <div class="actions">
+          <span class="grow" />
+          <button class="btn plain" type="button" @click="moving = false">cancel</button>
+          <button class="btn" type="submit" :disabled="busy || !moveTarget"><LoadingSpinner v-if="busy" />move</button>
+        </div>
+      </form>
+    </AsciiDialog>
 
     <CredentialsDialog
       v-if="credentials && app"

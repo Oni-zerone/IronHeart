@@ -195,7 +195,7 @@ onMounted(load)
             </dd>
             <template v-if="item.last_error">
               <dt>error</dt>
-              <dd class="hi">{{ formatRelative(item.last_attempt_at, now) }}: {{ item.last_error }}</dd>
+              <dd class="err">{{ formatRelative(item.last_attempt_at, now) }}: {{ item.last_error }}</dd>
             </template>
           </dl>
           <div class="actions">
@@ -219,7 +219,7 @@ onMounted(load)
     >
       <form class="form" @submit.prevent="save">
         <div v-if="formError" class="notice">
-          <span class="hi">!!</span>
+          <span class="err">!!</span>
           <p>{{ formError }}</p>
         </div>
         <div class="field">

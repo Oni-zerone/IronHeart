@@ -106,7 +106,7 @@ async fn heartbeat_survives_a_flood_of_forged_requests() {
             &pool,
             &db::NewApp {
                 id: &id,
-                user_id: &user.id,
+                owner: db::Owner::User(&user.id),
                 name: &id,
                 key_id: &key_id,
                 secret_enc: &secret_box.seal(secret.as_bytes(), &id),

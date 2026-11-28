@@ -17,6 +17,62 @@ export interface User {
   telegram?: { bot_username: string }
   /** Alert channels of the instance and their state. */
   alerts: AlertChannels
+  /** Groups the user belongs to. */
+  groups: Membership[]
+}
+
+/** Role inside a group, independent of the instance role. */
+export type GroupRole = 'admin' | 'member'
+
+export interface Membership {
+  id: string
+  name: string
+  role: GroupRole
+}
+
+export interface GroupSummary {
+  id: string
+  name: string
+  /** The user's role; null for an instance admin who is not a member. */
+  role: GroupRole | null
+  member_count: number
+  app_count: number
+}
+
+export interface GroupMember {
+  user_id: string
+  email: string
+  name: string | null
+  role: GroupRole
+  created_at: number
+}
+
+export interface GroupDetail {
+  id: string
+  name: string
+  created_at: number
+  role: GroupRole | null
+  /** Group admin, or instance admin. */
+  can_manage: boolean
+  members: GroupMember[]
+  app_count: number
+}
+
+/** Invitation into a group, as the invitee sees it. */
+export interface GroupInvite {
+  group_id: string
+  group_name: string
+  role: GroupRole
+  /** Email of whoever sent it; null if that account no longer exists. */
+  invited_by: string | null
+  created_at: number
+  expires_at: number
+}
+
+/** A group and the role in it, in the users table. */
+export interface GroupTag {
+  name: string
+  role: GroupRole
 }
 
 /**
@@ -59,12 +115,15 @@ export interface UserSummary {
   created_at: number
   app_count: number
   is_master: boolean
+  groups: GroupTag[]
 }
 
 export interface Invite {
   email: string
   role: Role
   created_at: number
+  /** Groups joined at the first sign-in. */
+  groups: GroupTag[]
 }
 
 export interface UsersOverview {
@@ -86,9 +145,42 @@ export interface App {
   down_since: number | null
   created_at: number
   updated_at: number
-  /** Configured recipients; empty = the account email. */
+  /** A user (always the viewer: others' personal apps are not visible) or a group. */
+  owner: AppOwner
+  /** Role of the viewer in the owning group; null for personal apps. */
+  group_role: GroupRole | null
+  /** The viewer can delete it and move it to another owner. */
+  can_manage: boolean
+  /** Configured recipients; empty = the owner's email, or every group member's. */
   recipients: string[]
   failures_24h: number
+  /** Pending transfer request; only for those who manage the app. */
+  pending_transfer: PendingTransfer | null
+}
+
+export interface PendingTransfer {
+  to_email: string
+  created_at: number
+  expires_at: number
+}
+
+/** A request to take an app over, as the recipient sees it. */
+export interface IncomingTransfer {
+  id: string
+  app_id: string
+  app_name: string
+  interval_secs: number
+  /** Email of whoever asked; null if that account no longer exists. */
+  from_email: string | null
+  created_at: number
+  expires_at: number
+}
+
+export interface AppOwner {
+  kind: 'user' | 'group'
+  id: string
+  /** Group name; null for personal apps. */
+  name: string | null
 }
 
 export interface FailureBucket {
@@ -162,23 +254,59 @@ export const sendTestEmail = () => request<void>('/api/me/test-email', { method:
 
 export const listApps = () => request<App[]>('/api/apps')
 export const getApp = (id: string) => request<AppDetail>(`/api/apps/${id}`)
-export const createApp = (input: AppInput) =>
+/** `group_id`: the group that owns it (the user must be a member); absent = personal. */
+export const createApp = (input: AppInput & { group_id?: string }) =>
   request<{ app: AppDetail; credentials: Credentials }>('/api/apps', json('POST', input))
 export const updateApp = (id: string, input: Partial<AppInput> & { paused?: boolean }) =>
   request<AppDetail>(`/api/apps/${id}`, json('PATCH', input))
 export const rotateKey = (id: string) =>
   request<{ app: AppDetail; credentials: Credentials }>(`/api/apps/${id}/rotate-key`, { method: 'POST' })
 export const deleteApp = (id: string) => request<void>(`/api/apps/${id}`, { method: 'DELETE' })
+/** The answer is the same whether or not the address has an account. */
+export const requestTransfer = (id: string, email: string) =>
+  request<PendingTransfer>(`/api/apps/${id}/transfer`, json('POST', { email }))
+export const cancelTransfer = (id: string) => request<void>(`/api/apps/${id}/transfer`, { method: 'DELETE' })
+/** Immediate move: to the user themselves, or into one of their groups. */
+export const moveApp = (id: string, to: { kind: 'user' } | { kind: 'group'; id: string }) =>
+  request<void>(`/api/apps/${id}/move`, json('POST', { to }))
+export const listIncomingTransfers = () => request<IncomingTransfer[]>('/api/transfers/incoming')
+export const acceptTransfer = (id: string) => request<void>(`/api/transfers/${id}/accept`, { method: 'POST' })
+export const rejectTransfer = (id: string) => request<void>(`/api/transfers/${id}/reject`, { method: 'POST' })
 
 export const listUsers = () => request<UsersOverview>('/api/admin/users')
 export const inviteUser = (email: string, role: Role) =>
   request<UsersOverview>('/api/admin/users', json('POST', { email, role }))
 export const setUserRole = (id: string, role: Role) =>
   request<UsersOverview>(`/api/admin/users/${id}`, json('PATCH', { role }))
-export const removeUser = (id: string) =>
-  request<UsersOverview>(`/api/admin/users/${id}`, { method: 'DELETE' })
+/** `moveAppsTo`: group that takes the user's personal apps; absent = they are deleted. */
+export const removeUser = (id: string, moveAppsTo?: string) =>
+  request<UsersOverview>(
+    `/api/admin/users/${id}${moveAppsTo ? `?move_apps_to=${encodeURIComponent(moveAppsTo)}` : ''}`,
+    { method: 'DELETE' },
+  )
 export const revokeInvite = (email: string) =>
   request<UsersOverview>(`/api/admin/invites/${encodeURIComponent(email)}`, { method: 'DELETE' })
+
+export const listGroups = () => request<{ groups: GroupSummary[] }>('/api/groups')
+export const createGroup = (name: string, admin_id: string) =>
+  request<GroupDetail>('/api/admin/groups', json('POST', { name, admin_id }))
+export const deleteGroup = (id: string) => request<void>(`/api/admin/groups/${id}`, { method: 'DELETE' })
+export const getGroup = (id: string) => request<GroupDetail>(`/api/groups/${id}`)
+export const renameGroup = (id: string, name: string) =>
+  request<GroupDetail>(`/api/groups/${id}`, json('PATCH', { name }))
+/** `sent` whatever the address; `instance_invite` only for an instance admin who is also group admin. */
+export const inviteToGroup = (id: string, email: string, role: GroupRole) =>
+  request<{ result: 'sent' | 'instance_invite' }>(`/api/groups/${id}/invites`, json('POST', { email, role }))
+export const setMemberRole = (id: string, userId: string, role: GroupRole) =>
+  request<GroupDetail>(`/api/groups/${id}/members/${userId}`, json('PATCH', { role }))
+export const removeMember = (id: string, userId: string) =>
+  request<GroupDetail>(`/api/groups/${id}/members/${userId}`, { method: 'DELETE' })
+export const leaveGroup = (id: string) => request<void>(`/api/groups/${id}/leave`, { method: 'POST' })
+export const listGroupInvites = () => request<GroupInvite[]>('/api/me/group-invites')
+export const acceptGroupInvite = (groupId: string) =>
+  request<void>(`/api/me/group-invites/${groupId}/accept`, { method: 'POST' })
+export const rejectGroupInvite = (groupId: string) =>
+  request<void>(`/api/me/group-invites/${groupId}/reject`, { method: 'POST' })
 
 export interface Entanglement {
   id: string

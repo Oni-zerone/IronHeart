@@ -48,7 +48,7 @@ const parts = computed<[string, string][]>(() => {
 }
 .grace,
 .down {
-  color: var(--hi);
+  color: var(--alert);
 }
 .grace-off,
 .mute {

@@ -6,6 +6,8 @@ import { currentUser } from '@/session'
 import DurationField from './DurationField.vue'
 
 const model = defineModel<AppInput>({ required: true })
+/** Who gets the alerts when the list is empty: "you", or "every member of ops". */
+const props = defineProps<{ fallback?: string }>()
 const id = useId()
 const draft = ref('')
 
@@ -52,7 +54,8 @@ function removeRecipient(index: number) {
         alert recipients <span class="dim">({{ model.recipients.length }}/{{ MAX_RECIPIENTS }})</span>
       </label>
       <p class="help">
-        Press Enter after each address. If the list is empty, alerts go to {{ currentUser?.email ?? 'you' }}.
+        Press Enter after each address. If the list is empty, alerts go to
+        {{ props.fallback ?? currentUser?.email ?? 'you' }}.
         <template v-if="currentUser?.alerts.mode === 'telegram'">
           Email is off on this instance: only addresses of IronHeart accounts with a linked Telegram chat receive alerts.
         </template>

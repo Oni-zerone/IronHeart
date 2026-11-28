@@ -1,4 +1,4 @@
-import type { AppState, Role } from './api'
+import type { AppState, GroupRole, Role } from './api'
 
 export const STATE_LABEL: Record<AppState, string> = {
   new: 'waiting',
@@ -88,3 +88,10 @@ export const ROLE_OPTIONS: { title: string; value: Role }[] = [
 ]
 
 export const ROLE_LABEL: Record<Role, string> = { user: 'user', admin: 'admin' }
+
+export const GROUP_ROLE_OPTIONS: { title: string; value: GroupRole }[] = [
+  { title: 'member', value: 'member' },
+  { title: 'group admin', value: 'admin' },
+]
+
+export const GROUP_ROLE_LABEL: Record<GroupRole, string> = { member: 'member', admin: 'group admin' }

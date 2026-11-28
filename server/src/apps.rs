@@ -19,7 +19,8 @@ use crate::{
     crypto, db,
 };
 
-const MAX_APPS_PER_USER: i64 = 100;
+/// Personal apps per user, and apps per group (counted separately).
+pub const MAX_APPS_PER_OWNER: i64 = 100;
 const MAX_RECIPIENTS: usize = 10;
 const MAX_NAME_CHARS: usize = 80;
 const INTERVAL_RANGE: std::ops::RangeInclusive<i64> = 30..=7 * 86_400;
@@ -34,6 +35,8 @@ pub fn routes() -> Router<AppState> {
 
 pub enum ApiError {
     NotFound,
+    /// Visible but not allowed (e.g. a plain member managing a group).
+    Forbidden,
     Invalid(String),
     Internal(anyhow::Error),
 }
@@ -42,6 +45,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self {
             Self::NotFound => StatusCode::NOT_FOUND.into_response(),
+            Self::Forbidden => StatusCode::FORBIDDEN.into_response(),
             Self::Invalid(message) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 Json(serde_json::json!({ "error": message })),
@@ -68,9 +72,56 @@ fn invalid<T>(message: impl Into<String>) -> ApiResult<T> {
 struct AppView {
     #[serde(flatten)]
     app: db::App,
-    /// Configured recipients; empty = the account email.
+    owner: OwnerView,
+    /// Role of the viewer in the owning group; null for personal apps.
+    group_role: Option<String>,
+    /// The viewer can delete it and move it to another owner.
+    can_manage: bool,
+    /// Configured recipients; empty = the owner's email, or every group member's.
     recipients: Vec<String>,
     failures_24h: i64,
+    /// Pending transfer request; only for those who manage the app.
+    pending_transfer: Option<db::PendingTransfer>,
+}
+
+#[derive(Serialize)]
+struct OwnerView {
+    /// `user` (always the viewer: personal apps of others are not visible) or `group`.
+    kind: &'static str,
+    id: String,
+    /// Group name; null for personal apps.
+    name: Option<String>,
+}
+
+impl AppView {
+    fn new(
+        app: db::App,
+        recipients: Vec<String>,
+        failures_24h: i64,
+        pending_transfer: Option<db::PendingTransfer>,
+    ) -> Self {
+        let owner = match (&app.group_id, &app.user_id) {
+            (Some(id), _) => OwnerView {
+                kind: "group",
+                id: id.clone(),
+                name: app.group_name.clone(),
+            },
+            (None, id) => OwnerView {
+                kind: "user",
+                id: id.clone().unwrap_or_default(),
+                name: None,
+            },
+        };
+        Self {
+            owner,
+            group_role: app.group_role.clone(),
+            can_manage: app.manageable(),
+            recipients,
+            failures_24h,
+            pending_transfer,
+            app,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -107,12 +158,22 @@ async fn list(
             .await?
             .into_iter()
             .collect();
+    let mut transfers: HashMap<String, db::PendingTransfer> =
+        db::pending_transfers(&state.db, &user.id, now_ms())
+            .await?
+            .into_iter()
+            .map(|t| (t.app_id.clone(), t))
+            .collect();
     Ok(Json(
         apps.into_iter()
-            .map(|app| AppView {
-                recipients: recipients.remove(&app.id).unwrap_or_default(),
-                failures_24h: failures.get(&app.id).copied().unwrap_or(0),
-                app,
+            .map(|app| {
+                let failures_24h = failures.get(&app.id).copied().unwrap_or(0);
+                AppView::new(
+                    app.clone(),
+                    recipients.remove(&app.id).unwrap_or_default(),
+                    failures_24h,
+                    transfers.remove(&app.id),
+                )
             })
             .collect(),
     ))
@@ -130,12 +191,12 @@ async fn load_view(state: &AppState, user_id: &str, app_id: &str) -> ApiResult<A
         .collect();
     let failures = db::failure_buckets_since(&state.db, app_id, now_ms() - DAY_MS).await?;
     let failures_24h = failures.iter().map(|b| b.counts.total()).sum();
+    let pending_transfer = db::pending_transfers(&state.db, user_id, now_ms())
+        .await?
+        .into_iter()
+        .find(|t| t.app_id == app_id);
     Ok(AppDetail {
-        view: AppView {
-            app,
-            recipients,
-            failures_24h,
-        },
+        view: AppView::new(app, recipients, failures_24h, pending_transfer),
         failures,
     })
 }
@@ -156,6 +217,9 @@ struct CreateApp {
     grace_secs: i64,
     #[serde(default)]
     recipients: Vec<String>,
+    /// Group that owns the app (the user must be a member); absent = personal.
+    #[serde(default)]
+    group_id: Option<String>,
 }
 
 async fn create(
@@ -166,17 +230,43 @@ async fn create(
     let name = validate_name(&input.name)?;
     validate_timing(input.interval_secs, input.grace_secs)?;
     let recipients = normalize_recipients(&input.recipients)?;
-    if !state.mailer.is_enabled()
-        && db::telegram_chats_for_user(&state.db, &user.id)
-            .await?
-            .is_empty()
-    {
-        return invalid("Link Telegram first: it is the only alert channel of this instance.");
+    let owner = match &input.group_id {
+        Some(group_id) => {
+            if db::member_role(&state.db, group_id, &user.id)
+                .await?
+                .is_none()
+            {
+                return Err(ApiError::NotFound);
+            }
+            db::Owner::Group(group_id)
+        }
+        None => db::Owner::User(&user.id),
+    };
+    if !state.mailer.is_enabled() {
+        let chats = match owner {
+            db::Owner::User(id) => db::telegram_chats_for_user(&state.db, id).await?,
+            db::Owner::Group(id) => db::telegram_chats_for_group(&state.db, id).await?,
+        };
+        if chats.is_empty() {
+            return invalid(match owner {
+                db::Owner::User(_) => {
+                    "Link Telegram first: it is the only alert channel of this instance."
+                }
+                db::Owner::Group(_) => {
+                    "No member of this group has linked Telegram, the only alert channel of this instance."
+                }
+            });
+        }
     }
-    if db::count_apps(&state.db, &user.id).await? >= MAX_APPS_PER_USER {
-        return invalid(format!(
-            "You can register at most {MAX_APPS_PER_USER} applications."
-        ));
+    if db::count_owned_apps(&state.db, owner).await? >= MAX_APPS_PER_OWNER {
+        return invalid(match owner {
+            db::Owner::User(_) => {
+                format!("You can register at most {MAX_APPS_PER_OWNER} personal applications.")
+            }
+            db::Owner::Group(_) => {
+                format!("A group can have at most {MAX_APPS_PER_OWNER} applications.")
+            }
+        });
     }
 
     let id = Uuid::now_v7().to_string();
@@ -187,7 +277,7 @@ async fn create(
         &state.db,
         &db::NewApp {
             id: &id,
-            user_id: &user.id,
+            owner,
             name: &name,
             key_id: &key_id,
             secret_enc: &secret_box.seal(secret.as_bytes(), &id),
@@ -355,6 +445,12 @@ async fn remove(
     CurrentUser(user): CurrentUser,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
+    let app = db::get_app(&state.db, &user.id, &id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    if !app.manageable() {
+        return Err(ApiError::Forbidden);
+    }
     db::delete_app(&state.db, &user.id, &id)
         .await?
         .ok_or(ApiError::NotFound)?;
@@ -452,6 +548,7 @@ mod tests {
                 interval_secs: 60,
                 grace_secs: 0,
                 recipients: vec![],
+                group_id: None,
             })
         };
 

@@ -86,7 +86,7 @@ async fn db_bench() {
                 &pool,
                 &db::NewApp {
                     id: &id,
-                    user_id,
+                    owner: db::Owner::User(user_id),
                     name: &id,
                     key_id: &format!("k{u:03}{a:05}"),
                     secret_enc: &[7; 60],
