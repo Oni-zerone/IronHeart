@@ -63,7 +63,7 @@ macro_rules! group_summary {
         concat!(
             "SELECT g.id, g.name, m.role,
                     (SELECT COUNT(*) FROM group_members x WHERE x.group_id = g.id) AS member_count,
-                    CAST(0 AS BIGINT) AS app_count ",
+                    (SELECT COUNT(*) FROM apps a WHERE a.group_id = g.id) AS app_count ",
             $from,
             " ORDER BY g.name_key, g.id"
         )

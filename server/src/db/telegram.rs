@@ -119,6 +119,17 @@ pub async fn list_telegram_links(pool: &Pool, user_id: &str) -> sqlx::Result<Vec
     .await
 }
 
+/// Active linked chats of the members of a group.
+pub async fn telegram_chats_for_group(pool: &Pool, group_id: &str) -> sqlx::Result<Vec<i64>> {
+    sqlx::query_scalar(
+        "SELECT l.chat_id FROM telegram_links l JOIN group_members m ON m.user_id = l.user_id
+         WHERE m.group_id = $1 AND l.disabled_at IS NULL ORDER BY l.created_at",
+    )
+    .bind(group_id)
+    .fetch_all(pool)
+    .await
+}
+
 /// Active chats of a user (for the test message).
 pub async fn telegram_chats_for_user(pool: &Pool, user_id: &str) -> sqlx::Result<Vec<i64>> {
     sqlx::query_scalar(

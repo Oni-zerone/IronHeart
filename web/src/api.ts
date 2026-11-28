@@ -55,6 +55,7 @@ export interface GroupDetail {
   /** Group admin, or instance admin. */
   can_manage: boolean
   members: GroupMember[]
+  app_count: number
 }
 
 /** Invitation into a group, as the invitee sees it. */
@@ -144,9 +145,22 @@ export interface App {
   down_since: number | null
   created_at: number
   updated_at: number
-  /** Configured recipients; empty = the account email. */
+  /** A user (always the viewer: others' personal apps are not visible) or a group. */
+  owner: AppOwner
+  /** Role of the viewer in the owning group; null for personal apps. */
+  group_role: GroupRole | null
+  /** The viewer can delete it and move it to another owner. */
+  can_manage: boolean
+  /** Configured recipients; empty = the owner's email, or every group member's. */
   recipients: string[]
   failures_24h: number
+}
+
+export interface AppOwner {
+  kind: 'user' | 'group'
+  id: string
+  /** Group name; null for personal apps. */
+  name: string | null
 }
 
 export interface FailureBucket {
@@ -220,7 +234,8 @@ export const sendTestEmail = () => request<void>('/api/me/test-email', { method:
 
 export const listApps = () => request<App[]>('/api/apps')
 export const getApp = (id: string) => request<AppDetail>(`/api/apps/${id}`)
-export const createApp = (input: AppInput) =>
+/** `group_id`: the group that owns it (the user must be a member); absent = personal. */
+export const createApp = (input: AppInput & { group_id?: string }) =>
   request<{ app: AppDetail; credentials: Credentials }>('/api/apps', json('POST', input))
 export const updateApp = (id: string, input: Partial<AppInput> & { paused?: boolean }) =>
   request<AppDetail>(`/api/apps/${id}`, json('PATCH', input))

@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import {
   deleteGroup,
   getGroup,
+  listApps,
   inviteToGroup,
   leaveGroup,
   removeMember,
@@ -13,19 +14,27 @@ import {
   type GroupDetail,
   type GroupMember,
   type GroupRole,
+  type App,
 } from '@/api'
 import AsciiBox from '@/components/AsciiBox.vue'
 import AsciiDialog from '@/components/AsciiDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
-import { GROUP_ROLE_LABEL, GROUP_ROLE_OPTIONS, formatDateTime } from '@/format'
+import StateTag from '@/components/StateTag.vue'
+import { GROUP_ROLE_LABEL, GROUP_ROLE_OPTIONS, formatDateTime, formatDuration } from '@/format'
 import { currentUser, errorText, loadSession, notify } from '@/session'
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
 
 const group = ref<GroupDetail | null>(null)
+/** The group's apps, for members (others do not see them). */
+const apps = ref<App[]>([])
 const busy = ref(false)
+const appSummary = computed(() => {
+  const count = (state: App['state']) => apps.value.filter((a) => a.state === state).length
+  return `${group.value?.app_count ?? 0}/100 · ${count('up')} up · ${count('down')} down`
+})
 
 const isInstanceAdmin = computed(() => currentUser.value?.role === 'admin')
 /** Instance admin and admin of this group: unknown addresses become instance invites. */
@@ -46,6 +55,9 @@ const toRemove = ref<GroupMember | null>(null)
 async function load() {
   try {
     group.value = await getGroup(props.id)
+    apps.value = group.value.role
+      ? (await listApps()).filter((a) => a.owner.kind === 'group' && a.owner.id === props.id)
+      : []
   } catch (err) {
     notify(errorText(err), 'error')
     router.replace({ name: 'groups' })
@@ -239,6 +251,24 @@ onMounted(load)
         </div>
       </AsciiBox>
 
+      <AsciiBox title="applications" :right="appSummary">
+        <p v-if="!group.role">
+          {{ group.app_count }} applications. Only members see them: you manage this group as instance admin.
+        </p>
+        <p v-else-if="apps.length === 0">
+          No applications yet: create one from /apps choosing this group as owner, or move one of yours here.
+        </p>
+        <ul v-else class="applist">
+          <li v-for="app in apps" :key="app.id">
+            <RouterLink class="app-row" :to="{ name: 'app', params: { id: app.id } }">
+              <span class="pre"><StateTag :state="app.state" padded /></span>
+              <span class="name">{{ app.name }}</span>
+              <span class="dim">every {{ formatDuration(app.interval_secs) }}</span>
+            </RouterLink>
+          </li>
+        </ul>
+      </AsciiBox>
+
       <p class="help">
         {{
           group.can_manage
@@ -286,7 +316,7 @@ onMounted(load)
       @confirm="confirmAction"
       @cancel="confirm = null"
     >
-      The members lose access to the group.
+      The members lose access to the group. A group that still owns applications cannot be deleted: move them first.
     </ConfirmDialog>
     <ConfirmDialog
       v-if="toRemove"
@@ -313,5 +343,22 @@ onMounted(load)
 }
 .members {
   grid-template-columns: minmax(28ch, auto) auto auto auto;
+}
+.app-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 2ch;
+  align-items: baseline;
+  margin: 0 -1ch;
+  padding: 0 1ch;
+}
+.app-row:hover,
+.app-row:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+.name {
+  color: var(--hi);
+  overflow-wrap: anywhere;
 }
 </style>

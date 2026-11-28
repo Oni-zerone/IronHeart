@@ -147,15 +147,18 @@ struct GroupDetail {
     role: Option<String>,
     can_manage: bool,
     members: Vec<db::Member>,
+    app_count: i64,
 }
 
 async fn load_detail(state: &AppState, access: Access) -> ApiResult<GroupDetail> {
     let members = db::list_members(&state.db, &access.group.id).await?;
+    let app_count = db::count_owned_apps(&state.db, db::Owner::Group(&access.group.id)).await?;
     Ok(GroupDetail {
         group: access.group,
         role: access.role,
         can_manage: access.manage,
         members,
+        app_count,
     })
 }
 
@@ -237,6 +240,9 @@ async fn remove(
     AdminUser(admin): AdminUser,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
+    if db::count_owned_apps(&state.db, db::Owner::Group(&id)).await? > 0 {
+        return invalid("The group still owns applications: move them to another owner first.");
+    }
     if !db::delete_group(&state.db, &id).await? {
         return Err(ApiError::NotFound);
     }

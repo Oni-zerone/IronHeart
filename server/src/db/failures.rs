@@ -191,7 +191,9 @@ pub async fn failure_totals_for_user(
         // SUM of BIGINT in Postgres is NUMERIC: the cast brings it back to i64.
         "SELECT b.app_id, CAST(SUM(b.bad_signature + b.replay + b.clock_skew) AS BIGINT)
          FROM failure_buckets b JOIN apps a ON a.id = b.app_id
-         WHERE a.user_id = $1 AND b.flushed_at > $2
+         WHERE (a.user_id = $1
+                OR a.group_id IN (SELECT group_id FROM group_members WHERE user_id = $1))
+           AND b.flushed_at > $2
          GROUP BY b.app_id",
     )
     .bind(user_id)

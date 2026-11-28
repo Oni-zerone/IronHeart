@@ -43,10 +43,49 @@ const created = ref<{ id: string; name: string; credentials: Credentials } | nul
 const sendingTest = ref(false)
 const sendingTelegram = ref(false)
 
-const summary = computed(() => {
-  const list = apps.value ?? []
+/** Group chosen in the new application dialog; '' = personal. */
+const newOwner = ref('')
+const newOwnerName = computed(() => currentUser.value?.groups.find((g) => g.id === newOwner.value)?.name)
+
+function summary(list: App[]): string {
   const count = (state: App['state']) => list.filter((a) => a.state === state).length
   return `${count('up')} up · ${count('down')} down`
+}
+
+interface Section {
+  key: string
+  title: string
+  right: string
+  apps: App[]
+  /** Owning group; absent for the personal box. */
+  groupId?: string
+}
+
+/** One box per owner: the personal apps first, then each group of the user. */
+const sections = computed<Section[]>(() => {
+  const list = apps.value ?? []
+  const personal = list.filter((a) => a.owner.kind === 'user')
+  const out: Section[] = [
+    { key: 'personal', title: 'personal', right: `${personal.length}/${MAX_APPS} · ${summary(personal)}`, apps: personal },
+  ]
+  const groups = new Map((currentUser.value?.groups ?? []).map((g) => [g.id, { name: g.name, role: g.role }]))
+  // Apps of a group joined after the session was loaded.
+  for (const a of list) {
+    if (a.owner.kind === 'group' && !groups.has(a.owner.id)) {
+      groups.set(a.owner.id, { name: a.owner.name ?? '?', role: a.group_role ?? 'member' })
+    }
+  }
+  for (const [id, group] of groups) {
+    const owned = list.filter((a) => a.owner.kind === 'group' && a.owner.id === id)
+    out.push({
+      key: id,
+      title: `group: ${group.name}`,
+      right: `${GROUP_ROLE_LABEL[group.role]} · ${owned.length}/${MAX_APPS} · ${summary(owned)}`,
+      apps: owned,
+      groupId: id,
+    })
+  }
+  return out
 })
 
 function emptyForm(): AppInput {
@@ -95,7 +134,8 @@ function caption(app: App): string {
   }
 }
 
-function openCreate() {
+function openCreate(groupId = '') {
+  newOwner.value = groupId
   form.value = emptyForm()
   createError.value = ''
   creating.value = true
@@ -105,7 +145,7 @@ async function submitCreate() {
   saving.value = true
   createError.value = ''
   try {
-    const result = await createApp(form.value)
+    const result = await createApp({ ...form.value, group_id: newOwner.value || undefined })
     creating.value = false
     created.value = { id: result.app.id, name: result.app.name, credentials: result.credentials }
     await load()
@@ -177,7 +217,7 @@ usePolling(() => load(true), 15_000)
 <template>
   <div class="page">
     <div class="page-head">
-      <h1>applications <span v-if="apps" class="dim">({{ apps.length }}/{{ MAX_APPS }})</span></h1>
+      <h1>applications</h1>
       <button v-if="currentUser?.alerts.mail" class="btn plain" type="button" aria-keyshortcuts="t" @click="testEmail">
         <LoadingSpinner v-if="sendingTest" /><kbd>t</kbd>est email
       </button>
@@ -189,7 +229,7 @@ usePolling(() => load(true), 15_000)
       >
         <LoadingSpinner v-if="sendingTelegram" />test telegram
       </button>
-      <button class="btn" type="button" aria-keyshortcuts="n" @click="openCreate"><kbd>n</kbd>ew application</button>
+      <button class="btn" type="button" aria-keyshortcuts="n" @click="openCreate()"><kbd>n</kbd>ew application</button>
     </div>
 
     <AlertChannels part="notices" />
@@ -222,36 +262,41 @@ usePolling(() => load(true), 15_000)
 
     <p v-if="!apps" class="dim"><LoadingSpinner />loading</p>
 
-    <AsciiBox v-else-if="apps.length === 0" title="empty">
-      <div class="form">
-        <p>No applications yet. Create one to get the key to use in the heartbeat.</p>
-        <pre class="dim scroll-x">  app --(signed POST every N s)--> ironheart --(silence)--> alert</pre>
-      </div>
-    </AsciiBox>
-
-    <AsciiBox v-else title="status" :right="summary">
-      <ul class="apps">
-        <li v-for="app in apps" :key="app.id">
-          <RouterLink class="app-row" :to="{ name: 'app', params: { id: app.id } }">
-            <div class="line">
-              <span class="pre"><span class="cursor" aria-hidden="true">&gt; </span><StateTag :state="app.state" padded /></span>
-              <span class="name">{{ app.name }}</span>
-              <span v-if="app.failures_24h > 0" class="fails" title="Invalid attempts in the last 24 hours">
-                !{{ app.failures_24h }} invalid
-              </span>
-            </div>
-            <div class="line sub">
-              <DeadlineBar :app="app" :now="now" />
-              <span>{{ caption(app) }}</span>
-              <span class="hide-sm">· every {{ formatDuration(app.interval_secs) }}</span>
-            </div>
-          </RouterLink>
-        </li>
-      </ul>
-    </AsciiBox>
+    <template v-else>
+      <AsciiBox v-for="section in sections" :key="section.key" :title="section.title" :right="section.right">
+        <div v-if="section.apps.length === 0 && !section.groupId" class="form">
+          <p>No applications yet. Create one to get the key to use in the heartbeat.</p>
+          <pre class="dim scroll-x">  app --(signed POST every N s)--> ironheart --(silence)--> alert</pre>
+        </div>
+        <p v-else-if="section.apps.length === 0">
+          No applications in this group yet.
+          <button class="link-btn" type="button" @click="openCreate(section.groupId)">[create one]</button>
+          or move one of yours here.
+        </p>
+        <ul v-else class="apps">
+          <li v-for="app in section.apps" :key="app.id">
+            <RouterLink class="app-row" :to="{ name: 'app', params: { id: app.id } }">
+              <div class="line">
+                <span class="pre"><span class="cursor" aria-hidden="true">&gt; </span><StateTag :state="app.state" padded /></span>
+                <span class="name">{{ app.name }}</span>
+                <span v-if="app.failures_24h > 0" class="fails" title="Invalid attempts in the last 24 hours">
+                  !{{ app.failures_24h }} invalid
+                </span>
+              </div>
+              <div class="line sub">
+                <DeadlineBar :app="app" :now="now" />
+                <span>{{ caption(app) }}</span>
+                <span class="hide-sm">· every {{ formatDuration(app.interval_secs) }}</span>
+              </div>
+            </RouterLink>
+          </li>
+        </ul>
+      </AsciiBox>
+    </template>
 
     <p v-if="apps?.length" class="help">
-      [####....::] interval elapsed · left · tolerance. A stopped app blinks until a valid heartbeat arrives.
+      [####....::] interval elapsed · left · tolerance. A stopped app blinks until a valid heartbeat arrives. Apps are
+      grouped by owner: yours first, then one box per group.
     </p>
 
     <AsciiDialog v-if="creating" title="new application" :width="72" @close="creating = false">
@@ -260,7 +305,21 @@ usePolling(() => load(true), 15_000)
           <span class="err">!!</span>
           <p>{{ createError }}</p>
         </div>
-        <AppForm v-model="form" />
+        <div v-if="currentUser?.groups.length" class="field">
+          <label class="field-label" for="new-owner">owner</label>
+          <span class="select">
+            <select id="new-owner" v-model="newOwner">
+              <option value="">me (personal)</option>
+              <option v-for="group in currentUser.groups" :key="group.id" :value="group.id">
+                group: {{ group.name }} · {{ GROUP_ROLE_LABEL[group.role] }}
+              </option>
+            </select>
+          </span>
+          <p v-if="newOwner" class="help">
+            Every member of the group sees and manages it; only group admins delete it or move it out.
+          </p>
+        </div>
+        <AppForm v-model="form" :fallback="newOwnerName ? `every member of ${newOwnerName}` : undefined" />
         <div class="actions">
           <span class="grow" />
           <button class="btn plain" type="button" @click="creating = false">cancel</button>

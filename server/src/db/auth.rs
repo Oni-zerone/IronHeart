@@ -102,13 +102,17 @@ pub async fn upsert_google_user(
 
 // ---- Alert recipients -------------------------------------------------------
 
-/// Addresses to send an app's alerts to: the configured ones,
-/// or the account email if the list is empty.
+/// Addresses to send an app's alerts to: the configured ones, or if the list
+/// is empty the owner's email (personal app) or every member's (group app).
 pub async fn alert_recipients(pool: &Pool, app_id: &str) -> sqlx::Result<Vec<String>> {
     sqlx::query_scalar(
         "SELECT r.email FROM app_recipients r WHERE r.app_id = $1
          UNION ALL
          SELECT u.email FROM apps a JOIN users u ON u.id = a.user_id
+         WHERE a.id = $1 AND NOT EXISTS (SELECT 1 FROM app_recipients WHERE app_id = $1)
+         UNION ALL
+         SELECT u.email FROM apps a
+         JOIN group_members m ON m.group_id = a.group_id JOIN users u ON u.id = m.user_id
          WHERE a.id = $1 AND NOT EXISTS (SELECT 1 FROM app_recipients WHERE app_id = $1)",
     )
     .bind(app_id)

@@ -39,8 +39,15 @@ const confirm = ref<'rotate' | 'delete' | null>(null)
 const busy = ref(false)
 
 const snippet = computed(() => (app.value ? shellSnippet(window.location.origin, app.value.key_id) : ''))
-const recipientsText = computed(() =>
-  app.value?.recipients.length ? app.value.recipients.join(', ') : `${currentUser.value?.email} (account)`,
+const recipientsText = computed(() => {
+  if (app.value?.recipients.length) return app.value.recipients.join(', ')
+  return app.value?.owner.kind === 'group'
+    ? `members of ${app.value.owner.name}`
+    : `${currentUser.value?.email} (account)`
+})
+/** Fallback recipients, for the help of the settings form. */
+const fallback = computed(() =>
+  app.value?.owner.kind === 'group' ? `every member of ${app.value.owner.name}` : undefined,
 )
 
 /** Invalid attempts per hour over the last 24 hours, oldest first. */
@@ -161,6 +168,10 @@ usePolling(refresh, 15_000)
       <div class="page-head">
         <h1>{{ app.name }}</h1>
         <StateTag :state="app.state" />
+        <span v-if="app.owner.kind === 'group'" class="nowrap">
+          <span class="dim">owner</span>
+          <RouterLink class="acc" :to="{ name: 'group', params: { id: app.owner.id } }">[group: {{ app.owner.name }}]</RouterLink>
+        </span>
       </div>
 
       <div v-if="app.state === 'down'" class="notice">
@@ -176,6 +187,12 @@ usePolling(refresh, 15_000)
         <AsciiBox title="status" :hot="app.state === 'down'">
           <div class="form">
             <dl class="kv">
+              <dt>owner</dt>
+              <dd v-if="app.owner.kind === 'group'">
+                group <span class="hi">{{ app.owner.name }}</span>
+                <span class="dim">· you are {{ app.group_role === 'admin' ? 'a group admin' : 'a member' }}</span>
+              </dd>
+              <dd v-else>you</dd>
               <dt>last heartbeat</dt>
               <dd>
                 {{ formatRelative(app.last_seen_at, now) }}
@@ -217,9 +234,12 @@ usePolling(refresh, 15_000)
               <span class="err">!!</span>
               <p>{{ saveError }}</p>
             </div>
-            <AppForm v-model="form" />
+            <AppForm v-model="form" :fallback="fallback" />
+            <p v-if="!app.can_manage" class="help">
+              Only admins of {{ app.owner.name }} can delete it or move it out of the group.
+            </p>
             <div class="actions">
-              <button class="btn danger" type="button" @click="confirm = 'delete'">delete</button>
+              <button v-if="app.can_manage" class="btn danger" type="button" @click="confirm = 'delete'">delete</button>
               <span class="grow" />
               <button class="btn" type="submit" :disabled="saving"><LoadingSpinner v-if="saving" />save</button>
             </div>
