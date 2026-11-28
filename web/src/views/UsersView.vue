@@ -12,6 +12,7 @@ import {
   type UsersOverview,
 } from '@/api'
 import AsciiBox from '@/components/AsciiBox.vue'
+import GroupTags from '@/components/GroupTags.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { ROLE_LABEL, ROLE_OPTIONS, formatDateTime } from '@/format'
@@ -82,7 +83,7 @@ onMounted(() => run(listUsers))
           admins can also invite and remove users.
         </p>
         <div v-if="inviteError" class="notice">
-          <span class="hi">!!</span>
+          <span class="err">!!</span>
           <p>{{ inviteError }}</p>
         </div>
         <form class="row" @submit.prevent="invite">
@@ -114,6 +115,7 @@ onMounted(() => run(listUsers))
           <div class="tbl accounts" role="table" aria-label="Accounts">
             <span class="th" role="columnheader">user</span>
             <span class="th" role="columnheader">role</span>
+            <span class="th" role="columnheader">groups</span>
             <span class="th num" role="columnheader">apps</span>
             <span class="th" role="columnheader"><span class="sr-only">actions</span></span>
             <span class="rule" aria-hidden="true">{{ '-'.repeat(300) }}</span>
@@ -136,6 +138,7 @@ onMounted(() => run(listUsers))
                   </select>
                 </span>
               </span>
+              <span role="cell"><GroupTags :tags="user.groups" /></span>
               <span class="num" role="cell">{{ user.app_count }}</span>
               <span role="cell">
                 <button
@@ -157,12 +160,14 @@ onMounted(() => run(listUsers))
           <div class="tbl invites" role="table" aria-label="Pending invites">
             <span class="th" role="columnheader">email</span>
             <span class="th" role="columnheader">role</span>
+            <span class="th" role="columnheader">groups</span>
             <span class="th" role="columnheader">invited</span>
             <span class="th" role="columnheader"><span class="sr-only">actions</span></span>
             <span class="rule" aria-hidden="true">{{ '-'.repeat(300) }}</span>
             <template v-for="invite in overview.invites" :key="invite.email">
               <span role="cell">{{ invite.email }}</span>
               <span role="cell">{{ ROLE_LABEL[invite.role] }}</span>
+              <span role="cell"><GroupTags :tags="invite.groups" /></span>
               <span class="dim" role="cell">{{ formatDateTime(invite.created_at) }}</span>
               <span role="cell">
                 <button
@@ -202,6 +207,6 @@ onMounted(() => run(listUsers))
 }
 .accounts,
 .invites {
-  grid-template-columns: minmax(24ch, auto) auto auto auto;
+  grid-template-columns: minmax(24ch, auto) auto minmax(16ch, auto) auto auto;
 }
 </style>

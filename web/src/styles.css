@@ -10,7 +10,8 @@
   --dim: #5b666e; /* borders, comments, secondary data */
   --faint: #1f272c; /* empty bar cells, overlay texture, dialog shadow */
   --accent: #78c5ee; /* light blue: titles, actions, live state */
-  --hi: #c6edff; /* bright light blue: alarms and emphasis */
+  --hi: #c6edff; /* bright light blue: emphasis */
+  --alert: #f5a65b; /* amber: errors, alerts, stopped apps, destructive actions */
   --field: #0b1317; /* input background */
   --hover: #0f2530; /* row hover, focused input */
   --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace;
@@ -106,6 +107,9 @@ strong {
 }
 .hi {
   color: var(--hi);
+}
+.err {
+  color: var(--alert);
 }
 .glow {
   text-shadow: 0 0 8px rgb(120 197 238 / 45%);
@@ -276,11 +280,11 @@ strong {
   color: var(--fg);
 }
 .btn.danger {
-  color: var(--hi);
+  color: var(--alert);
 }
 .btn.danger:hover,
 .btn.danger:focus-visible {
-  background: var(--hi);
+  background: var(--alert);
   color: var(--bg);
 }
 .btn:disabled {
@@ -320,7 +324,7 @@ strong {
 }
 .link-btn.danger:hover,
 .link-btn.danger:focus-visible {
-  background: var(--hi);
+  background: var(--alert);
 }
 .link-btn:disabled {
   color: var(--faint);

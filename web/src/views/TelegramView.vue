@@ -143,7 +143,7 @@ onBeforeUnmount(stopPolling)
     </div>
     <AsciiBox title="not working" hot>
       <div class="notice">
-        <span class="hi">!!</span>
+        <span class="err">!!</span>
         <p>{{ problem }}</p>
       </div>
     </AsciiBox>
@@ -204,9 +204,9 @@ onBeforeUnmount(stopPolling)
         <p v-if="overview.links.length === 0">No linked chats.</p>
         <ul v-else class="chats">
           <li v-for="link in overview.links" :key="link.id" class="row">
-            <span :class="link.disabled_at ? 'hi' : 'acc'">{{ link.label }}</span>
+            <span :class="link.disabled_at ? 'err' : 'acc'">{{ link.label }}</span>
             <span class="dim">linked {{ formatDateTime(link.created_at) }}</span>
-            <span v-if="link.disabled_at" class="hi">blocked: write to the bot to resume</span>
+            <span v-if="link.disabled_at" class="err">blocked: write to the bot to resume</span>
             <span class="grow" />
             <button class="link-btn danger" type="button" @click="toUnlink = link">[unlink]</button>
           </li>

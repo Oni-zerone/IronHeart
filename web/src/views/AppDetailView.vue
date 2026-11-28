@@ -164,8 +164,8 @@ usePolling(refresh, 15_000)
       </div>
 
       <div v-if="app.state === 'down'" class="notice">
-        <span class="hi blink">!!</span>
-        <p class="hi">
+        <span class="err blink">!!</span>
+        <p class="err">
           No valid heartbeat for
           {{ app.last_seen_at === null ? 'a while' : formatElapsed(app.last_seen_at, now) }}. Alert sent to
           {{ recipientsText }} at {{ formatTime(app.down_since) }}.
@@ -190,7 +190,7 @@ usePolling(refresh, 15_000)
               </template>
               <template v-if="app.state === 'down'">
                 <dt>down since</dt>
-                <dd class="hi nowrap">{{ formatDateTime(app.down_since) }}</dd>
+                <dd class="err nowrap">{{ formatDateTime(app.down_since) }}</dd>
               </template>
               <dt>check</dt>
               <dd>every {{ formatDuration(app.interval_secs) }}, tolerance {{ formatDuration(app.grace_secs) }}</dd>
@@ -214,7 +214,7 @@ usePolling(refresh, 15_000)
         <AsciiBox title="settings">
           <form class="form" @submit.prevent="save">
             <div v-if="saveError" class="notice">
-              <span class="hi">!!</span>
+              <span class="err">!!</span>
               <p>{{ saveError }}</p>
             </div>
             <AppForm v-model="form" />
@@ -244,9 +244,9 @@ usePolling(refresh, 15_000)
               <span class="rule" aria-hidden="true">{{ '-'.repeat(300) }}</span>
               <template v-for="bucket in app.failures" :key="bucket.flushed_at">
                 <span role="cell">{{ formatDateTime(bucket.period_start) }}</span>
-                <span class="num" :class="{ hi: bucket.bad_signature }" role="cell">{{ bucket.bad_signature }}</span>
-                <span class="num" :class="{ hi: bucket.replay }" role="cell">{{ bucket.replay }}</span>
-                <span class="num" :class="{ hi: bucket.clock_skew }" role="cell">{{ bucket.clock_skew }}</span>
+                <span class="num" :class="{ err: bucket.bad_signature }" role="cell">{{ bucket.bad_signature }}</span>
+                <span class="num" :class="{ err: bucket.replay }" role="cell">{{ bucket.replay }}</span>
+                <span class="num" :class="{ err: bucket.clock_skew }" role="cell">{{ bucket.clock_skew }}</span>
                 <span role="cell">{{ ipsText(bucket) }}</span>
               </template>
             </div>

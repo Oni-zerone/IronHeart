@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 
+import AlertChannels from '@/components/AlertChannels.vue'
 import AsciiBox from '@/components/AsciiBox.vue'
 import EcgLine from '@/components/EcgLine.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
@@ -52,11 +53,23 @@ const mailKey = computed(() => {
       <template v-if="currentUser">
         <nav class="links" aria-label="Main menu">
           <RouterLink :to="{ name: 'apps' }">/apps</RouterLink>
+          <RouterLink :to="{ name: 'groups' }">/groups</RouterLink>
           <RouterLink v-if="currentUser.alerts.telegram" :to="{ name: 'telegram' }">/telegram</RouterLink>
-          <RouterLink v-if="currentUser.role === 'admin'" :to="{ name: 'users' }">/users</RouterLink>
-          <RouterLink v-if="currentUser.is_master" :to="{ name: 'entanglement' }">/entanglement</RouterLink>
         </nav>
         <div class="tools">
+          <span class="dim email">{{ currentUser.email }}</span>
+          <button class="btn plain" type="button" @click="logout">sign out</button>
+        </div>
+      </template>
+    </header>
+    <EcgLine />
+    <!-- Under the ECG line: alert channels on the left, administration on the right. -->
+    <div class="status">
+      <template v-if="currentUser">
+        <AlertChannels part="row" />
+        <nav v-if="currentUser.role === 'admin'" class="admin" aria-label="Administration">
+          <RouterLink :to="{ name: 'users' }">/users</RouterLink>
+          <RouterLink v-if="currentUser.is_master" :to="{ name: 'entanglement' }">/entanglement</RouterLink>
           <span
             v-if="database"
             class="db"
@@ -76,12 +89,9 @@ const mailKey = computed(() => {
             <span class="db-long">!! {{ mailKey.label }}</span>
             <span class="db-short">!!</span>
           </span>
-          <span class="dim email">{{ currentUser.email }}</span>
-          <button class="btn plain" type="button" @click="logout">sign out</button>
-        </div>
+        </nav>
       </template>
-    </header>
-    <EcgLine class="ecg" />
+    </div>
 
     <main>
       <p v-if="currentUser === undefined" class="dim"><LoadingSpinner />loading</p>
@@ -92,7 +102,7 @@ const mailKey = computed(() => {
     <div v-if="toast" class="toast" role="status">
       <AsciiBox tight :hot="toast.error">
         <p>
-          <span :class="toast.error ? 'hi' : 'acc'">{{ toast.error ? '!!' : '>' }}</span> {{ toast.text }}
+          <span :class="toast.error ? 'err' : 'acc'">{{ toast.error ? '!!' : '>' }}</span> {{ toast.text }}
         </p>
       </AsciiBox>
     </div>
@@ -131,20 +141,40 @@ const mailKey = computed(() => {
   align-items: baseline;
 }
 .links a:hover,
-.links a:focus-visible {
+.links a:focus-visible,
+.admin a:hover,
+.admin a:focus-visible {
   color: var(--accent);
   outline: none;
 }
-.links a.router-link-active {
+.links a.router-link-active,
+.admin a.router-link-active {
   color: var(--bg);
   background: var(--accent);
+}
+/* One line under the ECG: the alert channels, then (admins) the administration
+   links and the master's indicators, pushed to the right. Empty when signed out. */
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 2ch;
+  margin-bottom: var(--lh);
+}
+.admin {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 2ch;
+  align-items: baseline;
+  white-space: nowrap;
 }
 .db {
   cursor: help;
   color: var(--fg);
 }
 .db.warn {
-  color: var(--hi);
+  color: var(--alert);
 }
 .db-short {
   display: none;
@@ -176,10 +206,6 @@ const mailKey = computed(() => {
   .db-short {
     display: inline;
   }
-}
-
-.ecg {
-  margin-bottom: var(--lh);
 }
 
 .toast {

@@ -17,7 +17,7 @@ const snippet = computed(() => shellSnippet(window.location.origin, props.creden
   <AsciiDialog :title="`key for ${appName}`" :width="88" persistent>
     <div class="form">
       <div class="notice">
-        <span class="hi">[!]</span>
+        <span class="err">[!]</span>
         <p>
           The secret is shown only now: save it in the application's configuration. If you lose it, you
           will have to generate a new key.

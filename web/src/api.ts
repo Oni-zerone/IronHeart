@@ -17,6 +17,61 @@ export interface User {
   telegram?: { bot_username: string }
   /** Alert channels of the instance and their state. */
   alerts: AlertChannels
+  /** Groups the user belongs to. */
+  groups: Membership[]
+}
+
+/** Role inside a group, independent of the instance role. */
+export type GroupRole = 'admin' | 'member'
+
+export interface Membership {
+  id: string
+  name: string
+  role: GroupRole
+}
+
+export interface GroupSummary {
+  id: string
+  name: string
+  /** The user's role; null for an instance admin who is not a member. */
+  role: GroupRole | null
+  member_count: number
+  app_count: number
+}
+
+export interface GroupMember {
+  user_id: string
+  email: string
+  name: string | null
+  role: GroupRole
+  created_at: number
+}
+
+export interface GroupDetail {
+  id: string
+  name: string
+  created_at: number
+  role: GroupRole | null
+  /** Group admin, or instance admin. */
+  can_manage: boolean
+  members: GroupMember[]
+}
+
+/** Invitation into a group, as the invitee sees it. */
+export interface GroupInvite {
+  group_id: string
+  group_name: string
+  role: GroupRole
+  /** Email of whoever sent it; null if that account no longer exists. */
+  invited_by: string | null
+  created_at: number
+  expires_at: number
+}
+
+/** A group and the role in it, in the users table. */
+export interface GroupTag {
+  name: string
+  role: GroupRole
 }
 
 /**
@@ -59,12 +114,15 @@ export interface UserSummary {
   created_at: number
   app_count: number
   is_master: boolean
+  groups: GroupTag[]
 }
 
 export interface Invite {
   email: string
   role: Role
   created_at: number
+  /** Groups joined at the first sign-in. */
+  groups: GroupTag[]
 }
 
 export interface UsersOverview {
@@ -179,6 +237,27 @@ export const removeUser = (id: string) =>
   request<UsersOverview>(`/api/admin/users/${id}`, { method: 'DELETE' })
 export const revokeInvite = (email: string) =>
   request<UsersOverview>(`/api/admin/invites/${encodeURIComponent(email)}`, { method: 'DELETE' })
+
+export const listGroups = () => request<{ groups: GroupSummary[] }>('/api/groups')
+export const createGroup = (name: string, admin_id: string) =>
+  request<GroupDetail>('/api/admin/groups', json('POST', { name, admin_id }))
+export const deleteGroup = (id: string) => request<void>(`/api/admin/groups/${id}`, { method: 'DELETE' })
+export const getGroup = (id: string) => request<GroupDetail>(`/api/groups/${id}`)
+export const renameGroup = (id: string, name: string) =>
+  request<GroupDetail>(`/api/groups/${id}`, json('PATCH', { name }))
+/** `sent` whatever the address; `instance_invite` only for an instance admin who is also group admin. */
+export const inviteToGroup = (id: string, email: string, role: GroupRole) =>
+  request<{ result: 'sent' | 'instance_invite' }>(`/api/groups/${id}/invites`, json('POST', { email, role }))
+export const setMemberRole = (id: string, userId: string, role: GroupRole) =>
+  request<GroupDetail>(`/api/groups/${id}/members/${userId}`, json('PATCH', { role }))
+export const removeMember = (id: string, userId: string) =>
+  request<GroupDetail>(`/api/groups/${id}/members/${userId}`, { method: 'DELETE' })
+export const leaveGroup = (id: string) => request<void>(`/api/groups/${id}/leave`, { method: 'POST' })
+export const listGroupInvites = () => request<GroupInvite[]>('/api/me/group-invites')
+export const acceptGroupInvite = (groupId: string) =>
+  request<void>(`/api/me/group-invites/${groupId}/accept`, { method: 'POST' })
+export const rejectGroupInvite = (groupId: string) =>
+  request<void>(`/api/me/group-invites/${groupId}/reject`, { method: 'POST' })
 
 export interface Entanglement {
   id: string

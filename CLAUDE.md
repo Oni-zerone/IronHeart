@@ -71,7 +71,16 @@ The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) 
 - Roles: `admin` (invites, changes roles, removes users; API `/api/admin/*`, `AdminUser` extractor) and `user` (only their own apps). Apps stay personal for admins too.
 - An admin cannot demote or remove themselves. Removing a user cascades to their apps and sessions, and their apps must be removed from the in-memory registry.
 - Emails (accounts, invites, `ADMIN_EMAIL`) are compared in lowercase.
-- For the master only, `/api/me` includes `database` (`db::DatabaseInfo`: `postgres` or `sqlite` and where it lives, without credentials); the top bar shows it as a chip, yellow for local SQLite.
+- For the master only, `/api/me` includes `database` (`db::DatabaseInfo`: `postgres` or `sqlite` and where it lives, without credentials); the status row shows it as a chip, amber for local SQLite.
+- Top of every page: one row with `/apps /groups /telegram`, the email and sign out; under the ECG line the status row, with the alert channels (`AlertChannels part="row"`) on the left and, for admins, `/users` (and for the master `/entanglement`, the database and the email key chips) aligned right.
+- Errors and alerts use the amber `--alert` token (`.err`): `!!` notices, stopped apps, invalid attempts, destructive actions, the SQLite chip. `--hi` is only emphasis.
+
+## Groups
+
+- Users gather in groups (`groups`, `group_members`; module `groups`, queries in `db/groups.rs`). Any user can be a member, the master included, and a user can be in several groups. At most 50 groups per instance, 100 members per group, names up to 80 characters, unique ignoring case (`name_key`, lowercase computed in Rust).
+- Roles: instance admins create and delete groups (`/api/admin/groups`), appoint the first group admin and can manage any group. A group admin (`group_members.role = 'admin'`) invites, removes, promotes and demotes members and renames the group. A group always keeps at least one group admin (`MemberChange::LastAdmin`); when the last admin's account is removed, the oldest remaining member is promoted (`promote_successors` in `db::delete_user`).
+- Joining is always an invitation the person accepts (`group_invites`, 7 days, only for existing accounts, shown on `/apps` under pending). `POST /api/groups/{id}/invites` answers `202 {"result":"sent"}` for every address (privacy): unknown addresses and existing members are dropped silently, and the email goes through the outbox so the request time does not tell either. Group admins never see pending invitations. At most 50 invitations per group admin per day, counted in memory on every request (`groups::DailyLimit`).
+- Exception: an instance admin who is also admin of the group turns an unknown address into an instance invite (`user_invites`, role `user`) with the group attached (`user_invite_groups`); the membership is added at the first sign-in in `db::login_google_user`, with no accept step, and the invite email mentions the group. The answer is then `instance_invite`. The instance invite rules do not change otherwise.
 
 ## Entanglement (master only)
 
@@ -141,7 +150,7 @@ Rules that must not be broken:
 2. Moves `up` apps past their deadline to `down` (atomically) and alerts; the email mentions the invalid attempts since the last signal.
 3. Sends the recovery emails (`recovery_pending`, set by the ping that brings the app back `up`).
 4. Failed-attempt summaries per app: at rest the first one goes out immediately, then windows of 5, 10, 20, 40, 80, 120 minutes; a window with attempts produces a summary and moves up a level, one without attempts moves down a level (never straight back to rest, to prevent bursts of emails). Logic in `monitor::escalate`, with tests.
-5. Cleans up attempts older than 7 days, expired sessions, abandoned logins and expired Telegram link tokens.
+5. Cleans up attempts older than 7 days, expired sessions, abandoned logins, expired Telegram link tokens and expired group invitations.
 
 At startup, deadlines that have already passed restart from now (`reschedule_overdue`). The state is saved before sending the email: a failed send is not retried.
 

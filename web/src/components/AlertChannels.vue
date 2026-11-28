@@ -1,11 +1,15 @@
 <script setup lang="ts">
-// Alert channels of the instance and their state, on the main page:
+// Alert channels of the instance and their state. `row`, under the top bar of
+// every page:
 //   alerts  mail [ok]  telegram [ok]
-// plus a warning when the user receives nothing, or (master) the pings are held.
+// `notices`, on the main page: a warning when the user receives nothing, or
+// (master) the pings are held.
 import { computed } from 'vue'
 
 import type { ChannelHealth } from '@/api'
 import { currentUser } from '@/session'
+
+defineProps<{ part: 'row' | 'notices' }>()
 
 const alerts = computed(() => currentUser.value?.alerts)
 
@@ -39,18 +43,18 @@ const unreached = computed(() => alerts.value?.mode === 'telegram' && !alerts.va
 </script>
 
 <template>
-  <div v-if="alerts" class="stack">
-    <p class="row">
+  <p v-if="alerts && part === 'row'" class="row">
       <span class="dim">alerts</span>
       <span v-if="alerts.mail" :title="labels[alerts.mail].hint">
-        mail <span :class="labels[alerts.mail].hot ? 'hi' : 'acc'">[{{ labels[alerts.mail].text }}]</span>
+        mail <span :class="labels[alerts.mail].hot ? 'err' : 'acc'">[{{ labels[alerts.mail].text }}]</span>
       </span>
       <span v-if="telegramLabel" :title="telegramLabel.hint">
-        telegram <RouterLink :class="telegramLabel.hot ? 'hi' : 'acc'" :to="{ name: 'telegram' }">[{{ telegramLabel.text }}]</RouterLink>
+        telegram <RouterLink :class="telegramLabel.hot ? 'err' : 'acc'" :to="{ name: 'telegram' }">[{{ telegramLabel.text }}]</RouterLink>
       </span>
-    </p>
+  </p>
+  <div v-else-if="alerts && (unreached || alerts.held)" class="stack">
     <div v-if="unreached" class="notice">
-      <span class="hi">!!</span>
+      <span class="err">!!</span>
       <p>
         You receive no alerts: this instance sends them only on Telegram.
         <RouterLink class="acc" :to="{ name: 'telegram' }">Link a chat</RouterLink> to receive them and to add
@@ -58,7 +62,7 @@ const unreached = computed(() => alerts.value?.mode === 'telegram' && !alerts.va
       </p>
     </div>
     <div v-if="alerts.held" class="notice">
-      <span class="hi">!!</span>
+      <span class="err">!!</span>
       <p>
         No alert channel reaches you: the entanglement pings are held, so the linked instances report this one as
         down.

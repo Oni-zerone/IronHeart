@@ -34,6 +34,8 @@ pub fn routes() -> Router<AppState> {
 
 pub enum ApiError {
     NotFound,
+    /// Visible but not allowed (e.g. a plain member managing a group).
+    Forbidden,
     Invalid(String),
     Internal(anyhow::Error),
 }
@@ -42,6 +44,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self {
             Self::NotFound => StatusCode::NOT_FOUND.into_response(),
+            Self::Forbidden => StatusCode::FORBIDDEN.into_response(),
             Self::Invalid(message) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 Json(serde_json::json!({ "error": message })),

@@ -56,13 +56,36 @@ pub enum InviteOutcome {
     AlreadyUser,
 }
 
-/// `email` must be passed in lowercase.
+/// `email` must be passed in lowercase. An existing invite gets the new role.
 pub async fn create_invite(
     pool: &Pool,
     email: &str,
     role: &str,
     invited_by: Option<&str>,
     now: i64,
+) -> sqlx::Result<InviteOutcome> {
+    upsert_invite(pool, email, role, invited_by, now, true).await
+}
+
+/// Like `create_invite`, but an existing invite keeps its role (`Updated`
+/// then means "already invited"): a group invitation must not change it.
+pub async fn ensure_invite(
+    pool: &Pool,
+    email: &str,
+    role: &str,
+    invited_by: Option<&str>,
+    now: i64,
+) -> sqlx::Result<InviteOutcome> {
+    upsert_invite(pool, email, role, invited_by, now, false).await
+}
+
+async fn upsert_invite(
+    pool: &Pool,
+    email: &str,
+    role: &str,
+    invited_by: Option<&str>,
+    now: i64,
+    update_role: bool,
 ) -> sqlx::Result<InviteOutcome> {
     let mut tx = pool.begin().await?;
     // COUNT instead of EXISTS: EXISTS is a boolean in Postgres and an integer in SQLite.
@@ -77,10 +100,13 @@ pub async fn create_invite(
         .bind(email)
         .fetch_one(&mut *tx)
         .await?;
-    sqlx::query(
+    sqlx::query(if update_role {
         "INSERT INTO user_invites (email, role, invited_by, created_at) VALUES ($1, $2, $3, $4)
-         ON CONFLICT (email) DO UPDATE SET role = excluded.role",
-    )
+         ON CONFLICT (email) DO UPDATE SET role = excluded.role"
+    } else {
+        "INSERT INTO user_invites (email, role, invited_by, created_at) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (email) DO NOTHING"
+    })
     .bind(email)
     .bind(role)
     .bind(invited_by)
@@ -122,6 +148,7 @@ pub async fn delete_user(pool: &Pool, user_id: &str) -> sqlx::Result<Option<Vec<
         .bind(user_id)
         .fetch_all(&mut *tx)
         .await?;
+    super::groups::promote_successors(&mut tx, user_id).await?;
     let deleted = sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)
         .execute(&mut *tx)

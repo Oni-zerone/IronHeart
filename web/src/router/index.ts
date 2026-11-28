@@ -3,6 +3,8 @@ import { createRouter, createWebHistory } from 'vue-router'
 import AppDetailView from '@/views/AppDetailView.vue'
 import AppsView from '@/views/AppsView.vue'
 import EntanglementView from '@/views/EntanglementView.vue'
+import GroupsView from '@/views/GroupsView.vue'
+import GroupView from '@/views/GroupView.vue'
 import TelegramView from '@/views/TelegramView.vue'
 import UsersView from '@/views/UsersView.vue'
 import { currentUser } from '@/session'
@@ -13,6 +15,8 @@ const router = createRouter({
     { path: '/', redirect: { name: 'apps' } },
     { path: '/apps', name: 'apps', component: AppsView },
     { path: '/apps/:id', name: 'app', component: AppDetailView, props: true },
+    { path: '/groups', name: 'groups', component: GroupsView },
+    { path: '/groups/:id', name: 'group', component: GroupView, props: true },
     { path: '/users', name: 'users', component: UsersView, meta: { admin: true } },
     { path: '/entanglement', name: 'entanglement', component: EntanglementView, meta: { master: true } },
     { path: '/telegram', name: 'telegram', component: TelegramView, meta: { telegram: true } },

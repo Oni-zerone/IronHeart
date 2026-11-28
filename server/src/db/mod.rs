@@ -8,6 +8,7 @@ mod apps;
 mod auth;
 mod entanglements;
 mod failures;
+mod groups;
 mod telegram;
 mod users;
 
@@ -19,6 +20,7 @@ pub use apps::*;
 pub use auth::*;
 pub use entanglements::*;
 pub use failures::*;
+pub use groups::*;
 pub use telegram::*;
 pub use users::*;
 

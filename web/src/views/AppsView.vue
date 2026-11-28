@@ -3,13 +3,17 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import {
+  acceptGroupInvite,
   createApp,
   listApps,
+  listGroupInvites,
+  rejectGroupInvite,
   sendTelegramTest,
   sendTestEmail,
   type App,
   type AppInput,
   type Credentials,
+  type GroupInvite,
 } from '@/api'
 import AlertChannels from '@/components/AlertChannels.vue'
 import AppForm from '@/components/AppForm.vue'
@@ -19,7 +23,7 @@ import CredentialsDialog from '@/components/CredentialsDialog.vue'
 import DeadlineBar from '@/components/DeadlineBar.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import StateTag from '@/components/StateTag.vue'
-import { formatDuration, formatElapsed, formatRelative } from '@/format'
+import { GROUP_ROLE_LABEL, formatDuration, formatElapsed, formatRelative } from '@/format'
 import { useNow, usePolling } from '@/grid'
 import { currentUser, errorText, loadSession, notify } from '@/session'
 
@@ -28,6 +32,8 @@ const MAX_APPS = 100
 const router = useRouter()
 const now = useNow()
 const apps = ref<App[] | null>(null)
+const groupInvites = ref<GroupInvite[]>([])
+const answering = ref(false)
 
 const creating = ref(false)
 const saving = ref(false)
@@ -49,9 +55,30 @@ function emptyForm(): AppInput {
 
 async function load(quiet = false) {
   try {
-    apps.value = await listApps()
+    const [list, invites] = await Promise.all([listApps(), listGroupInvites()])
+    apps.value = list
+    groupInvites.value = invites
   } catch (err) {
     if (!quiet) notify(errorText(err), 'error')
+  }
+}
+
+async function answerInvite(invite: GroupInvite, accept: boolean) {
+  answering.value = true
+  try {
+    if (accept) {
+      await acceptGroupInvite(invite.group_id)
+      notify(`You joined ${invite.group_name}.`)
+      await loadSession()
+    } else {
+      await rejectGroupInvite(invite.group_id)
+      notify('Invitation rejected.')
+    }
+  } catch (err) {
+    notify(errorText(err), 'error')
+  } finally {
+    answering.value = false
+    await load(true)
   }
 }
 
@@ -165,7 +192,33 @@ usePolling(() => load(true), 15_000)
       <button class="btn" type="button" aria-keyshortcuts="n" @click="openCreate"><kbd>n</kbd>ew application</button>
     </div>
 
-    <AlertChannels />
+    <AlertChannels part="notices" />
+
+    <AsciiBox v-if="groupInvites.length" title="pending" :right="`${groupInvites.length} for you`" hot>
+      <div class="form">
+        <div class="scroll-x">
+          <div class="tbl pending" role="table" aria-label="Pending requests">
+            <span class="th" role="columnheader">request</span>
+            <span class="th" role="columnheader">name</span>
+            <span class="th" role="columnheader">detail</span>
+            <span class="th" role="columnheader">from</span>
+            <span class="th" role="columnheader"><span class="sr-only">actions</span></span>
+            <span class="rule" aria-hidden="true">{{ '-'.repeat(300) }}</span>
+            <template v-for="invite in groupInvites" :key="invite.group_id">
+              <span class="acc" role="cell">GROUP</span>
+              <span class="name" role="cell">{{ invite.group_name }}</span>
+              <span role="cell">as {{ GROUP_ROLE_LABEL[invite.role] }}</span>
+              <span class="dim" role="cell">{{ invite.invited_by ?? '-' }}</span>
+              <span class="row" role="cell">
+                <button class="btn" type="button" :disabled="answering" @click="answerInvite(invite, true)">accept</button>
+                <button class="btn plain" type="button" :disabled="answering" @click="answerInvite(invite, false)">reject</button>
+              </span>
+            </template>
+          </div>
+        </div>
+        <p class="help">Group members see and manage the group's applications and receive their alerts. Expires in 7 days.</p>
+      </div>
+    </AsciiBox>
 
     <p v-if="!apps" class="dim"><LoadingSpinner />loading</p>
 
@@ -204,7 +257,7 @@ usePolling(() => load(true), 15_000)
     <AsciiDialog v-if="creating" title="new application" :width="72" @close="creating = false">
       <form class="form" @submit.prevent="submitCreate">
         <div v-if="createError" class="notice">
-          <span class="hi">!!</span>
+          <span class="err">!!</span>
           <p>{{ createError }}</p>
         </div>
         <AppForm v-model="form" />
@@ -259,6 +312,9 @@ usePolling(() => load(true), 15_000)
   color: var(--hi);
   overflow-wrap: anywhere;
 }
+.pending {
+  grid-template-columns: auto minmax(12ch, auto) auto minmax(0, 1fr) auto;
+}
 .sub {
   padding-left: 2ch;
   color: var(--dim);
@@ -266,7 +322,7 @@ usePolling(() => load(true), 15_000)
 /* Pushed to the right, also when it wraps onto its own line. */
 .fails {
   margin-left: auto;
-  color: var(--hi);
+  color: var(--alert);
   white-space: nowrap;
 }
 </style>

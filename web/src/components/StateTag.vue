@@ -25,10 +25,10 @@ const pad = computed(() => (props.padded ? ' '.repeat(Math.max(0, 14 - label.val
   color: var(--accent);
 }
 .s-down .glyph {
-  color: var(--hi);
+  color: var(--alert);
 }
 .s-down .label {
-  background: var(--hi);
+  background: var(--alert);
   color: var(--bg);
 }
 .s-new,

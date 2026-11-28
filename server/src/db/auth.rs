@@ -40,11 +40,14 @@ pub async fn login_google_user(
         .bind(google_sub)
         .fetch_optional(&mut *tx)
         .await?;
+    // Groups attached to the invite: read before the invite (and they with it) is deleted.
+    let mut invite_groups = Vec::new();
     let role: Option<String> = if is_master {
         Some("admin".into())
     } else if existing.is_some() {
         None
     } else {
+        invite_groups = super::groups::take_invite_groups(&mut tx, email).await?;
         sqlx::query_scalar("DELETE FROM user_invites WHERE email = $1 RETURNING role")
             .bind(email)
             .fetch_optional(&mut *tx)
@@ -53,7 +56,7 @@ pub async fn login_google_user(
     if existing.is_none() && role.is_none() {
         return Ok(None);
     }
-    let user = sqlx::query_as(
+    let user: User = sqlx::query_as(
         "INSERT INTO users (id, google_sub, email, name, role, created_at)
          VALUES ($1, $2, $3, $4, COALESCE($5, 'user'), $6)
          ON CONFLICT (google_sub) DO UPDATE SET
@@ -68,6 +71,7 @@ pub async fn login_google_user(
     .bind(now)
     .fetch_one(&mut *tx)
     .await?;
+    super::groups::join_groups(&mut tx, &user.id, &invite_groups, now).await?;
     tx.commit().await?;
     Ok(Some(user))
 }
