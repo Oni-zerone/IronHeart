@@ -4,16 +4,20 @@ import { useRouter } from 'vue-router'
 
 import {
   acceptGroupInvite,
+  acceptTransfer,
   createApp,
   listApps,
   listGroupInvites,
+  listIncomingTransfers,
   rejectGroupInvite,
+  rejectTransfer,
   sendTelegramTest,
   sendTestEmail,
   type App,
   type AppInput,
   type Credentials,
   type GroupInvite,
+  type IncomingTransfer,
 } from '@/api'
 import AlertChannels from '@/components/AlertChannels.vue'
 import AppForm from '@/components/AppForm.vue'
@@ -33,6 +37,8 @@ const router = useRouter()
 const now = useNow()
 const apps = ref<App[] | null>(null)
 const groupInvites = ref<GroupInvite[]>([])
+const transfers = ref<IncomingTransfer[]>([])
+const pendingCount = computed(() => groupInvites.value.length + transfers.value.length)
 const answering = ref(false)
 
 const creating = ref(false)
@@ -94,11 +100,30 @@ function emptyForm(): AppInput {
 
 async function load(quiet = false) {
   try {
-    const [list, invites] = await Promise.all([listApps(), listGroupInvites()])
+    const [list, invites, incoming] = await Promise.all([listApps(), listGroupInvites(), listIncomingTransfers()])
     apps.value = list
     groupInvites.value = invites
+    transfers.value = incoming
   } catch (err) {
     if (!quiet) notify(errorText(err), 'error')
+  }
+}
+
+async function answerTransfer(transfer: IncomingTransfer, accept: boolean) {
+  answering.value = true
+  try {
+    if (accept) {
+      await acceptTransfer(transfer.id)
+      notify(`${transfer.app_name} is now yours.`)
+    } else {
+      await rejectTransfer(transfer.id)
+      notify('Transfer rejected.')
+    }
+  } catch (err) {
+    notify(errorText(err), 'error')
+  } finally {
+    answering.value = false
+    await load(true)
   }
 }
 
@@ -234,7 +259,7 @@ usePolling(() => load(true), 15_000)
 
     <AlertChannels part="notices" />
 
-    <AsciiBox v-if="groupInvites.length" title="pending" :right="`${groupInvites.length} for you`" hot>
+    <AsciiBox v-if="pendingCount" title="pending" :right="`${pendingCount} for you`" hot>
       <div class="form">
         <div class="scroll-x">
           <div class="tbl pending" role="table" aria-label="Pending requests">
@@ -244,6 +269,16 @@ usePolling(() => load(true), 15_000)
             <span class="th" role="columnheader">from</span>
             <span class="th" role="columnheader"><span class="sr-only">actions</span></span>
             <span class="rule" aria-hidden="true">{{ '-'.repeat(300) }}</span>
+            <template v-for="transfer in transfers" :key="transfer.id">
+              <span class="acc" role="cell">TRANSFER</span>
+              <span class="name" role="cell">{{ transfer.app_name }}</span>
+              <span role="cell">every {{ formatDuration(transfer.interval_secs) }}</span>
+              <span class="dim" role="cell">{{ transfer.from_email ?? '-' }}</span>
+              <span class="row" role="cell">
+                <button class="btn" type="button" :disabled="answering" @click="answerTransfer(transfer, true)">accept</button>
+                <button class="btn plain" type="button" :disabled="answering" @click="answerTransfer(transfer, false)">reject</button>
+              </span>
+            </template>
             <template v-for="invite in groupInvites" :key="invite.group_id">
               <span class="acc" role="cell">GROUP</span>
               <span class="name" role="cell">{{ invite.group_name }}</span>
@@ -256,7 +291,13 @@ usePolling(() => load(true), 15_000)
             </template>
           </div>
         </div>
-        <p class="help">Group members see and manage the group's applications and receive their alerts. Expires in 7 days.</p>
+        <p v-if="transfers.length" class="help">
+          Transfer: the app becomes personal, same key and history; you can then move it into a group.
+        </p>
+        <p v-if="groupInvites.length" class="help">
+          Group members see and manage the group's applications and receive their alerts.
+        </p>
+        <p class="help">Requests expire in 7 days.</p>
       </div>
     </AsciiBox>
 

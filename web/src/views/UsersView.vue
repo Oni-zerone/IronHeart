@@ -1,19 +1,22 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 
 import {
   inviteUser,
+  listGroups,
   listUsers,
   removeUser,
   revokeInvite,
   setUserRole,
+  type GroupSummary,
   type Role,
   type UserSummary,
   type UsersOverview,
 } from '@/api'
 import AsciiBox from '@/components/AsciiBox.vue'
-import GroupTags from '@/components/GroupTags.vue'
+import AsciiDialog from '@/components/AsciiDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import GroupTags from '@/components/GroupTags.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { ROLE_LABEL, ROLE_OPTIONS, formatDateTime } from '@/format'
 import { currentUser, errorText, notify } from '@/session'
@@ -25,6 +28,22 @@ const inviting = ref(false)
 const inviteError = ref('')
 const toRemove = ref<UserSummary | null>(null)
 const busy = ref(false)
+/** Removing a user with personal apps: move them into a group, or delete them. */
+const keepApps = ref(true)
+const groups = ref<GroupSummary[]>([])
+const moveTo = ref('')
+
+watch(toRemove, async (user) => {
+  if (!user?.app_count) return
+  keepApps.value = true
+  try {
+    groups.value = (await listGroups()).groups
+    moveTo.value = groups.value[0]?.id ?? ''
+    if (!moveTo.value) keepApps.value = false
+  } catch (err) {
+    notify(errorText(err), 'error')
+  }
+})
 
 async function run(action: () => Promise<UsersOverview>, done?: string) {
   busy.value = true
@@ -64,7 +83,8 @@ function changeRole(user: UserSummary, role: string) {
 async function confirmRemove() {
   const user = toRemove.value
   if (!user) return
-  await run(() => removeUser(user.id), `${user.email} removed.`)
+  const target = user.app_count > 0 && keepApps.value ? moveTo.value : undefined
+  await run(() => removeUser(user.id, target), `${user.email} removed.`)
   toRemove.value = null
 }
 
@@ -185,7 +205,7 @@ onMounted(() => run(listUsers))
     </template>
 
     <ConfirmDialog
-      v-if="toRemove"
+      v-if="toRemove && toRemove.app_count === 0"
       :title="`remove ${toRemove.email}?`"
       action="remove"
       danger
@@ -193,15 +213,59 @@ onMounted(() => run(listUsers))
       @confirm="confirmRemove"
       @cancel="toRemove = null"
     >
-      They lose access immediately.
-      <strong v-if="toRemove.app_count > 0">
-        Their {{ toRemove.app_count }} applications are deleted too, with keys and history.
-      </strong>
+      They lose access immediately and leave their groups. Their pending transfer requests are cancelled.
     </ConfirmDialog>
+    <AsciiDialog v-else-if="toRemove" :title="`remove ${toRemove.email}?`" @close="toRemove = null">
+      <div class="form">
+        <p>
+          They lose access immediately and leave their groups. Group apps stay with their groups; their pending
+          transfer requests are cancelled.
+        </p>
+        <div class="field" role="radiogroup" :aria-label="`Their ${toRemove.app_count} personal applications`">
+          <span class="field-label">their {{ toRemove.app_count }} personal applications</span>
+          <button
+            class="check pre"
+            type="button"
+            role="radio"
+            :aria-checked="keepApps"
+            :disabled="groups.length === 0"
+            @click="keepApps = true"
+          ><span class="mark">{{ keepApps ? '(*)' : '( )' }}</span> move them to a group</button>
+          <span v-if="keepApps" class="row indent">
+            <span class="select">
+              <select v-model="moveTo" aria-label="Group">
+                <option v-for="group in groups" :key="group.id" :value="group.id">
+                  {{ group.name }} · {{ group.app_count }}/100
+                </option>
+              </select>
+            </span>
+            <span class="dim">same keys and history</span>
+          </span>
+          <button
+            class="check pre"
+            type="button"
+            role="radio"
+            :aria-checked="!keepApps"
+            @click="keepApps = false"
+          ><span class="mark">{{ keepApps ? '( )' : '(*)' }}</span> delete them, with keys and history</button>
+          <p v-if="groups.length === 0" class="help">There are no groups to move them to.</p>
+        </div>
+        <div class="actions">
+          <span class="grow" />
+          <button class="btn plain" type="button" @click="toRemove = null">cancel</button>
+          <button class="btn danger" type="button" :disabled="busy || (keepApps && !moveTo)" @click="confirmRemove">
+            <LoadingSpinner v-if="busy" />remove
+          </button>
+        </div>
+      </div>
+    </AsciiDialog>
   </div>
 </template>
 
 <style scoped>
+.indent {
+  padding-left: 4ch;
+}
 .email {
   flex-basis: 28ch;
 }

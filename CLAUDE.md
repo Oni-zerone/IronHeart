@@ -86,6 +86,15 @@ The same queries run on SQLite (local fallback, when `DATABASE_URL` is missing) 
 - Alerts of a group app without explicit recipients go to every member (`db::alert_recipients`); Telegram follows the emails as usual. With email off, a group app needs a linked chat of at least one member.
 - Exception: an instance admin who is also admin of the group turns an unknown address into an instance invite (`user_invites`, role `user`) with the group attached (`user_invite_groups`); the membership is added at the first sign-in in `db::login_google_user`, with no accept step, and the invite email mentions the group. The answer is then `instance_invite`. The instance invite rules do not change otherwise.
 
+## Moving apps (`transfers`, queries in `db/transfers.rs`)
+
+- An app keeps its id, key, state, deadline, recipients and history when it changes owner; the in-memory heartbeat registry does not know the owner and is not touched.
+- Immediate moves (`POST /api/apps/{id}/move`, `{ "to": { "kind": "user" } }` or `{ "kind": "group", "id" }`): a user moves their personal app into one of their groups (any member); a group admin moves a group app to themselves or into another group they belong to. A plain member cannot move an app out of a group (403). Atomic `UPDATE` with a check on the current owner (`MoveOutcome::Stale`) and the target limit in the same transaction.
+- To another person it is a request (`app_transfers`, migration 0010): `POST /api/apps/{id}/transfer {email}` by the owner or an admin of the owning group answers `202` with the same body whether or not an account has the address (the row is stored either way). The recipient is told through the outbox by email, or with email off in their linked Telegram chats; nothing is sent to an unknown address. At most one pending request per app (a new one cancels the old), 20 requests per user per day, 7 days to answer. `pending_transfer` is in `AppView` only for those who manage the app.
+- The recipient sees the request on `/apps` (pending box) and accepts (`/api/transfers/{id}/accept`: the app becomes personal, if its owner did not change meanwhile and they have room) or rejects (the sender is told). A move, a deletion or a new request cancels the pending one.
+- Removing a user: `DELETE /api/admin/users/{id}?move_apps_to=<group>` moves their personal apps into that group instead of deleting them; their pending requests (sent or received) are cancelled.
+- The periodic check marks expired requests and deletes closed ones after 30 days.
+
 ## Entanglement (master only)
 
 - This instance sends heartbeats to other IronHeart instances (`entanglements`), so they monitor each other. Only the master configures it (`MasterUser`, API `/api/entanglements`, page `/entanglement`); it is an instance setting, not a user setting.
@@ -154,7 +163,7 @@ Rules that must not be broken:
 2. Moves `up` apps past their deadline to `down` (atomically) and alerts; the email mentions the invalid attempts since the last signal.
 3. Sends the recovery emails (`recovery_pending`, set by the ping that brings the app back `up`).
 4. Failed-attempt summaries per app: at rest the first one goes out immediately, then windows of 5, 10, 20, 40, 80, 120 minutes; a window with attempts produces a summary and moves up a level, one without attempts moves down a level (never straight back to rest, to prevent bursts of emails). Logic in `monitor::escalate`, with tests.
-5. Cleans up attempts older than 7 days, expired sessions, abandoned logins, expired Telegram link tokens and expired group invitations.
+5. Cleans up attempts older than 7 days, expired sessions, abandoned logins, expired Telegram link tokens and expired group invitations; expires transfer requests and deletes closed ones after 30 days.
 
 At startup, deadlines that have already passed restart from now (`reschedule_overdue`). The state is saved before sending the email: a failed send is not retried.
 

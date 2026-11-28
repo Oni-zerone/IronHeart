@@ -10,6 +10,7 @@ mod entanglements;
 mod failures;
 mod groups;
 mod telegram;
+mod transfers;
 mod users;
 
 use std::time::Duration;
@@ -22,6 +23,7 @@ pub use entanglements::*;
 pub use failures::*;
 pub use groups::*;
 pub use telegram::*;
+pub use transfers::*;
 pub use users::*;
 
 pub type Pool = AnyPool;
@@ -288,7 +290,12 @@ mod tests {
 
         let count = |sql: &'static str| {
             let pool = pool.clone();
-            async move { sqlx::query_scalar::<_, i64>(sql).fetch_one(&pool).await.unwrap() }
+            async move {
+                sqlx::query_scalar::<_, i64>(sql)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
         };
         assert_eq!(count("SELECT COUNT(*) FROM app_recipients").await, 1);
         assert_eq!(count("SELECT COUNT(*) FROM failure_buckets").await, 1);

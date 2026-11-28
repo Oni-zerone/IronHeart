@@ -154,6 +154,26 @@ export interface App {
   /** Configured recipients; empty = the owner's email, or every group member's. */
   recipients: string[]
   failures_24h: number
+  /** Pending transfer request; only for those who manage the app. */
+  pending_transfer: PendingTransfer | null
+}
+
+export interface PendingTransfer {
+  to_email: string
+  created_at: number
+  expires_at: number
+}
+
+/** A request to take an app over, as the recipient sees it. */
+export interface IncomingTransfer {
+  id: string
+  app_id: string
+  app_name: string
+  interval_secs: number
+  /** Email of whoever asked; null if that account no longer exists. */
+  from_email: string | null
+  created_at: number
+  expires_at: number
 }
 
 export interface AppOwner {
@@ -242,14 +262,28 @@ export const updateApp = (id: string, input: Partial<AppInput> & { paused?: bool
 export const rotateKey = (id: string) =>
   request<{ app: AppDetail; credentials: Credentials }>(`/api/apps/${id}/rotate-key`, { method: 'POST' })
 export const deleteApp = (id: string) => request<void>(`/api/apps/${id}`, { method: 'DELETE' })
+/** The answer is the same whether or not the address has an account. */
+export const requestTransfer = (id: string, email: string) =>
+  request<PendingTransfer>(`/api/apps/${id}/transfer`, json('POST', { email }))
+export const cancelTransfer = (id: string) => request<void>(`/api/apps/${id}/transfer`, { method: 'DELETE' })
+/** Immediate move: to the user themselves, or into one of their groups. */
+export const moveApp = (id: string, to: { kind: 'user' } | { kind: 'group'; id: string }) =>
+  request<void>(`/api/apps/${id}/move`, json('POST', { to }))
+export const listIncomingTransfers = () => request<IncomingTransfer[]>('/api/transfers/incoming')
+export const acceptTransfer = (id: string) => request<void>(`/api/transfers/${id}/accept`, { method: 'POST' })
+export const rejectTransfer = (id: string) => request<void>(`/api/transfers/${id}/reject`, { method: 'POST' })
 
 export const listUsers = () => request<UsersOverview>('/api/admin/users')
 export const inviteUser = (email: string, role: Role) =>
   request<UsersOverview>('/api/admin/users', json('POST', { email, role }))
 export const setUserRole = (id: string, role: Role) =>
   request<UsersOverview>(`/api/admin/users/${id}`, json('PATCH', { role }))
-export const removeUser = (id: string) =>
-  request<UsersOverview>(`/api/admin/users/${id}`, { method: 'DELETE' })
+/** `moveAppsTo`: group that takes the user's personal apps; absent = they are deleted. */
+export const removeUser = (id: string, moveAppsTo?: string) =>
+  request<UsersOverview>(
+    `/api/admin/users/${id}${moveAppsTo ? `?move_apps_to=${encodeURIComponent(moveAppsTo)}` : ''}`,
+    { method: 'DELETE' },
+  )
 export const revokeInvite = (email: string) =>
   request<UsersOverview>(`/api/admin/invites/${encodeURIComponent(email)}`, { method: 'DELETE' })
 

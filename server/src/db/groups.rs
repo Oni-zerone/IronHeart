@@ -339,6 +339,23 @@ async fn current_role(
         .await
 }
 
+/// Groups in which `user_id` is the only member: `(id, name, apps it owns)`.
+/// Removing that account would leave them empty, with apps nobody sees.
+pub async fn sole_member_groups(
+    pool: &Pool,
+    user_id: &str,
+) -> sqlx::Result<Vec<(String, String, i64)>> {
+    sqlx::query_as(
+        "SELECT g.id, g.name, (SELECT COUNT(*) FROM apps a WHERE a.group_id = g.id) AS apps
+         FROM groups g JOIN group_members m ON m.group_id = g.id AND m.user_id = $1
+         WHERE (SELECT COUNT(*) FROM group_members x WHERE x.group_id = g.id) = 1
+         ORDER BY g.name_key",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+}
+
 /// Groups in which `user_id` is the only group admin and other members remain:
 /// the oldest of them becomes admin. Called before the account is deleted.
 pub(super) async fn promote_successors(tx: &mut Connection, user_id: &str) -> sqlx::Result<()> {
@@ -675,7 +692,7 @@ mod tests {
         accept_group_invite(&pool, "g", &c, 4, 100).await.unwrap();
         accept_group_invite(&pool, "g", &b, 5, 100).await.unwrap();
 
-        delete_user(&pool, &a).await.unwrap();
+        delete_user(&pool, &a, None, 1).await.unwrap();
         let members = list_members(&pool, "g").await.unwrap();
         let role = |id: &str| {
             members
@@ -686,6 +703,27 @@ mod tests {
                 .clone()
         };
         assert_eq!((role(&c), role(&b)), ("admin".into(), "member".into()));
+    }
+
+    /// Groups that removing an account would leave empty.
+    #[tokio::test]
+    async fn sole_member_groups_are_found() {
+        let pool = test_pool().await;
+        let a = user(&pool, "a").await;
+        let b = user(&pool, "b").await;
+        create_group(&pool, "solo", "Solo", "solo", &a, &a, 1)
+            .await
+            .unwrap();
+        create_group(&pool, "duo", "Duo", "duo", &a, &a, 1)
+            .await
+            .unwrap();
+        invite_to_group(&pool, "duo", "b@example.com", "member", &a, 1, 100)
+            .await
+            .unwrap();
+        accept_group_invite(&pool, "duo", &b, 2, 100).await.unwrap();
+        let sole = sole_member_groups(&pool, &a).await.unwrap();
+        assert_eq!(sole, [("solo".to_owned(), "Solo".to_owned(), 0)]);
+        assert!(sole_member_groups(&pool, &b).await.unwrap().is_empty());
     }
 
     #[tokio::test]

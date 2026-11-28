@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, get, patch},
 };
@@ -200,13 +200,45 @@ async fn update(
     Ok(Json(overview(&state).await?))
 }
 
+#[derive(Deserialize)]
+struct RemoveQuery {
+    /// Group that takes the user's personal apps; absent = they are deleted.
+    move_apps_to: Option<String>,
+}
+
 async fn remove(
     State(state): State<AppState>,
     AdminUser(admin): AdminUser,
     Path(id): Path<String>,
+    Query(query): Query<RemoveQuery>,
 ) -> ApiResult<Json<Overview>> {
     protect(&state, &admin, &id).await?;
-    let app_ids = db::delete_user(&state.db, &id)
+    // A group left without members would keep apps that nobody sees or is alerted for.
+    let sole = db::sole_member_groups(&state.db, &id).await?;
+    if let Some((_, name, _)) = sole.iter().find(|(_, _, apps)| *apps > 0) {
+        return Err(ApiError::Invalid(format!(
+            "They are the only member of {name}, which owns applications: add another member first."
+        )));
+    }
+    if let Some(group_id) = &query.move_apps_to {
+        if sole.iter().any(|(gid, _, _)| gid == group_id) {
+            return Err(ApiError::Invalid(
+                "They are the only member of that group: choose a group with other members.".into(),
+            ));
+        }
+        if db::get_group(&state.db, group_id).await?.is_none() {
+            return Err(ApiError::Invalid("That group does not exist.".into()));
+        }
+        let moving = db::count_owned_apps(&state.db, db::Owner::User(&id)).await?;
+        let there = db::count_owned_apps(&state.db, db::Owner::Group(group_id)).await?;
+        if moving + there > crate::apps::MAX_APPS_PER_OWNER {
+            return Err(ApiError::Invalid(format!(
+                "The group has room for {} more applications, not {moving}.",
+                (crate::apps::MAX_APPS_PER_OWNER - there).max(0)
+            )));
+        }
+    }
+    let app_ids = db::delete_user(&state.db, &id, query.move_apps_to.as_deref(), now_ms())
         .await?
         .ok_or(ApiError::NotFound)?;
     for app_id in &app_ids {

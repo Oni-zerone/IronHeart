@@ -56,8 +56,12 @@ macro_rules! select_apps {
 macro_rules! visible_to {
     ($p:literal) => {
         concat!(
-            "(user_id = ", $p, " OR group_id IN ",
-            "(SELECT group_id FROM group_members WHERE user_id = ", $p, "))"
+            "(user_id = ",
+            $p,
+            " OR group_id IN ",
+            "(SELECT group_id FROM group_members WHERE user_id = ",
+            $p,
+            "))"
         )
     };
 }
@@ -67,8 +71,12 @@ macro_rules! visible_to {
 macro_rules! managed_by {
     ($p:literal) => {
         concat!(
-            "(user_id = ", $p, " OR group_id IN ",
-            "(SELECT group_id FROM group_members WHERE user_id = ", $p, " AND role = 'admin'))"
+            "(user_id = ",
+            $p,
+            " OR group_id IN ",
+            "(SELECT group_id FROM group_members WHERE user_id = ",
+            $p,
+            " AND role = 'admin'))"
         )
     };
 }
@@ -132,14 +140,18 @@ pub async fn insert_app(pool: &Pool, app: &NewApp<'_>, recipients: &[String]) ->
 }
 
 /// Apps of an owner: limits are per user (personal apps) and per group.
-pub async fn count_owned_apps(pool: &Pool, owner: Owner<'_>) -> sqlx::Result<i64> {
+/// Takes the pool or a transaction.
+pub async fn count_owned_apps<'e>(
+    executor: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    owner: Owner<'_>,
+) -> sqlx::Result<i64> {
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM apps
          WHERE ($1 IS NOT NULL AND user_id = $1) OR ($2 IS NOT NULL AND group_id = $2)",
     )
     .bind(owner.user())
     .bind(owner.group())
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 
@@ -275,9 +287,9 @@ pub async fn delete_app(pool: &Pool, user_id: &str, app_id: &str) -> sqlx::Resul
         " RETURNING key_id"
     ))
     .bind(app_id)
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
 }
 
 // ---- Key registry -----------------------------------------------------------
@@ -552,7 +564,9 @@ mod tests {
         invite_to_group(&pool, "g", "member@example.com", "member", admin, 1, 100)
             .await
             .unwrap();
-        accept_group_invite(&pool, "g", member, 2, 100).await.unwrap();
+        accept_group_invite(&pool, "g", member, 2, 100)
+            .await
+            .unwrap();
         insert_app(
             &pool,
             &NewApp {
@@ -573,10 +587,20 @@ mod tests {
 
         let seen = get_app(&pool, member, "ga").await.unwrap().unwrap();
         assert_eq!(
-            (seen.group_name.as_deref(), seen.group_role.as_deref(), seen.manageable()),
+            (
+                seen.group_name.as_deref(),
+                seen.group_role.as_deref(),
+                seen.manageable()
+            ),
             (Some("Ops"), Some("member"), false)
         );
-        assert!(get_app(&pool, admin, "ga").await.unwrap().unwrap().manageable());
+        assert!(
+            get_app(&pool, admin, "ga")
+                .await
+                .unwrap()
+                .unwrap()
+                .manageable()
+        );
         assert!(get_app(&pool, outsider, "ga").await.unwrap().is_none());
         assert!(list_apps(&pool, outsider).await.unwrap().is_empty());
         assert_eq!(list_apps(&pool, member).await.unwrap().len(), 1);
@@ -592,21 +616,38 @@ mod tests {
         };
         assert!(update_app(&pool, member, "ga", &update).await.unwrap());
         assert!(!update_app(&pool, outsider, "ga", &update).await.unwrap());
-        assert!(rotate_key(&pool, member, "ga", "k2", b"s", 1, 4).await.unwrap());
-        assert!(!rotate_key(&pool, outsider, "ga", "k3", b"s", 1, 4).await.unwrap());
+        assert!(
+            rotate_key(&pool, member, "ga", "k2", b"s", 1, 4)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !rotate_key(&pool, outsider, "ga", "k3", b"s", 1, 4)
+                .await
+                .unwrap()
+        );
 
         let mut recipients = alert_recipients(&pool, "ga").await.unwrap();
         recipients.sort();
         assert_eq!(recipients, ["admin@example.com", "member@example.com"]);
         assert_eq!(count_owned_apps(&pool, Owner::Group("g")).await.unwrap(), 1);
-        assert_eq!(count_owned_apps(&pool, Owner::User(admin)).await.unwrap(), 0);
+        assert_eq!(
+            count_owned_apps(&pool, Owner::User(admin)).await.unwrap(),
+            0
+        );
 
         assert!(delete_app(&pool, member, "ga").await.unwrap().is_none());
         // The creator leaves: the app stays with the group, the member takes over.
-        assert_eq!(delete_user(&pool, admin).await.unwrap(), Some(vec![]));
+        assert_eq!(
+            delete_user(&pool, admin, None, 1).await.unwrap(),
+            Some(vec![])
+        );
         let seen = get_app(&pool, member, "ga").await.unwrap().unwrap();
         assert_eq!(seen.group_role.as_deref(), Some("admin"));
-        assert_eq!(delete_app(&pool, member, "ga").await.unwrap().as_deref(), Some("k2"));
+        assert_eq!(
+            delete_app(&pool, member, "ga").await.unwrap().as_deref(),
+            Some("k2")
+        );
     }
 
     #[tokio::test]

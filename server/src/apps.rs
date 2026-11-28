@@ -80,6 +80,8 @@ struct AppView {
     /// Configured recipients; empty = the owner's email, or every group member's.
     recipients: Vec<String>,
     failures_24h: i64,
+    /// Pending transfer request; only for those who manage the app.
+    pending_transfer: Option<db::PendingTransfer>,
 }
 
 #[derive(Serialize)]
@@ -92,7 +94,12 @@ struct OwnerView {
 }
 
 impl AppView {
-    fn new(app: db::App, recipients: Vec<String>, failures_24h: i64) -> Self {
+    fn new(
+        app: db::App,
+        recipients: Vec<String>,
+        failures_24h: i64,
+        pending_transfer: Option<db::PendingTransfer>,
+    ) -> Self {
         let owner = match (&app.group_id, &app.user_id) {
             (Some(id), _) => OwnerView {
                 kind: "group",
@@ -111,6 +118,7 @@ impl AppView {
             can_manage: app.manageable(),
             recipients,
             failures_24h,
+            pending_transfer,
             app,
         }
     }
@@ -150,6 +158,12 @@ async fn list(
             .await?
             .into_iter()
             .collect();
+    let mut transfers: HashMap<String, db::PendingTransfer> =
+        db::pending_transfers(&state.db, &user.id, now_ms())
+            .await?
+            .into_iter()
+            .map(|t| (t.app_id.clone(), t))
+            .collect();
     Ok(Json(
         apps.into_iter()
             .map(|app| {
@@ -158,6 +172,7 @@ async fn list(
                     app.clone(),
                     recipients.remove(&app.id).unwrap_or_default(),
                     failures_24h,
+                    transfers.remove(&app.id),
                 )
             })
             .collect(),
@@ -176,8 +191,12 @@ async fn load_view(state: &AppState, user_id: &str, app_id: &str) -> ApiResult<A
         .collect();
     let failures = db::failure_buckets_since(&state.db, app_id, now_ms() - DAY_MS).await?;
     let failures_24h = failures.iter().map(|b| b.counts.total()).sum();
+    let pending_transfer = db::pending_transfers(&state.db, user_id, now_ms())
+        .await?
+        .into_iter()
+        .find(|t| t.app_id == app_id);
     Ok(AppDetail {
-        view: AppView::new(app, recipients, failures_24h),
+        view: AppView::new(app, recipients, failures_24h, pending_transfer),
         failures,
     })
 }

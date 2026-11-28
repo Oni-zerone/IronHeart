@@ -20,6 +20,7 @@ mod mail_layout;
 mod monitor;
 mod outbox;
 mod telegram;
+mod transfers;
 mod users;
 mod web;
 
@@ -130,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(apps::routes())
         .merge(users::routes())
         .merge(groups::routes())
+        .merge(transfers::routes())
         .merge(entanglement::routes())
         .merge(telegram::api::routes());
     let app = if web::available() {
